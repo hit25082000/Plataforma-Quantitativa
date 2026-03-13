@@ -22,6 +22,10 @@ export interface TradeMessage {
   vwap: number;
   net_aggression: number;
   ts: string;
+  buy_agent_name?: string;
+  sell_agent_name?: string;
+  buy_agent_short_name?: string;
+  sell_agent_short_name?: string;
 }
 
 export interface DomLevel {

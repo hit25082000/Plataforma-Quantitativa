@@ -161,6 +161,11 @@ using SetDailyCallback_t = int32_t (PROFIT_STDCALL *)(NewDailyCallback_t);
 // TranslateTrade(pTrade, &TConnectorTrade) -> int
 using TranslateTrade_t = int32_t (PROFIT_STDCALL *)(size_t pTrade, TConnectorTrade* pOut);
 
+// GetAgentNameByID(nID) -> nome da corretora (ou null)
+using GetAgentNameByID_t = const wchar_t* (PROFIT_STDCALL *)(int32_t nID);
+// GetAgentShortNameByID(nID) -> nome abreviado da corretora (ou null)
+using GetAgentShortNameByID_t = const wchar_t* (PROFIT_STDCALL *)(int32_t nID);
+
 // Error codes (Delphi/C# ProfitConstants)
 constexpr int32_t NL_OK                 = 0x00000000;
 constexpr int32_t NL_INTERNAL_ERROR      = static_cast<int32_t>(0x80000001);

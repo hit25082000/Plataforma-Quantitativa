@@ -1,5 +1,6 @@
 import { useMarketStore } from "../../store/marketStore";
 import { formatQty } from "../../utils/formatters";
+import { isTauri } from "../../utils/tauri";
 
 function getTopN(
   totals: Record<number, number>,
@@ -14,9 +15,17 @@ function getTopN(
 export function TopBrokersTable() {
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
   const agentSellTotals = useMarketStore((s) => s.agentSellTotals);
+  const agentNames = useMarketStore((s) => s.agentNames);
+  const agentShortNames = useMarketStore((s) => s.agentShortNames);
 
   const topBuyers = getTopN(agentBuyTotals, 5);
   const topSellers = getTopN(agentSellTotals, 5);
+
+  /** No Tauri usa nome abreviado; no browser usa nome completo. */
+  const agentLabel = (agentId: number) =>
+    isTauri()
+      ? (agentShortNames[agentId] ?? agentNames[agentId] ?? `#${agentId}`)
+      : (agentNames[agentId] ?? `#${agentId}`);
 
   return (
     <div className="grid grid-cols-2 gap-4">
@@ -28,7 +37,7 @@ export function TopBrokersTable() {
           ) : (
             topBuyers.map(({ agentId, qty }) => (
               <div key={agentId} className="flex justify-between">
-                <span className="text-text/80">#{agentId}</span>
+                <span className="text-text/80">{agentLabel(agentId)}</span>
                 <span className="text-neon-buy">{formatQty(qty)} lotes</span>
               </div>
             ))
@@ -43,7 +52,7 @@ export function TopBrokersTable() {
           ) : (
             topSellers.map(({ agentId, qty }) => (
               <div key={agentId} className="flex justify-between">
-                <span className="text-text/80">#{agentId}</span>
+                <span className="text-text/80">{agentLabel(agentId)}</span>
                 <span className="text-neon-sell">{formatQty(qty)} lotes</span>
               </div>
             ))

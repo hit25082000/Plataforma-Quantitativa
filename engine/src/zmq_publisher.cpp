@@ -29,7 +29,9 @@ ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
                          const std::string& ticker,
                          alert_bus::AlertBus* alert_bus,
                          event_dispatcher::EventDispatcher* dispatcher,
-                         AgentRanking* agent_ranking)
+                         AgentRanking* agent_ranking,
+                         std::function<std::string(int32_t)> agent_name_resolver,
+                         std::function<std::string(int32_t)> agent_short_name_resolver)
     : queue_(queue)
     , dom_(dom)
     , trade_proc_(trade_proc)
@@ -38,6 +40,8 @@ ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
     , alert_bus_(alert_bus)
     , dispatcher_(dispatcher)
     , agent_ranking_(agent_ranking)
+    , agent_name_resolver_(std::move(agent_name_resolver))
+    , agent_short_name_resolver_(std::move(agent_short_name_resolver))
 {}
 
 ZmqPublisher::~ZmqPublisher() {
@@ -118,6 +122,14 @@ void ZmqPublisher::run() {
                     {"net_aggression", acc.net_aggression},
                     {"ts", timestamp_iso()}
                 };
+                if (agent_name_resolver_) {
+                    j["buy_agent_name"] = agent_name_resolver_(e.buy_agent);
+                    j["sell_agent_name"] = agent_name_resolver_(e.sell_agent);
+                }
+                if (agent_short_name_resolver_) {
+                    j["buy_agent_short_name"] = agent_short_name_resolver_(e.buy_agent);
+                    j["sell_agent_short_name"] = agent_short_name_resolver_(e.sell_agent);
+                }
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
                 if (alert_bus_ && dispatcher_) {

@@ -41,7 +41,15 @@ std::atomic<bool> g_first_offerbook{true};
 std::atomic<bool> g_first_daily{true};
 
 std::string wide_to_utf8(const wchar_t* w) {
-    if (!w) return {};
+    if (!w || !*w) return {};
+#ifdef _WIN32
+    int len = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string s(static_cast<size_t>(len), 0);
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, &s[0], len, nullptr, nullptr);
+    s.resize(static_cast<size_t>(len) - 1);
+    return s;
+#else
     std::string s;
     while (*w) {
         char c = static_cast<char>(*w & 0xFF);
@@ -49,6 +57,7 @@ std::string wide_to_utf8(const wchar_t* w) {
         ++w;
     }
     return s;
+#endif
 }
 
 static std::string trim_ticker(std::string s) {
@@ -217,6 +226,10 @@ bool ProfitBridge::load(const std::string& dll_path) {
     fn_SetDailyCallback_ = (decltype(fn_SetDailyCallback_))GET_PROC(dll_handle_, "SetDailyCallback");
     // Não aborta se não encontrar: usaremos fallback no DLLInitializeMarketLogin
 
+    // GetAgentNameByID / GetAgentShortNameByID opcionais (DLLs antigas podem não exportar)
+    fn_GetAgentNameByID_ = (decltype(fn_GetAgentNameByID_))GET_PROC(dll_handle_, "GetAgentNameByID");
+    fn_GetAgentShortNameByID_ = (decltype(fn_GetAgentShortNameByID_))GET_PROC(dll_handle_, "GetAgentShortNameByID");
+
 #undef RESOLVE
     g_queue = &queue_;
     g_translate_trade = fn_TranslateTrade_;
@@ -235,6 +248,26 @@ void ProfitBridge::unload() {
         FREE_LIB(dll_handle_);
         dll_handle_ = nullptr;
     }
+    fn_GetAgentNameByID_ = nullptr;
+    fn_GetAgentShortNameByID_ = nullptr;
+}
+
+std::string ProfitBridge::get_agent_name(int32_t agent_id) const {
+    std::lock_guard<std::mutex> lock(dll_mutex_);
+    if (!fn_GetAgentNameByID_) return "#" + std::to_string(agent_id);
+    const wchar_t* name = fn_GetAgentNameByID_(agent_id);
+    if (!name || !*name) return "#" + std::to_string(agent_id);
+    std::string utf8 = wide_to_utf8(name);
+    return utf8.empty() ? "#" + std::to_string(agent_id) : utf8;
+}
+
+std::string ProfitBridge::get_agent_short_name(int32_t agent_id) const {
+    std::lock_guard<std::mutex> lock(dll_mutex_);
+    if (!fn_GetAgentShortNameByID_) return "#" + std::to_string(agent_id);
+    const wchar_t* name = fn_GetAgentShortNameByID_(agent_id);
+    if (!name || !*name) return "#" + std::to_string(agent_id);
+    std::string utf8 = wide_to_utf8(name);
+    return utf8.empty() ? "#" + std::to_string(agent_id) : utf8;
 }
 
 bool ProfitBridge::wait_for_market_connected(std::chrono::milliseconds timeout) {

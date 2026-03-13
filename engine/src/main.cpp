@@ -133,7 +133,9 @@ int main(int argc, char* argv[]) {
     dispatcher.add_rule(std::make_unique<rules::Rule6Absorption>(alert_bus, agent_ranking, dom));
 
     zmq_publisher::ZmqPublisher pub(queue, dom, trade_proc, config::zmq_address, ticker,
-                                    &alert_bus, &dispatcher, &agent_ranking);
+                                    &alert_bus, &dispatcher, &agent_ranking,
+                                    [&bridge](int32_t id) { return bridge.get_agent_name(id); },
+                                    [&bridge](int32_t id) { return bridge.get_agent_short_name(id); });
     pub.start();
 
     // Wait briefly for ZMQ bind to complete and verify it succeeded

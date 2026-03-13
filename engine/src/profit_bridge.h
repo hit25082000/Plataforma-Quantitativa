@@ -4,6 +4,7 @@
 #include "profit_types.h"
 #include <chrono>
 #include <memory>
+#include <mutex>
 #include <string>
 
 namespace profit_bridge {
@@ -38,6 +39,11 @@ public:
     /** Bloqueia até o Market estar conectado (callback type 2, result 4) ou timeout. */
     bool wait_for_market_connected(std::chrono::milliseconds timeout);
 
+    /** Nome da corretora por ID (UTF-8). Se DLL não exportar a função ou retornar null, retorna "#" + id. */
+    std::string get_agent_name(int32_t agent_id) const;
+    /** Nome abreviado da corretora por ID (UTF-8). Se DLL não exportar ou retornar null, retorna "#" + id. */
+    std::string get_agent_short_name(int32_t agent_id) const;
+
 private:
     void* dll_handle_ = nullptr;
     event_bus::EventQueue& queue_;
@@ -55,6 +61,10 @@ private:
     profit::SetTinyBookCallback_t   fn_SetTinyBookCallback_        = nullptr;
     profit::TranslateTrade_t        fn_TranslateTrade_            = nullptr;
     profit::SetDailyCallback_t      fn_SetDailyCallback_          = nullptr;
+    profit::GetAgentNameByID_t      fn_GetAgentNameByID_          = nullptr;
+    profit::GetAgentShortNameByID_t fn_GetAgentShortNameByID_     = nullptr;
+
+    mutable std::mutex dll_mutex_;
 };
 
 /** Escreve uma linha de log de startup no DEBUG_LOG_PATH (para diagnóstico). */

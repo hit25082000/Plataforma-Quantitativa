@@ -9,6 +9,7 @@
 #include "agent_ranking.h"
 #include <zmq.hpp>
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -24,7 +25,9 @@ public:
                  const std::string& ticker,
                  alert_bus::AlertBus* alert_bus = nullptr,
                  event_dispatcher::EventDispatcher* dispatcher = nullptr,
-                 AgentRanking* agent_ranking = nullptr);
+                 AgentRanking* agent_ranking = nullptr,
+                 std::function<std::string(int32_t)> agent_name_resolver = nullptr,
+                 std::function<std::string(int32_t)> agent_short_name_resolver = nullptr);
     ~ZmqPublisher();
 
     void start();
@@ -45,6 +48,8 @@ private:
     alert_bus::AlertBus*            alert_bus_ = nullptr;
     event_dispatcher::EventDispatcher* dispatcher_ = nullptr;
     AgentRanking*                   agent_ranking_ = nullptr;
+    std::function<std::string(int32_t)> agent_name_resolver_;
+    std::function<std::string(int32_t)> agent_short_name_resolver_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};

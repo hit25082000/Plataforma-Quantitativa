@@ -57,6 +57,8 @@ interface MarketStore {
   aggrHistory: number[];
   agentBuyTotals: Record<number, number>;
   agentSellTotals: Record<number, number>;
+  agentNames: Record<number, string>;
+  agentShortNames: Record<number, string>;
   updateTrade: (msg: TradeMessage) => void;
 
   dailyHigh: number;
@@ -92,6 +94,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
       aggrHistory: [],
       agentBuyTotals: {},
       agentSellTotals: {},
+      agentNames: {},
+      agentShortNames: {},
       dailyHigh: 0,
       dailyLow: 0,
       dailyOpen: 0,
@@ -140,6 +144,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
   aggrHistory: [],
   agentBuyTotals: {},
   agentSellTotals: {},
+  agentNames: {},
+  agentShortNames: {},
   updateTrade: (msg) =>
     set((state) => {
       const net = msg.net_aggression;
@@ -150,6 +156,14 @@ export const useMarketStore = create<MarketStore>((set) => ({
       const agentSell = { ...state.agentSellTotals };
       agentBuy[msg.buy_agent] = (agentBuy[msg.buy_agent] ?? 0) + msg.qty;
       agentSell[msg.sell_agent] = (agentSell[msg.sell_agent] ?? 0) + msg.qty;
+
+      const agentNames = { ...state.agentNames };
+      if (msg.buy_agent_name != null) agentNames[msg.buy_agent] = msg.buy_agent_name;
+      if (msg.sell_agent_name != null) agentNames[msg.sell_agent] = msg.sell_agent_name;
+
+      const agentShortNames = { ...state.agentShortNames };
+      if (msg.buy_agent_short_name != null) agentShortNames[msg.buy_agent] = msg.buy_agent_short_name;
+      if (msg.sell_agent_short_name != null) agentShortNames[msg.sell_agent] = msg.sell_agent_short_name;
 
       const history = [...state.aggrHistory, net].slice(-MAX_AGGR_HISTORY);
 
@@ -162,6 +176,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
         aggrHistory: history,
         agentBuyTotals: agentBuy,
         agentSellTotals: agentSell,
+        agentNames,
+        agentShortNames,
         streamingTicker: msg.ticker,
       };
     }),
