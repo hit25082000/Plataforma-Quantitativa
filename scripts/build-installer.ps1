@@ -34,7 +34,14 @@ New-Item -ItemType Directory -Force -Path $resources | Out-Null
 New-Item -ItemType Directory -Force -Path "$resources\sounds" | Out-Null
 
 Copy-Item "$root\engine\build\Release\engine.exe" "$resources\" -Force
-Copy-Item "$root\ProfitDLL.dll" "$resources\" -Force
+Copy-Item "$root\ProfitDLL.dll" "$resources\" -Force -ErrorAction SilentlyContinue
+# 64-bit DLL: engine tries ProfitDLL64.dll first (fallback to ProfitDLL.dll)
+if (Test-Path "$root\ProfitDLL64.dll") {
+    Copy-Item "$root\ProfitDLL64.dll" "$resources\" -Force
+} elseif (Test-Path "$root\engine\build\Release\ProfitDLL64.dll") {
+    Copy-Item "$root\engine\build\Release\ProfitDLL64.dll" "$resources\" -Force
+}
+Copy-Item "$root\engine\build\Release\libzmq-mt-4_3_5.dll" "$resources\" -Force -ErrorAction SilentlyContinue
 Copy-Item "$root\distributor\dist\distributor.exe" "$resources\" -Force
 
 # Sons - criar placeholders se não existirem, depois copiar

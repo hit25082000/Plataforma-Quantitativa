@@ -113,11 +113,26 @@ pub async fn check_health() -> Result<bool, String> {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn kill_stale_processes() {
+    let _ = Command::new("taskkill")
+        .args(["/F", "/IM", "engine.exe"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_stale_processes() {}
+
 #[tauri::command]
 pub async fn spawn_engine(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    kill_stale_processes();
+    std::thread::sleep(Duration::from_millis(300));
+
     let resources = get_resources_dir(&app)?;
     let engine_dir = resources.join("resources");
     let engine_exe = engine_dir.join("engine.exe");
@@ -166,10 +181,27 @@ pub async fn spawn_engine(
         })
         .unwrap_or_else(|_| "profit_engine.log".to_string());
 
+    let engine_stderr_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("{e}"))
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            Ok(dir.join("engine_stderr.log"))
+        })
+        .ok();
+
+    let stderr_cfg = if let Some(ref p) = engine_stderr_path {
+        let f = std::fs::File::create(p).map_err(|e| e.to_string())?;
+        Stdio::from(f)
+    } else {
+        Stdio::null()
+    };
+
     let mut cmd = Command::new(&engine_exe);
     cmd.current_dir(&engine_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(stderr_cfg)
         .env("DEBUG_LOG_PATH", &engine_log_path);
 
     if let Some(key) = &config.profit_activation_key {
@@ -181,16 +213,30 @@ pub async fn spawn_engine(
     if let Some(pass) = &config.profit_password {
         cmd.env("PROFIT_PASSWORD", pass);
     }
-    if let Some(t) = &config.selected_ticker {
-        if !t.trim().is_empty() {
-            cmd.env("PROFIT_TICKER", t);
-        }
-    }
-    if let Some(e) = &config.selected_exchange {
-        let bolsa = exchange_to_bolsa(e);
-        if !bolsa.is_empty() {
-            cmd.env("PROFIT_BOLSA", bolsa);
-        }
+    let raw_ticker = config.selected_ticker.as_deref().unwrap_or("WINFUT").trim().to_uppercase();
+    let raw_exchange = config.selected_exchange.as_deref().unwrap_or("BMF").trim().to_uppercase();
+
+    // "TESTE"/"SIM" is the mock feed; the DLL needs a real ticker/exchange
+    let (ticker_env, exchange_env) = if raw_exchange == "SIM" || raw_ticker == "TESTE" {
+        ("WINFUT".to_string(), "BMF".to_string())
+    } else {
+        (raw_ticker, raw_exchange)
+    };
+
+    cmd.env("PROFIT_TICKER", &ticker_env);
+    let bolsa_dll = exchange_to_bolsa_dll(&exchange_env);
+    cmd.env("PROFIT_BOLSA", bolsa_dll);
+
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&engine_log_path)
+    {
+        let _ = writeln!(
+            f,
+            "{{\"message\":\"spawn_env\",\"data\":{{\"PROFIT_TICKER\":\"{}\",\"PROFIT_BOLSA\":\"{}\"}}}}",
+            ticker_env, bolsa_dll
+        );
     }
 
     let child = cmd.spawn().map_err(|e| e.to_string())?;
@@ -219,10 +265,29 @@ pub async fn spawn_distributor(
         ));
     }
 
+    let dist_stderr_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("{e}"))
+        .and_then(|dir| {
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            Ok(dir.join("distributor_stderr.log"))
+        })
+        .ok();
+
+    let dist_stderr = if let Some(ref p) = dist_stderr_path {
+        match std::fs::File::create(p) {
+            Ok(f) => Stdio::from(f),
+            Err(_) => Stdio::null(),
+        }
+    } else {
+        Stdio::null()
+    };
+
     let child = Command::new(&dist_exe)
-        .current_dir(&resources)
+        .current_dir(&dist_dir)
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(dist_stderr)
         .spawn()
         .map_err(|e| e.to_string())?;
 
@@ -234,6 +299,10 @@ pub async fn spawn_distributor(
 pub struct ProfitDiagnostic {
     pub credentials_configured: bool,
     pub engine_log_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine_stderr_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_data_dir: Option<String>,
     pub offer_book_count: u32,
     pub trade_count: u32,
     pub daily_count: u32,
@@ -251,12 +320,16 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
         && config.profit_user.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         && config.profit_password.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
 
-    let engine_log_path = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("{e}"))
-        .map(|dir| dir.join("profit_engine.log").to_string_lossy().to_string())
-        .unwrap_or_else(|_| "profit_engine.log".to_string());
+    let (engine_log_path, engine_stderr_path, app_data_dir) = match app.path().app_data_dir() {
+        Ok(dir) => {
+            let _ = std::fs::create_dir_all(&dir);
+            let log_path = dir.join("profit_engine.log").to_string_lossy().to_string();
+            let stderr_path = dir.join("engine_stderr.log").to_string_lossy().to_string();
+            let dir_path = dir.to_string_lossy().to_string();
+            (log_path, Some(stderr_path), Some(dir_path))
+        }
+        Err(_) => ("profit_engine.log".to_string(), None, None),
+    };
 
     let mut offer_book_count = 0u32;
     let mut trade_count = 0u32;
@@ -324,6 +397,8 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
     Ok(ProfitDiagnostic {
         credentials_configured,
         engine_log_path: engine_log_path.clone(),
+        engine_stderr_path,
+        app_data_dir,
         offer_book_count,
         trade_count,
         daily_count,
@@ -333,12 +408,22 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
     })
 }
 
-/// Maps display exchange name to Profit DLL bolsa code.
+/// Maps display exchange name to Profit DLL bolsa code (UI/config).
 fn exchange_to_bolsa(exchange: &str) -> &str {
     match exchange.to_uppercase().as_str() {
         "BMF" => "F",
         "BOVESPA" => "B",
         "SIM" => "SIM", // Mock asset
+        _ => "F",
+    }
+}
+
+/// Bolsa enviada ao engine/DLL.
+fn exchange_to_bolsa_dll(exchange: &str) -> &str {
+    match exchange.to_uppercase().as_str() {
+        "BMF" => "F",
+        "BOVESPA" => "B",
+        "SIM" => "SIM",
         _ => "F",
     }
 }
@@ -356,14 +441,14 @@ pub async fn set_active_asset(
     exchange: String,
 ) -> Result<SetActiveAssetResult, String> {
     let ticker = ticker.trim().to_uppercase();
-    let bolsa = exchange_to_bolsa(&exchange).to_string();
+    let bolsa_dll = exchange_to_bolsa_dll(&exchange).to_string();
 
     let mut config: AppConfig = read_config(app.clone()).await.unwrap_or_default();
     config.selected_ticker = Some(ticker.clone());
     config.selected_exchange = Some(exchange.trim().to_uppercase());
     write_config(app.clone(), config).await?;
 
-    let cmd = format!("SWITCH\t{}\t{}\n", ticker, bolsa);
+    let cmd = format!("SWITCH\t{}\t{}\n", ticker, bolsa_dll);
     let addr = format!("127.0.0.1:{}", ENGINE_CONTROL_PORT)
         .parse()
         .map_err(|e: std::net::AddrParseError| e.to_string())?;
@@ -386,7 +471,7 @@ pub async fn set_active_asset(
             Ok(SetActiveAssetResult {
                 success,
                 message: if success {
-                    format!("Ativo alterado para {} {}", ticker, bolsa)
+                    format!("Ativo alterado para {} {}", ticker, bolsa_dll)
                 } else {
                     response
                 },
@@ -400,6 +485,28 @@ pub async fn set_active_asset(
             ),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn open_log_folder(app: tauri::AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(dir.as_os_str())
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = dir;
+        return Err("Abrir pasta de logs só é suportado no Windows.".to_string());
+    }
+    Ok(())
 }
 
 #[tauri::command]

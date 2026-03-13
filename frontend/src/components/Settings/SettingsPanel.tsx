@@ -20,6 +20,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [diagnostic, setDiagnostic] = useState<{
     credentials_configured: boolean;
     engine_log_path: string;
+    engine_stderr_path?: string;
+    app_data_dir?: string;
     offer_book_count: number;
     trade_count: number;
     daily_count: number;
@@ -33,6 +35,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     invoke<{
       credentials_configured: boolean;
       engine_log_path: string;
+      engine_stderr_path?: string;
+      app_data_dir?: string;
       offer_book_count: number;
       trade_count: number;
       daily_count: number;
@@ -169,9 +173,30 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 <p className="text-text/50 truncate" title={diagnostic.engine_log_path}>
                   Log: {diagnostic.engine_log_path}
                 </p>
-                <button type="button" onClick={loadDiagnostic} className="text-amber-400 hover:text-amber-300 mt-1">
-                  Atualizar diagnóstico
-                </button>
+                {diagnostic.engine_stderr_path != null && (
+                  <p className="text-text/50 truncate text-sm" title={diagnostic.engine_stderr_path}>
+                    Se não conectar, verifique erros do engine: {diagnostic.engine_stderr_path}
+                  </p>
+                )}
+                {diagnostic.app_data_dir != null && (
+                  <p className="text-text/50 truncate text-sm" title={diagnostic.app_data_dir}>
+                    Pasta de logs: {diagnostic.app_data_dir}
+                  </p>
+                )}
+                <div className="flex flex-wrap gap-2 mt-1">
+                  <button type="button" onClick={loadDiagnostic} className="text-amber-400 hover:text-amber-300">
+                    Atualizar diagnóstico
+                  </button>
+                  {diagnostic.app_data_dir != null && (
+                    <button
+                      type="button"
+                      onClick={() => invoke("open_log_folder")}
+                      className="text-sky-400 hover:text-sky-300"
+                    >
+                      Abrir pasta de logs
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>

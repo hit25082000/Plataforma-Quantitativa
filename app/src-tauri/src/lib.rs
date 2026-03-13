@@ -20,6 +20,7 @@ pub fn run() {
             commands::get_resource_path,
             commands::get_profit_diagnostic,
             commands::set_active_asset,
+            commands::open_log_folder,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

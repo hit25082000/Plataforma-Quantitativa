@@ -5,11 +5,12 @@ import { StartupScreen } from "./components/StartupScreen";
 import { useAlerts } from "./hooks/useAlerts";
 import { useTauriStartup } from "./hooks/useTauriStartup";
 import { useWebSocket } from "./hooks/useWebSocket";
+import { isTauri } from "./utils/tauri";
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { status, error, configNeeded } = useTauriStartup();
-  useWebSocket();
+  useWebSocket(isTauri() ? status === "ready" : true);
   useAlerts();
 
   return (

@@ -42,6 +42,7 @@
       "resources/engine.exe",
       "resources/distributor.exe",
       "resources/ProfitDLL.dll",
+      "resources/ProfitDLL64.dll",
       "resources/libzmq-mt-4_3_5.dll",
       "resources/sounds/wall.wav",
       "resources/sounds/breakout.wav"

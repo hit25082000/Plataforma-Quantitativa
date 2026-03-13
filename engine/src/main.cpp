@@ -86,20 +86,38 @@ int main(int argc, char* argv[]) {
 
     std::wstring wticker = to_wide(ticker.c_str());
     std::wstring wbolsa = to_wide(bolsa.c_str());
-    int32_t ret_ticker = bridge.SubscribeTicker(wticker.c_str(), wbolsa.c_str());
-    if (ret_ticker < profit::NL_OK) {
-        std::cerr << "SubscribeTicker failed: " << ret_ticker << std::endl;
-    }
 
-    int32_t ret_book = bridge.SubscribeOfferBook(wticker.c_str(), wbolsa.c_str());
-    if (ret_book < profit::NL_OK) {
-        if (ret_book == profit::NL_INVALID_TICKER) {
-            std::cerr << "SubscribeOfferBook failed: NL_INVALID_TICKER (ticker/bolsa invalido para livro de ofertas). Tentando bolsa F_0..." << std::endl;
-            std::wstring wbolsa_alt = L"F_0";
-            ret_book = bridge.SubscribeOfferBook(wticker.c_str(), wbolsa_alt.c_str());
+    // DLL needs time after Market:4 to load instrument definitions internally.
+    // Without this delay, SubscribeTicker crashes with Access Violation (null pointer
+    // at offset 0x270 = instrument record not yet populated).
+    constexpr int MAX_SUBSCRIBE_ATTEMPTS = 10;
+    constexpr int SUBSCRIBE_RETRY_DELAY_MS = 3000;
+
+    int32_t ret_ticker = profit::NL_INTERNAL_ERROR;
+    int32_t ret_book = profit::NL_INTERNAL_ERROR;
+
+    for (int attempt = 1; attempt <= MAX_SUBSCRIBE_ATTEMPTS; ++attempt) {
+        if (attempt == 1) {
+            std::cerr << "Waiting 5s for DLL instrument data to load..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(5));
         }
-        if (ret_book < profit::NL_OK) {
-            std::cerr << "SubscribeOfferBook failed: " << ret_book << " (NL_INVALID_TICKER=0x8000001F). Verifique no manual Profit o formato correto de ticker/bolsa para Offer Book." << std::endl;
+
+        ret_ticker = bridge.SubscribeTicker(wticker.c_str(), wbolsa.c_str());
+        ret_book = bridge.SubscribeOfferBook(wticker.c_str(), wbolsa.c_str());
+
+        std::cerr << "[Subscribe] attempt=" << attempt
+                  << " ticker=" << ticker << " bolsa=" << bolsa
+                  << " ret_ticker=" << ret_ticker
+                  << " ret_book=" << ret_book << std::endl;
+
+        if (ret_ticker >= profit::NL_OK && ret_book >= profit::NL_OK) {
+            std::cerr << "[Subscribe] OK on attempt " << attempt << std::endl;
+            break;
+        }
+
+        if (attempt < MAX_SUBSCRIBE_ATTEMPTS) {
+            std::cerr << "[Subscribe] Retrying in " << SUBSCRIBE_RETRY_DELAY_MS << "ms..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::milliseconds(SUBSCRIBE_RETRY_DELAY_MS));
         }
     }
 

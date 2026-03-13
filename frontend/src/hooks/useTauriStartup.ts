@@ -3,10 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import { useMarketStore } from "../store/marketStore";
 import { isTauri } from "../utils/tauri";
 
-export type StartupStatus = "idle" | "checking" | "starting" | "ready" | "error";
+export type StartupStatus =
+  | "idle"
+  | "checking"
+  | "starting"
+  | "ready"
+  | "error";
 
 const CONFIG_NEEDED_MESSAGE =
-  "Configure usuário, senha e chave de acesso em Configurações e use \"Reiniciar serviços\" para aplicar.";
+  'Configure usuário, senha e chave de acesso em Configurações e use "Reiniciar serviços" para aplicar.';
 
 export function useTauriStartup() {
   const [status, setStatus] = useState<StartupStatus>("idle");
@@ -26,11 +31,24 @@ export function useTauriStartup() {
       setError(null);
 
       // #region agent log
-      fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-        body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:run", message: "startup_run", data: {}, timestamp: Date.now(), hypothesisId: "H2" }),
-      }).catch(() => {});
+      fetch(
+        "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Debug-Session-Id": "5ad9d4",
+          },
+          body: JSON.stringify({
+            sessionId: "5ad9d4",
+            location: "useTauriStartup.ts:run",
+            message: "startup_run",
+            data: {},
+            timestamp: Date.now(),
+            hypothesisId: "H2",
+          }),
+        },
+      ).catch(() => {});
       // #endregion
 
       try {
@@ -38,11 +56,24 @@ export function useTauriStartup() {
         if (cancelled) return;
 
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:check_health", message: "check_health_initial", data: { ok }, timestamp: Date.now(), hypothesisId: "H2" }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:check_health",
+              message: "check_health_initial",
+              data: { ok },
+              timestamp: Date.now(),
+              hypothesisId: "H4",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
 
         if (ok) {
@@ -62,7 +93,9 @@ export function useTauriStartup() {
         const ticker = (cfg.selected_ticker ?? "WINFUT").trim();
         const exchange = (cfg.selected_exchange ?? "BMF").trim();
         if (ticker && exchange) {
-          useMarketStore.getState().setSelectedTicker(`${ticker} · ${exchange}`);
+          useMarketStore
+            .getState()
+            .setSelectedTicker(`${ticker} · ${exchange}`);
         }
 
         const keyOk = (cfg.profit_activation_key ?? "").trim().length > 0;
@@ -70,18 +103,31 @@ export function useTauriStartup() {
         const passOk = (cfg.profit_password ?? "").length > 0;
 
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({
-            sessionId: "42163b",
-            location: "useTauriStartup.ts:read_config",
-            message: "read_config_result",
-            data: { keyOk, userOk, passOk, keyLen: (cfg.profit_activation_key ?? "").length, userLen: (cfg.profit_user ?? "").length, passLen: (cfg.profit_password ?? "").length },
-            timestamp: Date.now(),
-            hypothesisId: "H1",
-          }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:read_config",
+              message: "read_config_result",
+              data: {
+                keyOk,
+                userOk,
+                passOk,
+                keyLen: (cfg.profit_activation_key ?? "").length,
+                userLen: (cfg.profit_user ?? "").length,
+                passLen: (cfg.profit_password ?? "").length,
+              },
+              timestamp: Date.now(),
+              hypothesisId: "H1",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
 
         if (!keyOk || !userOk || !passOk) {
@@ -96,42 +142,94 @@ export function useTauriStartup() {
           await invoke("spawn_engine");
         } catch (e) {
           // #region agent log
-          fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-            body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:spawn_engine", message: "spawn_engine_error", data: { err: String(e) }, timestamp: Date.now(), hypothesisId: "H3" }),
-          }).catch(() => {});
+          fetch(
+            "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Debug-Session-Id": "5ad9d4",
+              },
+              body: JSON.stringify({
+                sessionId: "5ad9d4",
+                location: "useTauriStartup.ts:spawn_engine",
+                message: "spawn_engine_error",
+                data: { err: String(e) },
+                timestamp: Date.now(),
+                hypothesisId: "H2",
+              }),
+            },
+          ).catch(() => {});
           // #endregion
           throw e;
         }
         if (cancelled) return;
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:spawn_engine", message: "spawn_engine_ok", data: {}, timestamp: Date.now(), hypothesisId: "H3" }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:spawn_engine",
+              message: "spawn_engine_ok",
+              data: {},
+              timestamp: Date.now(),
+              hypothesisId: "H2",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
 
         try {
           await invoke("spawn_distributor");
         } catch (e) {
           // #region agent log
-          fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-            body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:spawn_distributor", message: "spawn_distributor_error", data: { err: String(e) }, timestamp: Date.now(), hypothesisId: "H3" }),
-          }).catch(() => {});
+          fetch(
+            "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Debug-Session-Id": "5ad9d4",
+              },
+              body: JSON.stringify({
+                sessionId: "5ad9d4",
+                location: "useTauriStartup.ts:spawn_distributor",
+                message: "spawn_distributor_error",
+                data: { err: String(e) },
+                timestamp: Date.now(),
+                hypothesisId: "H3",
+              }),
+            },
+          ).catch(() => {});
           // #endregion
           throw e;
         }
         if (cancelled) return;
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:spawn_distributor", message: "spawn_distributor_ok", data: {}, timestamp: Date.now(), hypothesisId: "H3" }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:spawn_distributor",
+              message: "spawn_distributor_ok",
+              data: {},
+              timestamp: Date.now(),
+              hypothesisId: "H3",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
 
         const timeout = 30000;
@@ -145,22 +243,48 @@ export function useTauriStartup() {
           pollCount += 1;
           if (healthy) {
             // #region agent log
-            fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-              body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:poll", message: "poll_health_ready", data: { pollCount, elapsed: Date.now() - start }, timestamp: Date.now(), hypothesisId: "H4" }),
-            }).catch(() => {});
+            fetch(
+              "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Debug-Session-Id": "5ad9d4",
+                },
+                body: JSON.stringify({
+                  sessionId: "5ad9d4",
+                  location: "useTauriStartup.ts:poll",
+                  message: "poll_health_ready",
+                  data: { pollCount, elapsed: Date.now() - start },
+                  timestamp: Date.now(),
+                  hypothesisId: "H4",
+                }),
+              },
+            ).catch(() => {});
             // #endregion
             setStatus("ready");
             return;
           }
           if (pollCount === 1 || pollCount % 10 === 0) {
             // #region agent log
-            fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-              body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:poll", message: "poll_health_wait", data: { pollCount, elapsed: Date.now() - start }, timestamp: Date.now(), hypothesisId: "H4" }),
-            }).catch(() => {});
+            fetch(
+              "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "X-Debug-Session-Id": "5ad9d4",
+                },
+                body: JSON.stringify({
+                  sessionId: "5ad9d4",
+                  location: "useTauriStartup.ts:poll",
+                  message: "poll_health_wait",
+                  data: { pollCount, elapsed: Date.now() - start },
+                  timestamp: Date.now(),
+                  hypothesisId: "H4",
+                }),
+              },
+            ).catch(() => {});
             // #endregion
           }
           await new Promise((r) => setTimeout(r, pollInterval));
@@ -168,22 +292,48 @@ export function useTauriStartup() {
 
         if (cancelled) return;
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:timeout", message: "startup_timeout", data: { pollCount }, timestamp: Date.now(), hypothesisId: "H4" }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:timeout",
+              message: "startup_timeout",
+              data: { pollCount },
+              timestamp: Date.now(),
+              hypothesisId: "H4",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
         setStatus("error");
         setError("Falha ao iniciar serviços. Verifique as credenciais Profit.");
       } catch (e) {
         if (cancelled) return;
         // #region agent log
-        fetch("http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "42163b" },
-          body: JSON.stringify({ sessionId: "42163b", location: "useTauriStartup.ts:catch", message: "startup_error", data: { err: String(e) }, timestamp: Date.now(), hypothesisId: "H5" }),
-        }).catch(() => {});
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useTauriStartup.ts:catch",
+              message: "startup_error",
+              data: { err: String(e) },
+              timestamp: Date.now(),
+              hypothesisId: "H5",
+            }),
+          },
+        ).catch(() => {});
         // #endregion
         setStatus("error");
         setError(String(e));

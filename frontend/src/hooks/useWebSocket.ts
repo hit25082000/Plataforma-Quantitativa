@@ -24,7 +24,13 @@ function getWsUrl(): string {
   return `${protocol}//${host}/ws`;
 }
 
-function handleMessage(data: unknown, store: ReturnType<typeof useMarketStore.getState>): void {
+const MARKET_LOG_MAX = 5;
+let marketMessageCount = 0;
+
+function handleMessage(
+  data: unknown,
+  store: ReturnType<typeof useMarketStore.getState>,
+): void {
   if (typeof data !== "string") return;
   try {
     const msg = JSON.parse(data) as WsMessage;
@@ -36,10 +42,35 @@ function handleMessage(data: unknown, store: ReturnType<typeof useMarketStore.ge
 
     if (msg.topic === "market") {
       const m = msg as { type: string; buy?: unknown[]; sell?: unknown[] };
+      marketMessageCount += 1;
+      // #region agent log
+      if (marketMessageCount <= MARKET_LOG_MAX) {
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useWebSocket.ts:handleMessage",
+              message: "market_message",
+              data: { type: m.type, count: marketMessageCount },
+              timestamp: Date.now(),
+              hypothesisId: "H4",
+            }),
+          },
+        ).catch(() => {});
+      }
+      // #endregion
       if (m.type === "trade") store.updateTrade(msg as TradeMessage);
-      else if (m.type === "dom_snapshot") store.updateDom(msg as DomSnapshotMessage);
+      else if (m.type === "dom_snapshot")
+        store.updateDom(msg as DomSnapshotMessage);
       else if (m.type === "wall_add") store.addWall(msg as WallAddMessage);
-      else if (m.type === "wall_remove") store.removeWall(msg as WallRemoveMessage);
+      else if (m.type === "wall_remove")
+        store.removeWall(msg as WallRemoveMessage);
       else if (m.type === "daily") store.updateDaily(msg as DailyMessage);
     }
   } catch {
@@ -47,12 +78,28 @@ function handleMessage(data: unknown, store: ReturnType<typeof useMarketStore.ge
   }
 }
 
-export function useWebSocket(): void {
+/** Quando false (ex.: Tauri antes do distributor subir), não tenta conectar; evita erro "closed before connection established". */
+export function useWebSocket(enableConnection: boolean = true): void {
   const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
   const backoffRef = useRef(INITIAL_BACKOFF_MS);
 
   useEffect(() => {
+    if (!enableConnection) {
+      if (wsRef.current) {
+        wsRef.current.close();
+        wsRef.current = null;
+      }
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+      useMarketStore.getState().setWsStatus("disconnected");
+      return;
+    }
+
     const connect = () => {
       const store = useMarketStore.getState();
       store.setWsStatus("connecting");
@@ -64,6 +111,26 @@ export function useWebSocket(): void {
       ws.onopen = () => {
         backoffRef.current = INITIAL_BACKOFF_MS;
         store.setWsStatus("connected");
+        // #region agent log
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useWebSocket.ts:onopen",
+              message: "ws_connected",
+              data: { url },
+              timestamp: Date.now(),
+              hypothesisId: "H5",
+            }),
+          },
+        ).catch(() => {});
+        // #endregion
       };
 
       ws.onmessage = (ev) => {
@@ -73,7 +140,26 @@ export function useWebSocket(): void {
       ws.onclose = () => {
         wsRef.current = null;
         store.setWsStatus("disconnected");
-
+        // #region agent log
+        fetch(
+          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Debug-Session-Id": "5ad9d4",
+            },
+            body: JSON.stringify({
+              sessionId: "5ad9d4",
+              location: "useWebSocket.ts:onclose",
+              message: "ws_closed",
+              data: { marketMessageCount },
+              timestamp: Date.now(),
+              hypothesisId: "H5",
+            }),
+          },
+        ).catch(() => {});
+        // #endregion
         const delay = Math.min(backoffRef.current, MAX_BACKOFF_MS);
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
 
@@ -97,5 +183,5 @@ export function useWebSocket(): void {
         wsRef.current = null;
       }
     };
-  }, []);
+  }, [enableConnection]);
 }
