@@ -146,7 +146,8 @@ void PROFIT_STDCALL trade_callback_v2(
     if (!g_queue || !g_translate_trade) return;
     profit::TConnectorTrade trade{};
     trade.Version = 0;
-    if (g_translate_trade(pTrade, &trade)) {
+    int32_t tr_result = g_translate_trade(pTrade, &trade);
+    if (tr_result == profit::NL_OK) {
         if (g_first_trade.exchange(false))
             std::cerr << "[Profit] First TRADE for " << ticker
                       << " price=" << trade.Price << " qty=" << trade.Quantity

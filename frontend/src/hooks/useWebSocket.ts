@@ -24,9 +24,6 @@ function getWsUrl(): string {
   return `${protocol}//${host}/ws`;
 }
 
-const MARKET_LOG_MAX = 5;
-let marketMessageCount = 0;
-
 function handleMessage(
   data: unknown,
   store: ReturnType<typeof useMarketStore.getState>,
@@ -42,29 +39,6 @@ function handleMessage(
 
     if (msg.topic === "market") {
       const m = msg as { type: string; buy?: unknown[]; sell?: unknown[] };
-      marketMessageCount += 1;
-      // #region agent log
-      if (marketMessageCount <= MARKET_LOG_MAX) {
-        fetch(
-          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Debug-Session-Id": "5ad9d4",
-            },
-            body: JSON.stringify({
-              sessionId: "5ad9d4",
-              location: "useWebSocket.ts:handleMessage",
-              message: "market_message",
-              data: { type: m.type, count: marketMessageCount },
-              timestamp: Date.now(),
-              hypothesisId: "H4",
-            }),
-          },
-        ).catch(() => {});
-      }
-      // #endregion
       if (m.type === "trade") store.updateTrade(msg as TradeMessage);
       else if (m.type === "dom_snapshot")
         store.updateDom(msg as DomSnapshotMessage);
@@ -111,26 +85,6 @@ export function useWebSocket(enableConnection: boolean = true): void {
       ws.onopen = () => {
         backoffRef.current = INITIAL_BACKOFF_MS;
         store.setWsStatus("connected");
-        // #region agent log
-        fetch(
-          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Debug-Session-Id": "5ad9d4",
-            },
-            body: JSON.stringify({
-              sessionId: "5ad9d4",
-              location: "useWebSocket.ts:onopen",
-              message: "ws_connected",
-              data: { url },
-              timestamp: Date.now(),
-              hypothesisId: "H5",
-            }),
-          },
-        ).catch(() => {});
-        // #endregion
       };
 
       ws.onmessage = (ev) => {
@@ -140,26 +94,6 @@ export function useWebSocket(enableConnection: boolean = true): void {
       ws.onclose = () => {
         wsRef.current = null;
         store.setWsStatus("disconnected");
-        // #region agent log
-        fetch(
-          "http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448",
-          {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "X-Debug-Session-Id": "5ad9d4",
-            },
-            body: JSON.stringify({
-              sessionId: "5ad9d4",
-              location: "useWebSocket.ts:onclose",
-              message: "ws_closed",
-              data: { marketMessageCount },
-              timestamp: Date.now(),
-              hypothesisId: "H5",
-            }),
-          },
-        ).catch(() => {});
-        // #endregion
         const delay = Math.min(backoffRef.current, MAX_BACKOFF_MS);
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
 
