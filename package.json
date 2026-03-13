@@ -1,0 +1,8 @@
+{
+  "name": "plataforma-quantitativa-monorepo",
+  "private": true,
+  "description": "Plataforma Quantitativa - raiz do repositório",
+  "scripts": {
+    "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-dev.ps1"
+  }
+}

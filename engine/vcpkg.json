@@ -1,0 +1,9 @@
+{
+  "name": "plataforma-quantitativa-engine",
+  "version": "1.0.0",
+  "description": "C++ Engine for Profit DLL bridge",
+  "dependencies": [
+    "cppzmq",
+    "nlohmann-json"
+  ]
+}

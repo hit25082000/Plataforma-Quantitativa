@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+
+# Rust build artifacts
+app/src-tauri/target/
+
+# C++/CMake build artifacts
+engine/build/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+*.spec
+
+# Distributor build outputs
+distributor/build/
+distributor/dist/
+distributor/__pycache__/
+
+# Frontend build
+frontend/dist/
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# IDE / Editor
+.vs/
+*.suo
+*.user
+*.sln.docstates
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.DS_Store
+
+# C# build artifacts
+**/obj/
+**/bin/Debug/
+**/bin/Release/
+
+# Debug symbols
+*.pdb
+
+# Tauri
+WixTools/

@@ -1,0 +1,53 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Plataforma Quantitativa",
+  "version": "0.1.0",
+  "identifier": "com.plataforma.quantitativa",
+  "build": {
+    "beforeDevCommand": "cd ../frontend && npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "cd ../frontend && npm run build",
+    "frontendDist": "../../frontend/dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Plataforma Quantitativa",
+        "width": 1400,
+        "height": 900,
+        "resizable": true,
+        "fullscreen": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self' ipc: http://ipc.localhost; media-src 'self' asset: https://asset.localhost",
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "startMenuFolder": "Plataforma Quantitativa"
+      }
+    },
+    "resources": [
+      "resources/engine.exe",
+      "resources/distributor.exe",
+      "resources/ProfitDLL.dll",
+      "resources/libzmq-mt-4_3_5.dll",
+      "resources/sounds/wall.wav",
+      "resources/sounds/breakout.wav"
+    ],
+    "shortDescription": "Plataforma de análise de microestrutura B3",
+    "longDescription": "Plataforma desktop de análise de microestrutura de mercado (B3): processa livro de ofertas e fluxo de ordens em tempo real, disparando alertas táticos baseados em 5 regras quantitativas."
+  },
+  "plugins": {}
+}
