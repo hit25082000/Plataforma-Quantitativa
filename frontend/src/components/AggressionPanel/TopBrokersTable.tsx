@@ -1,5 +1,9 @@
-import { useMarketStore } from "../../store/marketStore";
+import { AGGRESSION_STEP, useMarketStore } from "../../store/marketStore";
 import { formatQty } from "../../utils/formatters";
+
+function roundToStep(value: number, step: number): number {
+  return Math.round(value / step) * step;
+}
 import { isTauri } from "../../utils/tauri";
 
 function getTopN(
@@ -38,7 +42,7 @@ export function TopBrokersTable() {
             topBuyers.map(({ agentId, qty }) => (
               <div key={agentId} className="flex justify-between">
                 <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-buy">{formatQty(qty)} lotes</span>
+                <span className="text-neon-buy">{formatQty(roundToStep(qty, AGGRESSION_STEP))} lotes</span>
               </div>
             ))
           )}
@@ -53,7 +57,7 @@ export function TopBrokersTable() {
             topSellers.map(({ agentId, qty }) => (
               <div key={agentId} className="flex justify-between">
                 <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-sell">{formatQty(qty)} lotes</span>
+                <span className="text-neon-sell">{formatQty(roundToStep(qty, AGGRESSION_STEP))} lotes</span>
               </div>
             ))
           )}

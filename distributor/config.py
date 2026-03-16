@@ -3,6 +3,7 @@
 import os
 
 ZMQ_ADDRESS = "tcp://localhost:5555"
+ZMQ_SYNC_ADDRESS = "tcp://localhost:5557"
 WS_PORT = int(os.environ.get("WS_PORT", "8000"))
 WS_HOST = "127.0.0.1"  # apenas localhost (single machine)
 DOM_THROTTLE_MS = 100  # máx 10 dom_snapshots/s para o frontend

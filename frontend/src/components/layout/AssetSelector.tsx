@@ -16,7 +16,18 @@ const AVAILABLE_TICKERS = [
   { symbol: "BBDC4",  exchange: "BOVESPA", label: "Bradesco PN (BBDC4)" },
   { symbol: "B3SA3",  exchange: "BOVESPA", label: "B3 ON (B3SA3)" },
   { symbol: "ABEV3",  exchange: "BOVESPA", label: "Ambev ON (ABEV3)" },
+  { symbol: "BOVA11", exchange: "BOVESPA", label: "ETF BOVA11" },
 ];
+
+function isEngineNotListening(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("5556") ||
+    m.includes("timed out") ||
+    m.includes("connection refused") ||
+    m.includes("escutando")
+  );
+}
 
 interface AssetSelectorProps {
   currentTicker: string;
@@ -56,19 +67,50 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
 
     if (isTauri()) {
       setAssetSwitchStatus("switching");
-      clearMarketData();
-      try {
-        const result = await invoke<{ success: boolean; message: string }>("set_active_asset", {
+      const trySwitch = () =>
+        invoke<{ success: boolean; message: string }>("set_active_asset", {
           ticker: ticker.symbol,
           exchange: ticker.exchange,
         });
-        setAssetSwitchStatus(result.success ? "active" : "error");
-        if (!result.success) {
-          console.warn("Troca de ativo:", result.message);
+
+      try {
+        let result = await trySwitch();
+        if (!result.success && isEngineNotListening(result.message)) {
+          setAssetSwitchStatus("switching", "Engine não estava rodando. Iniciando…");
+          try {
+            await invoke("spawn_engine");
+          } catch {
+            // Pode falhar se engine já está em execução (ou processo morto será substituído)
+          }
+          const maxAttempts = 15;
+          const delayMs = 2000;
+          for (let i = 0; i < maxAttempts; i++) {
+            await new Promise((r) => setTimeout(r, delayMs));
+            result = await trySwitch();
+            if (result.success) break;
+            if (!isEngineNotListening(result.message)) break;
+          }
         }
+        if (result.success) clearMarketData();
+        setAssetSwitchStatus(result.success ? "active" : "error", result.message);
+        if (!result.success) console.warn("Troca de ativo:", result.message);
       } catch (e) {
-        setAssetSwitchStatus("error");
+        setAssetSwitchStatus("error", String(e));
         console.warn("Erro ao trocar ativo:", e);
+      }
+    } else {
+      setAssetSwitchStatus("switching");
+      try {
+        const res = await fetch("/api/set-active-asset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ticker: ticker.symbol, exchange: ticker.exchange }),
+        });
+        const result = await res.json().catch(() => ({ success: false, message: "Resposta inválida" }));
+        if (result.success) clearMarketData();
+        setAssetSwitchStatus(result.success ? "active" : "error", result.message ?? "");
+      } catch (e) {
+        setAssetSwitchStatus("error", String(e));
       }
     }
   };

@@ -12,6 +12,7 @@ from config import (
     WS_HOST,
     WS_PORT,
     ZMQ_ADDRESS,
+    ZMQ_SYNC_ADDRESS,
 )
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
@@ -37,12 +38,15 @@ if __name__ == "__main__":
     manager = ConnectionManager()
     router = MessageRouter(manager, DOM_THROTTLE_MS)
     consumer = ZmqConsumer(ZMQ_ADDRESS, queue)
+    consumer_sync = ZmqConsumer(ZMQ_SYNC_ADDRESS, queue)
 
     init_app(manager, consumer)
 
     @app.on_event("startup")
     async def startup() -> None:
-        consumer.start(loop=asyncio.get_running_loop())
+        loop = asyncio.get_running_loop()
+        consumer.start(loop=loop)
+        consumer_sync.start(loop=loop)
         asyncio.create_task(consume_loop(queue, router))
 
     try:

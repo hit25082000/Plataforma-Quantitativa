@@ -5,6 +5,9 @@ import type {
   AlertMessage,
   DailyMessage,
   DomSnapshotMessage,
+  FlowInversionMessage,
+  MacdSignalMessage,
+  SyncMessage,
   TradeMessage,
   WallAddMessage,
   WallRemoveMessage,
@@ -12,6 +15,14 @@ import type {
 } from "../types/messages";
 
 const MAX_BACKOFF_MS = 30000;
+/** Intervalo mínimo entre o mesmo alerta (ticker|regra|direção) para evitar spam e duplicidade */
+const ALERT_INTERVAL_MS = 60 * 1000;
+
+const lastAlertByKey = new Map<string, number>();
+
+function getAlertCooldownKey(alert: AlertMessage): string {
+  return `${alert.ticker}|${alert.rule}|${alert.direction}`;
+}
 const INITIAL_BACKOFF_MS = 1000;
 const WS_URL_TAURI = "ws://127.0.0.1:8000/ws";
 
@@ -33,7 +44,18 @@ function handleMessage(
     const msg = JSON.parse(data) as WsMessage;
 
     if (msg.topic === "alert") {
-      store.addAlert(msg as AlertMessage);
+      const a = msg as AlertMessage;
+      const key = getAlertCooldownKey(a);
+      const now = Date.now();
+      const last = lastAlertByKey.get(key);
+      if (last != null && now - last < ALERT_INTERVAL_MS) return;
+      lastAlertByKey.set(key, now);
+      store.addAlert(a);
+      return;
+    }
+
+    if (msg.topic === "sync") {
+      store.updateSync(msg as SyncMessage);
       return;
     }
 
@@ -46,6 +68,10 @@ function handleMessage(
       else if (m.type === "wall_remove")
         store.removeWall(msg as WallRemoveMessage);
       else if (m.type === "daily") store.updateDaily(msg as DailyMessage);
+      else if (m.type === "flow_inversion")
+        store.addFlowInversion(msg as FlowInversionMessage);
+      else if (m.type === "macd_signal")
+        store.updateMacd(msg as MacdSignalMessage);
     }
   } catch {
     // ignore parse errors
@@ -96,7 +122,6 @@ export function useWebSocket(enableConnection: boolean = true): void {
         store.setWsStatus("disconnected");
         const delay = Math.min(backoffRef.current, MAX_BACKOFF_MS);
         backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
-
         reconnectTimeoutRef.current = setTimeout(connect, delay);
       };
 

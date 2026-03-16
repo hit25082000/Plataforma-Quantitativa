@@ -102,7 +102,7 @@ void MockFeed::run() {
     build_initial_book();
 
     while (running_.load()) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
         if (!running_.load()) break;
 
         mid_price += drift_dist(rng) * TICK_SIZE;

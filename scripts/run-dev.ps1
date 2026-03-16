@@ -29,8 +29,19 @@ function Kill-StaleProcesses {
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         }
     }
+
+    $netstat5557 = netstat -ano 2>$null | Select-String ":5557\s" | Select-String "LISTENING"
+    foreach ($line in $netstat5557) {
+        if ($line -match '\s(\d+)$') {
+            $procId = [int]$Matches[1]
+            Write-Host "Matando processo na porta 5557 (sync_monitor, PID $procId)..." -ForegroundColor Yellow
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
+$syncMonitorProcess = $null
+$distributorProcess = $null
 try {
     Kill-StaleProcesses
 
@@ -94,15 +105,39 @@ try {
     if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
     Pop-Location
 
-    # Start Tauri app (Tauri manages engine + distributor lifecycle via spawn_engine/spawn_distributor)
+    # Start distributor (Python) so WS :8000 is up when Vite/Tauri load (evita ECONNREFUSED no proxy)
+    Write-Host "=== Iniciando distributor (em background) ===" -ForegroundColor Cyan
+    $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 1200
+
+    # Install and start sync_monitor (hidden, no terminal)
+    $syncMonitorDir = Join-Path $root "sync_monitor"
+    if (Test-Path (Join-Path $syncMonitorDir "main.py")) {
+        Write-Host "=== Instalando e iniciando sync_monitor (em background) ===" -ForegroundColor Cyan
+        Push-Location $syncMonitorDir
+        $prevErrorAction = $ErrorActionPreference
+        $ErrorActionPreference = "Continue"
+        pip install -r requirements.txt -q 2>&1 | Out-Null
+        $ErrorActionPreference = $prevErrorAction
+        $syncMonitorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $syncMonitorDir -WindowStyle Hidden -PassThru
+        Pop-Location
+        Start-Sleep -Milliseconds 800
+    }
+
+    # Start Tauri app (Tauri manages engine; distributor e sync_monitor ja rodando em background)
     Write-Host "=== Iniciando app Tauri ===" -ForegroundColor Cyan
-    Write-Host "O Tauri gerencia engine e distributor automaticamente usando as credenciais salvas em Configuracoes." -ForegroundColor Gray
+    Write-Host "Distributor e sync_monitor ja em background. Inicie o engine pelas Configuracoes." -ForegroundColor Gray
     Push-Location (Join-Path $root "app")
     npm run dev
     $exitCode = $LASTEXITCODE
     Pop-Location
     exit $exitCode
 } finally {
-    # When Tauri exits, kill any leftover engine/distributor
+    if ($distributorProcess -and -not $distributorProcess.HasExited) {
+        Stop-Process -Id $distributorProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($syncMonitorProcess -and -not $syncMonitorProcess.HasExited) {
+        Stop-Process -Id $syncMonitorProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     Kill-StaleProcesses
 }

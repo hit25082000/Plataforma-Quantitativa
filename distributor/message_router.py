@@ -5,10 +5,15 @@ import logging
 import time
 from typing import TYPE_CHECKING
 
+from candle_macd import CandleMacd
+from flow_tracker import FlowTracker
+from stats_logger import StatsLogger
+
 if TYPE_CHECKING:
     from connection_manager import ConnectionManager
 
 logger = logging.getLogger(__name__)
+
 
 class MessageRouter:
     """Routes messages from ZMQ to WebSocket clients with validation and throttle."""
@@ -18,6 +23,9 @@ class MessageRouter:
         self._throttle_ms = throttle_ms
         self._last_dom_ts: float = 0.0
         self._msg_count: int = 0
+        self._flow_tracker = FlowTracker()
+        self._candle_macd = CandleMacd()
+        self._stats_logger = StatsLogger()
 
     async def route(self, raw: str) -> None:
         """Deserialize, validate, apply throttle, and broadcast if valid."""
@@ -38,15 +46,32 @@ class MessageRouter:
         topic = msg.get("topic")
         msg_type = msg.get("type", "")
 
-        if topic == "alert":
-            # Alertas nunca são throttled
+        if topic == "sync":
+            logger.debug("Broadcasting sync message to WebSocket clients")
             await self._manager.broadcast(raw)
             return
 
+        if topic == "alert":
+            await self._manager.broadcast(raw)
+            self._stats_logger.log(msg)
+            return
+
         if topic == "market":
+            if msg_type == "trade":
+                inversions = self._flow_tracker.on_trade(msg)
+                for inv in inversions:
+                    inv_raw = json.dumps(inv)
+                    await self._manager.broadcast(inv_raw)
+                    self._stats_logger.log(inv)
+                macd_msg = self._candle_macd.on_trade(msg)
+                if macd_msg is not None:
+                    await self._manager.broadcast(json.dumps(macd_msg))
+
             if self._should_throttle(msg_type):
                 return
             await self._manager.broadcast(raw)
+            if msg_type in ("trade", "flow_inversion"):
+                self._stats_logger.log(msg)
             return
 
         logger.warning("Unknown topic %r, discarded", topic)

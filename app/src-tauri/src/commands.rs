@@ -9,8 +9,6 @@ use tauri::Manager;
 use tauri::State;
 
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
-const HEALTH_TIMEOUT_SECS: u64 = 30;
-const POLL_INTERVAL_MS: u64 = 500;
 
 #[derive(Default)]
 pub struct ChildProcesses {
@@ -168,8 +166,12 @@ pub async fn spawn_engine(
     }
 
     let mut engine_guard = processes.engine.lock().map_err(|e| e.to_string())?;
-    if engine_guard.is_some() {
-        return Err("Engine já está em execução".to_string());
+    if let Some(ref mut child) = *engine_guard {
+        if child.try_wait().ok().flatten().is_some() {
+            *engine_guard = None;
+        } else {
+            return Err("Engine já está em execução".to_string());
+        }
     }
     let engine_log_path = app
         .path()
@@ -249,6 +251,11 @@ pub async fn spawn_distributor(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    // Se já há processo na porta 8000 (ex.: iniciado pelo script run-dev), não spawnar de novo
+    if check_health().await.unwrap_or(false) {
+        return Ok(());
+    }
+
     let mut dist_guard = processes.distributor.lock().map_err(|e| e.to_string())?;
     if dist_guard.is_some() {
         return Err("Distributor já está em execução".to_string());
@@ -406,16 +413,6 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
         subscribe_offer_book_ret,
         message,
     })
-}
-
-/// Maps display exchange name to Profit DLL bolsa code (UI/config).
-fn exchange_to_bolsa(exchange: &str) -> &str {
-    match exchange.to_uppercase().as_str() {
-        "BMF" => "F",
-        "BOVESPA" => "B",
-        "SIM" => "SIM", // Mock asset
-        _ => "F",
-    }
 }
 
 /// Bolsa enviada ao engine/DLL.

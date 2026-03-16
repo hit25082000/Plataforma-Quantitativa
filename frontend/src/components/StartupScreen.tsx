@@ -14,6 +14,9 @@ export function StartupScreen({ status, error }: StartupScreenProps) {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-bg/95 backdrop-blur-sm">
       <div className="rounded-lg border border-border bg-grid p-8 max-w-md text-center">
+        {status === "idle" && (
+          <p className="text-text">Conectando...</p>
+        )}
         {status === "checking" && (
           <p className="text-text">Verificando serviços...</p>
         )}

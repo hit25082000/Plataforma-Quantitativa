@@ -4,6 +4,12 @@ import { useSettingsStore } from "../store/settingsStore";
 import { isTauri } from "../utils/tauri";
 import type { AlertMessage } from "../types/messages";
 
+const ALERT_COOLDOWN_MS = 30 * 1000;
+
+function getAlertCooldownKey(alert: AlertMessage): string {
+  return `${alert.ticker}|${alert.rule}|${alert.direction}`;
+}
+
 function getNotificationTitle(alert: AlertMessage): string {
   if (alert.rule === 5 && alert.conviction === "high") return "Alta Convicção";
   if (alert.rule === 2) return "Muralha Detectada";
@@ -28,6 +34,7 @@ function getSoundForAlert(alert: AlertMessage): "wall" | "breakout" {
 export function useAlerts() {
   const alerts = useMarketStore((s) => s.alerts);
   const prevLenRef = useRef(0);
+  const lastNotifiedByKeyRef = useRef<Map<string, number>>(new Map());
   const notificationsEnabled = useSettingsStore((s) => s.notificationsEnabled);
   const soundsEnabled = useSettingsStore((s) => s.soundsEnabled);
   const volume = useSettingsStore((s) => s.volume) / 100;
@@ -36,6 +43,18 @@ export function useAlerts() {
     if (alerts.length <= prevLenRef.current) return;
     const newAlert = alerts[0];
     prevLenRef.current = alerts.length;
+
+    const key = getAlertCooldownKey(newAlert);
+    const now = Date.now();
+    const last = lastNotifiedByKeyRef.current.get(key);
+    if (last != null && now - last < ALERT_COOLDOWN_MS) return;
+
+    lastNotifiedByKeyRef.current.set(key, now);
+    const toDelete: string[] = [];
+    for (const [k, t] of lastNotifiedByKeyRef.current.entries()) {
+      if (now - t > 60000) toDelete.push(k);
+    }
+    toDelete.forEach((k) => lastNotifiedByKeyRef.current.delete(k));
 
     if (notificationsEnabled) {
       if (isTauri()) {

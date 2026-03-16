@@ -11,6 +11,8 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
   const wsStatus = useMarketStore((s) => s.wsStatus);
   const selectedTicker = useMarketStore((s) => s.selectedTicker);
   const vwap = useMarketStore((s) => s.vwap);
+  const assetSwitchStatus = useMarketStore((s) => s.assetSwitchStatus);
+  const assetSwitchMessage = useMarketStore((s) => s.assetSwitchMessage);
   const [time, setTime] = useState(formatTs(new Date().toISOString()));
 
   useEffect(() => {
@@ -35,6 +37,11 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         <span className={cfg.color}>{cfg.label}</span>
       </span>
       <AssetSelector currentTicker={selectedTicker} />
+      {assetSwitchStatus === "error" && assetSwitchMessage && (
+        <span className="text-amber-400 text-xs max-w-[280px] truncate" title={assetSwitchMessage}>
+          {assetSwitchMessage}
+        </span>
+      )}
       <span className="text-text/80">VWAP: {vwap > 0 ? formatPrice(vwap) : "—"}</span>
       <span className="text-text/60 ml-auto flex items-center gap-2">
         {onOpenSettings && (

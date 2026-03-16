@@ -77,10 +77,40 @@ export interface DailyMessage {
   ts: string;
 }
 
+export interface SyncMessage {
+  topic: "sync";
+  in_sync: boolean;
+  variations: Record<string, number>;
+  ts: string;
+}
+
+export interface FlowInversionMessage {
+  topic: "market";
+  type: "flow_inversion";
+  agent_name: string;
+  previous_delta: number;
+  current_delta: number;
+  ts: string;
+}
+
+export interface MacdSignalMessage {
+  topic: "market";
+  type: "macd_signal";
+  value: number;
+  signal_line: number;
+  histogram: number;
+  direction: "buy" | "sell";
+  candle_close: number;
+  ts: string;
+}
+
 export type WsMessage =
   | AlertMessage
   | TradeMessage
   | DomSnapshotMessage
   | WallAddMessage
   | WallRemoveMessage
-  | DailyMessage;
+  | DailyMessage
+  | SyncMessage
+  | FlowInversionMessage
+  | MacdSignalMessage;

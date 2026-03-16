@@ -40,6 +40,20 @@ std::wstring to_wide(const char* s) {
 }
 #endif
 
+namespace {
+constexpr int32_t MOCK_AGENT_BASE = 1000;
+const char* mock_agent_short_names[] = {
+    "UBS", "BTG", "GOLDM", "XP", "ITAU", "CS", "MS", "CITI", "BARCL", "JPM"
+};
+constexpr size_t MOCK_AGENT_COUNT = sizeof(mock_agent_short_names) / sizeof(mock_agent_short_names[0]);
+
+std::string get_mock_agent_short_name(int32_t id) {
+    int idx = (id - MOCK_AGENT_BASE) % static_cast<int>(MOCK_AGENT_COUNT);
+    if (idx < 0 || idx >= static_cast<int>(MOCK_AGENT_COUNT)) return std::to_string(id);
+    return mock_agent_short_names[idx];
+}
+} // namespace
+
 int main(int argc, char* argv[]) {
     (void)argc;
     (void)argv;
@@ -134,8 +148,14 @@ int main(int argc, char* argv[]) {
 
     zmq_publisher::ZmqPublisher pub(queue, dom, trade_proc, config::zmq_address, ticker,
                                     &alert_bus, &dispatcher, &agent_ranking,
-                                    [&bridge](int32_t id) { return bridge.get_agent_name(id); },
-                                    [&bridge](int32_t id) { return bridge.get_agent_short_name(id); });
+                                    [&bridge, &ticker](int32_t id) {
+                                        if (ticker == "TESTE") return std::string(get_mock_agent_short_name(id));
+                                        return bridge.get_agent_name(id);
+                                    },
+                                    [&bridge, &ticker](int32_t id) {
+                                        if (ticker == "TESTE") return get_mock_agent_short_name(id);
+                                        return bridge.get_agent_short_name(id);
+                                    });
     pub.start();
 
     // Wait briefly for ZMQ bind to complete and verify it succeeded
