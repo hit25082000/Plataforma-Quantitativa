@@ -25,6 +25,27 @@ def _ema(values: list[float], period: int) -> float:
     return ema_val
 
 
+def _calc_rsi_wilder(closes: list[float], period: int = 14) -> float:
+    """RSI Wilder (period). Needs at least period+1 closes. Returns 0-100."""
+    if len(closes) < period + 1:
+        return 50.0
+    last = closes[-(period + 1) :]
+    avg_gain = 0.0
+    avg_loss = 0.0
+    for i in range(1, period + 1):
+        change = last[i] - last[i - 1]
+        if change > 0:
+            avg_gain += change
+        else:
+            avg_loss += -change
+    avg_gain /= period
+    avg_loss /= period
+    if avg_loss < 1e-10:
+        return 100.0
+    rs = avg_gain / avg_loss
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
 def _calc_macd(closes: list[float]) -> tuple[float, float, float]:
     """Returns (macd_line, signal_line, histogram)."""
     if len(closes) < 26:
@@ -112,6 +133,8 @@ class CandleMacd:
                     "candle_close": self._current.c,
                     "ts": ts_str,
                 }
+                if len(self._closes) >= 15:
+                    result_msg["rsi"] = round(_calc_rsi_wilder(self._closes, 14), 2)
 
         self._current_bucket = bucket
         self._current = Candle(o=price, h=price, l=price, c=price, v=qty)

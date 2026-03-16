@@ -102,6 +102,7 @@ export interface MacdSignalMessage {
   direction: "buy" | "sell";
   candle_close: number;
   ts: string;
+  rsi?: number;
 }
 
 export type WsMessage =

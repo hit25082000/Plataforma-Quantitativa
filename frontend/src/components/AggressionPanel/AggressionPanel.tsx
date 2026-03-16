@@ -1,5 +1,6 @@
 import { BuyVsSellBar } from "./BuyVsSellBar";
 import { AggressionChart } from "./AggressionChart";
+import { IfrChart } from "./IfrChart";
 import { TopBrokersTable } from "./TopBrokersTable";
 
 export function AggressionPanel() {
@@ -14,6 +15,10 @@ export function AggressionPanel() {
         <div>
           <h3 className="text-xs font-semibold text-text/60 mb-2">Histórico</h3>
           <AggressionChart />
+        </div>
+        <div>
+          <h3 className="text-xs font-semibold text-text/60 mb-2">IFR 30min</h3>
+          <IfrChart />
         </div>
       </div>
     </div>
