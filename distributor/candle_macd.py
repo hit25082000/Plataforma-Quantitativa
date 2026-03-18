@@ -133,8 +133,18 @@ class CandleMacd:
                     "candle_close": self._current.c,
                     "ts": ts_str,
                 }
-                if len(self._closes) >= 15:
-                    result_msg["rsi"] = round(_calc_rsi_wilder(self._closes, 14), 2)
+                if len(self._closes) >= 10:
+                    result_msg["rsi"] = round(_calc_rsi_wilder(self._closes, 9), 2)
+                # #region agent log
+                try:
+                    import json
+                    from pathlib import Path
+                    _log_path = Path(__file__).resolve().parent.parent / "debug-09d844.log"
+                    with open(_log_path, "a") as f:
+                        f.write(json.dumps({"sessionId": "09d844", "location": "candle_macd.py:result_msg", "message": "macd_signal emitted", "data": {"ncloses": len(self._closes), "has_rsi": "rsi" in result_msg, "rsi": result_msg.get("rsi")}, "hypothesisId": "H3", "timestamp": __import__("time").time() * 1000}) + "\n")
+                except Exception:
+                    pass
+                # #endregion
 
         self._current_bucket = bucket
         self._current = Candle(o=price, h=price, l=price, c=price, v=qty)

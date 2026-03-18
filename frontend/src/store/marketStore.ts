@@ -15,6 +15,7 @@ const MAX_ALERTS = 50;
 const MAX_AGGR_HISTORY = 50;
 const MAX_FLOW_INVERSIONS = 30;
 const MAX_MACD_HISTORY = 50;
+const MAX_PRICE_CLOSES = 50;
 
 /** Passo de agressão para o painel: indicadores e histórico atualizam de 100 em 100 */
 export const AGGRESSION_STEP = 100;
@@ -87,6 +88,9 @@ interface MarketStore {
   macdHistory: MacdSignalMessage[];
   macdDirection: "buy" | "sell" | null;
   updateMacd: (msg: MacdSignalMessage) => void;
+
+  /** Últimos preços (close) por trade, para fallback de IFR quando não há macd_signal */
+  priceCloses: number[];
 }
 
 export const useMarketStore = create<MarketStore>((set) => ({
@@ -133,6 +137,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       flowInversions: [],
       macdHistory: [],
       macdDirection: null,
+      priceCloses: [],
       streamingTicker: "",
     }),
 
@@ -219,6 +224,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
         ? [...state.aggrHistory, cumulativeNet].slice(-MAX_AGGR_HISTORY)
         : state.aggrHistory;
 
+      const priceCloses = [...(state.priceCloses ?? []), msg.price].slice(
+        -MAX_PRICE_CLOSES,
+      );
       return {
         lastPrice: msg.price,
         vwap: msg.vwap,
@@ -230,6 +238,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
         agentSellTotals: agentSell,
         agentNames,
         agentShortNames,
+        priceCloses,
         streamingTicker: msg.ticker,
       };
     }),
@@ -273,6 +282,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   macdHistory: [],
   macdDirection: null,
+  priceCloses: [],
   updateMacd: (msg) =>
     set((state) => ({
       macdHistory: [...state.macdHistory, msg].slice(-MAX_MACD_HISTORY),

@@ -70,8 +70,13 @@ function handleMessage(
       else if (m.type === "daily") store.updateDaily(msg as DailyMessage);
       else if (m.type === "flow_inversion")
         store.addFlowInversion(msg as FlowInversionMessage);
-      else if (m.type === "macd_signal")
+      else if (m.type === "macd_signal") {
+        // #region agent log
+        const macdMsg = msg as MacdSignalMessage & { rsi?: number };
+        fetch('http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'09d844'},body:JSON.stringify({sessionId:'09d844',location:'useWebSocket.ts:macd_signal',message:'macd_signal received',data:{hasRsi:macdMsg.rsi!=null,rsi:macdMsg.rsi},hypothesisId:'H1-H2-H5',timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
         store.updateMacd(msg as MacdSignalMessage);
+      }
     }
   } catch {
     // ignore parse errors
