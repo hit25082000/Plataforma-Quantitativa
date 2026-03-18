@@ -1,5 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
+import { WidgetRoot } from "./components/WidgetRoot";
 import { SettingsPanel } from "./components/Settings/SettingsPanel";
 import { StartupScreen } from "./components/StartupScreen";
 import { useAlerts } from "./hooks/useAlerts";
@@ -7,7 +8,7 @@ import { useTauriStartup } from "./hooks/useTauriStartup";
 import { useWebSocket } from "./hooks/useWebSocket";
 import { isTauri } from "./utils/tauri";
 
-function App() {
+function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const { status, error, configNeeded } = useTauriStartup();
   useWebSocket(isTauri() ? status === "ready" : true);
@@ -34,6 +35,50 @@ function App() {
       {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
     </>
   );
+}
+
+function WidgetWindow({ widgetId }: { widgetId: string }) {
+  useWebSocket(true);
+  useAlerts();
+  return (
+    <div className="h-screen flex flex-col">
+      <WidgetRoot widgetId={widgetId} />
+    </div>
+  );
+}
+
+function App() {
+  const [widgetId, setWidgetId] = useState<string | null>(null);
+  const [hasCheckedWindow, setHasCheckedWindow] = useState(false);
+
+  useEffect(() => {
+    if (!isTauri()) {
+      setHasCheckedWindow(true);
+      return;
+    }
+    import("@tauri-apps/api/window").then(({ getCurrentWindow }) => {
+      const w = getCurrentWindow();
+      const label = w.label;
+      if (label.startsWith("widget-")) {
+        setWidgetId(label.replace(/^widget-/, ""));
+      }
+      setHasCheckedWindow(true);
+    });
+  }, []);
+
+  if (isTauri() && !hasCheckedWindow) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-bg text-text/60 text-sm">
+        Carregando…
+      </div>
+    );
+  }
+
+  if (isTauri() && widgetId) {
+    return <WidgetWindow widgetId={widgetId} />;
+  }
+
+  return <AppContent />;
 }
 
 export default App;

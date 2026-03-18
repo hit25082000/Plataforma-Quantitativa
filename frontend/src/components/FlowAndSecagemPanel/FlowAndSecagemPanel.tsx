@@ -2,6 +2,7 @@ import { useEffect, useDeferredValue, useState } from "react";
 import type { SecagemSignal } from "../../hooks/useSecagemDetection";
 import { useSecagemDetection } from "../../hooks/useSecagemDetection";
 import { useMarketStore } from "../../store/marketStore";
+import { OpenAsWidgetButton } from "../OpenAsWidgetButton";
 import { FlowInversionCard } from "./FlowInversionCard";
 import { SecagemSignal as SecagemSignalComponent } from "./SecagemSignal";
 
@@ -52,9 +53,10 @@ export function FlowAndSecagemPanel() {
   return (
     <div className="h-full flex flex-col">
       <section className="flex-[0_0_50%] flex flex-col min-h-0 border-b border-border">
-        <h2 className="px-4 py-2 text-sm font-semibold text-text/80 shrink-0">
-          INVERSÃO DE FLUXO
-        </h2>
+        <div className="px-4 py-2 text-sm font-semibold text-text/80 shrink-0 flex items-center justify-between gap-2">
+          <span>INVERSÃO DE FLUXO</span>
+          <OpenAsWidgetButton widgetId="flow-secagem" />
+        </div>
         <div className="flex-1 overflow-y-auto p-3 space-y-2 min-h-0">
           {deferredFlow.length === 0 ? (
             <p className="text-text/40 text-sm">Nenhuma inversão recente.</p>

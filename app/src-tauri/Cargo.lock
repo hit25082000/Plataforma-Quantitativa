@@ -2623,6 +2623,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-notification",
  "tokio",
+ "url",
 ]
 
 [[package]]

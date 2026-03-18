@@ -25,7 +25,18 @@
       "assetProtocol": {
         "enable": true,
         "scope": ["**"]
-      }
+      },
+      "capabilities": [
+        {
+          "identifier": "window-drag-close",
+          "description": "Permite arrastar e fechar janelas (principal e widgets)",
+          "windows": ["*"],
+          "permissions": [
+            "core:window:allow-close",
+            "core:window:allow-start-dragging"
+          ]
+        }
+      ]
     }
   },
   "bundle": {

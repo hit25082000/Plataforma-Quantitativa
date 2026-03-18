@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -7,6 +8,8 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 use tauri::State;
+use tauri::WebviewUrl;
+use tauri::webview::WebviewWindowBuilder;
 
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
 
@@ -14,6 +17,17 @@ const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
 pub struct ChildProcesses {
     pub engine: Mutex<Option<Child>>,
     pub distributor: Mutex<Option<Child>>,
+}
+
+/// Estado persistido de uma janela de widget (posição e tamanho).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WidgetWindowState {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    #[serde(default)]
+    pub visible: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -28,6 +42,8 @@ pub struct AppConfig {
     pub start_with_windows: Option<bool>,
     pub selected_ticker: Option<String>,
     pub selected_exchange: Option<String>,
+    #[serde(default)]
+    pub widget_windows: Option<HashMap<String, WidgetWindowState>>,
 }
 
 impl Default for AppConfig {
@@ -43,9 +59,25 @@ impl Default for AppConfig {
             start_with_windows: Some(false),
             selected_ticker: Some("WINFUT".to_string()),
             selected_exchange: Some("BMF".to_string()),
+            widget_windows: None,
         }
     }
 }
+
+/// IDs de widgets permitidos (alinhado ao frontend).
+const VALID_WIDGET_IDS: &[&str] = &[
+    "alert-feed",
+    "macd",
+    "flow-secagem",
+    "buy-vs-sell",
+    "top-brokers",
+    "aggression-chart",
+    "ifr-9",
+    "ifr-30min",
+    "ifr-18",
+    "ubs-line",
+    "vwap",
+];
 
 const ENGINE_CONTROL_PORT: u16 = 5556;
 
@@ -482,6 +514,108 @@ pub async fn set_active_asset(
             ),
         }),
     }
+}
+
+#[tauri::command]
+pub async fn create_widget_window(app: tauri::AppHandle, widget_id: String) -> Result<(), String> {
+    if !VALID_WIDGET_IDS.contains(&widget_id.as_str()) {
+        return Err(format!(
+            "Widget id inválido: '{}'. Válidos: {}",
+            widget_id,
+            VALID_WIDGET_IDS.join(", ")
+        ));
+    }
+    let label = format!("widget-{}", widget_id);
+    if let Some(win) = app.get_webview_window(&label) {
+        let _ = win.set_focus();
+        return Ok(());
+    }
+
+    let url = if cfg!(debug_assertions) {
+        let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
+        WebviewUrl::External(u)
+    } else {
+        WebviewUrl::App(PathBuf::from("index.html"))
+    };
+
+    let title = widget_title(&widget_id);
+    let mut config = read_config(app.clone()).await.unwrap_or_default();
+    let state = config
+        .widget_windows
+        .get_or_insert_with(HashMap::new)
+        .get(&widget_id)
+        .cloned();
+
+    let default_width = 400.0;
+    let default_height = 300.0;
+    let (x, y, width, height) = state
+        .map(|s| (s.x, s.y, s.width, s.height))
+        .unwrap_or((100.0, 100.0, default_width, default_height));
+
+    let builder = WebviewWindowBuilder::new(&app, &label, url)
+        .title(&title)
+        .always_on_top(true)
+        .decorations(false)
+        .inner_size(width, height)
+        .position(x, y)
+        .visible(true);
+
+    let window = builder.build().map_err(|e| e.to_string())?;
+
+    let app_handle = app.clone();
+    let widget_id_clone = widget_id.clone();
+    window.on_window_event(move |event| {
+        if matches!(
+            event,
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
+        ) {
+            let app = app_handle.clone();
+            let id = widget_id_clone.clone();
+            let label = format!("widget-{}", id);
+            if let Some(w) = app.get_webview_window(&label) {
+                let pos = w.inner_position().ok();
+                let size = w.inner_size().ok();
+                if let (Some(pos), Some(size)) = (pos, size) {
+                    tauri::async_runtime::spawn(async move {
+                        tokio::time::sleep(Duration::from_millis(250)).await;
+                        let mut cfg = read_config(app.clone()).await.unwrap_or_default();
+                        let map = cfg.widget_windows.get_or_insert_with(HashMap::new);
+                        map.insert(
+                            id,
+                            WidgetWindowState {
+                                x: pos.x as f64,
+                                y: pos.y as f64,
+                                width: size.width as f64,
+                                height: size.height as f64,
+                                visible: true,
+                            },
+                        );
+                        let _ = write_config(app, cfg).await;
+                    });
+                }
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn widget_title(widget_id: &str) -> String {
+    match widget_id {
+        "alert-feed" => "Alert Feed",
+        "macd" => "MACD 30min",
+        "flow-secagem" => "Flow & Secagem",
+        "buy-vs-sell" => "Buy vs Sell",
+        "top-brokers" => "Top Brokers",
+        "aggression-chart" => "Aggression Chart",
+        "ifr-9" => "IFR 9",
+        "ifr-30min" => "IFR 30min",
+        "ifr-18" => "IFR 18",
+        "ubs-line" => "UBS Line",
+        "vwap" => "VWAP",
+        _ => widget_id,
+    }
+    .to_string()
 }
 
 #[tauri::command]

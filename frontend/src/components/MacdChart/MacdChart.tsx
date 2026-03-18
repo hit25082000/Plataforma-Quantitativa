@@ -1,4 +1,5 @@
 import { useMarketStore } from "../../store/marketStore";
+import { OpenAsWidgetButton } from "../OpenAsWidgetButton";
 
 export function MacdChart() {
   const inSync = useMarketStore((s) => s.inSync);
@@ -17,9 +18,10 @@ export function MacdChart() {
 
   return (
     <div className="h-full flex flex-col p-2">
-      <h2 className="text-sm font-semibold text-text/80 border-b border-border pb-1 mb-2 shrink-0">
-        MACD 30min {macdDirection != null && `(${macdDirection})`}
-      </h2>
+      <div className="text-sm font-semibold text-text/80 border-b border-border pb-1 mb-2 shrink-0 flex items-center justify-between gap-2">
+        <span>MACD 30min {macdDirection != null && `(${macdDirection})`}</span>
+        <OpenAsWidgetButton widgetId="macd" />
+      </div>
       <div className="flex-1 flex items-end gap-0.5 min-h-0">
         {macdHistory.length === 0 ? (
           <p className="text-text/40 text-xs self-center">Aguardando dados...</p>

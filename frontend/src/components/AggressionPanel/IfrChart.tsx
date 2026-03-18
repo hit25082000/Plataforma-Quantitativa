@@ -31,6 +31,8 @@ export type IfrChartVariant = "9" | "30min" | "18";
 
 interface IfrChartProps {
   variant: IfrChartVariant;
+  /** Em janela de widget: ocupa toda a altura disponível */
+  fillHeight?: boolean;
 }
 
 function getVariantConfig(variant: IfrChartVariant) {
@@ -44,7 +46,7 @@ function getVariantConfig(variant: IfrChartVariant) {
   }
 }
 
-export function IfrChart({ variant }: IfrChartProps) {
+export function IfrChart({ variant, fillHeight }: IfrChartProps) {
   const config = getVariantConfig(variant);
   const { period, source, emptyLabel } = config;
   const macdHistory = useMarketStore((s) => s.macdHistory);
@@ -77,16 +79,18 @@ export function IfrChart({ variant }: IfrChartProps) {
           : dataFromPrices;
   const showingEmpty = data.length === 0;
 
+  const heightClass = fillHeight ? "h-full min-h-[6rem]" : "h-24";
+
   if (showingEmpty) {
     return (
-      <div className="h-24 min-h-[6rem] w-full flex items-center justify-center rounded border border-border/50 bg-bg/50">
+      <div className={`${heightClass} w-full flex items-center justify-center rounded border border-border/50 bg-bg/50`}>
         <p className="text-text/70 text-xs">{emptyLabel}</p>
       </div>
     );
   }
 
   return (
-    <div className="h-24 w-full">
+    <div className={`${heightClass} w-full`}>
       <ResponsiveContainer width="100%" height="100%">
         <LineChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
           <YAxis domain={[0, 100]} hide width={0} />

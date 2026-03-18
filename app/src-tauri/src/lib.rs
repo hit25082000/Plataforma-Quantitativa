@@ -21,6 +21,7 @@ pub fn run() {
             commands::get_profit_diagnostic,
             commands::set_active_asset,
             commands::open_log_folder,
+            commands::create_widget_window,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
