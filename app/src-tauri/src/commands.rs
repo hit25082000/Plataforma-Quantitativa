@@ -11,12 +11,18 @@ use tauri::State;
 use tauri::WebviewUrl;
 use tauri::webview::WebviewWindowBuilder;
 
+const CONFIG_FILENAME: &str = "config.json";
+const CONFIG_BACKUP_FILENAME: &str = "config.json.bak";
+const CONFIG_TMP_FILENAME: &str = "config.json.tmp";
+const CONFIG_CORRUPT_MSG: &str = "Arquivo de configuração corrompido. Não foi possível ler; alterações não foram salvas.";
+
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
 
 #[derive(Default)]
 pub struct ChildProcesses {
     pub engine: Mutex<Option<Child>>,
     pub distributor: Mutex<Option<Child>>,
+    pub profit_ocr: Mutex<Option<Child>>,
 }
 
 /// Estado persistido de uma janela de widget (posição e tamanho).
@@ -80,11 +86,237 @@ const VALID_WIDGET_IDS: &[&str] = &[
 ];
 
 const ENGINE_CONTROL_PORT: u16 = 5556;
+/// HTTP do serviço OCR (não usar 5557: reservado ao ZMQ do sync_monitor).
+const OCR_SERVICE_URL: &str = "http://127.0.0.1:5558/positions";
+const OCR_STATUS_URL: &str = "http://127.0.0.1:5558/status";
 
 fn get_resources_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
         .resource_dir()
         .map_err(|e| format!("{e}"))
+}
+
+async fn profit_ocr_http_reachable() -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(400))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(OCR_STATUS_URL)
+        .send()
+        .await
+        .map(|r| r.status().is_success())
+        .unwrap_or(false)
+}
+
+/// Garante processo Python do OCR (porta 5558) ao abrir o overlay — evita espera longa no retry do WebSocket.
+async fn ensure_profit_ocr_running(
+    app: tauri::AppHandle,
+    processes: State<'_, ChildProcesses>,
+) -> Result<(), String> {
+    if profit_ocr_http_reachable().await {
+        return Ok(());
+    }
+
+    let spawn_new = {
+        let mut ocr_guard = processes.profit_ocr.lock().map_err(|e| e.to_string())?;
+        match ocr_guard.as_mut() {
+            Some(child) => match child.try_wait().map_err(|e| e.to_string())? {
+                Some(_status) => {
+                    *ocr_guard = None;
+                    true
+                }
+                None => false,
+            },
+            None => true,
+        }
+    };
+
+    if !spawn_new {
+        for _ in 0..50 {
+            if profit_ocr_http_reachable().await {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        return Ok(());
+    }
+
+    let resources = get_resources_dir(&app)?;
+    let res_sub = resources.join("resources");
+    let script = res_sub.join("profit_ocr_service.py");
+    if !script.exists() {
+        return Ok(());
+    }
+
+    let stderr_path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("{e}"))
+        .ok()
+        .map(|d| {
+            let _ = std::fs::create_dir_all(&d);
+            d.join("profit_ocr_stderr.log")
+        });
+
+    let open_stderr = |p: &Option<PathBuf>| -> Stdio {
+        if let Some(path) = p {
+            match std::fs::File::create(path) {
+                Ok(f) => Stdio::from(f),
+                Err(_) => Stdio::null(),
+            }
+        } else {
+            Stdio::null()
+        }
+    };
+
+    let script_str = script.to_string_lossy().to_string();
+    let stderr_io = open_stderr(&stderr_path);
+    let child = match Command::new("py")
+        .args(["-3", &script_str])
+        .current_dir(&res_sub)
+        .stdout(Stdio::null())
+        .stderr(stderr_io)
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e_py) => {
+            let stderr_io2 = open_stderr(&stderr_path);
+            Command::new("python")
+                .arg(&script_str)
+                .current_dir(&res_sub)
+                .stdout(Stdio::null())
+                .stderr(stderr_io2)
+                .spawn()
+                .map_err(|e_py2| format!("Falha ao iniciar OCR (py: {e_py}, python: {e_py2})"))?
+        }
+    };
+
+    {
+        let mut ocr_guard = processes.profit_ocr.lock().map_err(|e| e.to_string())?;
+        *ocr_guard = Some(child);
+    }
+
+    for _ in 0..50 {
+        if profit_ocr_http_reachable().await {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_profit_overlay(
+    app: tauri::AppHandle,
+    processes: State<'_, ChildProcesses>,
+) -> Result<(), String> {
+    ensure_profit_ocr_running(app.clone(), processes).await?;
+    if let Some(win) = app.get_webview_window("profit-overlay") {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_always_on_top(true).map_err(|e| e.to_string())?;
+        win.set_ignore_cursor_events(true)
+            .map_err(|e| e.to_string())?;
+    } else {
+        let (screen_w, screen_h) = {
+            let monitor = app
+                .primary_monitor()
+                .map_err(|e| e.to_string())?
+                .ok_or("Monitor principal não encontrado")?;
+            let size = monitor.size();
+            (size.width as f64, size.height as f64)
+        };
+
+        let url = if cfg!(debug_assertions) {
+            let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
+            WebviewUrl::External(u)
+        } else {
+            WebviewUrl::App(PathBuf::from("index.html"))
+        };
+
+        let window = WebviewWindowBuilder::new(&app, "profit-overlay", url)
+            .title("Profit Overlay")
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false)
+            .inner_size(screen_w, screen_h)
+            .position(0.0, 0.0)
+            .build()
+            .map_err(|e| e.to_string())?;
+
+        window
+            .set_ignore_cursor_events(true)
+            .map_err(|e| e.to_string())?;
+    }
+
+    let (screen_w, _screen_h) = {
+        let monitor = app
+            .primary_monitor()
+            .map_err(|e| e.to_string())?
+            .ok_or("Monitor principal não encontrado")?;
+        let size = monitor.size();
+        (size.width as f64, size.height as f64)
+    };
+
+    let control_url = if cfg!(debug_assertions) {
+        let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
+        WebviewUrl::External(u)
+    } else {
+        WebviewUrl::App(PathBuf::from("index.html"))
+    };
+
+    if let Some(ctrl) = app.get_webview_window("profit-overlay-control") {
+        ctrl.show().map_err(|e| e.to_string())?;
+        ctrl.set_always_on_top(true).map_err(|e| e.to_string())?;
+    } else {
+        let ctrl_w = 180.0;
+        let ctrl_h = 56.0;
+        let ctrl_x = (screen_w - ctrl_w - 16.0).max(0.0);
+        let ctrl_y = 16.0;
+        let _ = WebviewWindowBuilder::new(&app, "profit-overlay-control", control_url)
+            .title("Overlay Control")
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .shadow(false)
+            .inner_size(ctrl_w, ctrl_h)
+            .position(ctrl_x, ctrl_y)
+            .build()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn close_profit_overlay(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("profit-overlay") {
+        win.hide().map_err(|e| e.to_string())?;
+    }
+    if let Some(ctrl) = app.get_webview_window("profit-overlay-control") {
+        ctrl.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_overlay_positions(positions: Vec<f64>) -> Result<(), String> {
+    let client = reqwest::Client::new();
+    let body = serde_json::json!({ "positions": positions });
+    client
+        .post(OCR_SERVICE_URL)
+        .json(&body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -101,7 +333,11 @@ pub async fn get_config_path(app: tauri::AppHandle) -> Result<String, String> {
         .app_config_dir()
         .map_err(|e| format!("{e}"))?;
     std::fs::create_dir_all(&config_dir).map_err(|e| e.to_string())?;
-    Ok(config_dir.join("config.json").to_string_lossy().to_string())
+    Ok(config_dir.join(CONFIG_FILENAME).to_string_lossy().to_string())
+}
+
+fn parse_config_contents(contents: &str) -> Result<AppConfig, String> {
+    serde_json::from_str(contents).map_err(|e| format!("config.json inválido ou corrompido: {e}"))
 }
 
 #[tauri::command]
@@ -112,19 +348,95 @@ pub async fn read_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
         return Ok(AppConfig::default());
     }
     let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let config: AppConfig = serde_json::from_str(&contents).unwrap_or_default();
-    Ok(config)
+    match parse_config_contents(&contents) {
+        Ok(config) => Ok(config),
+        Err(_) => {
+            let backup_path = path.parent().map(|p| p.join(CONFIG_BACKUP_FILENAME)).unwrap_or_else(|| PathBuf::from(CONFIG_BACKUP_FILENAME));
+            if backup_path.exists() {
+                if let Ok(backup_contents) = std::fs::read_to_string(&backup_path) {
+                    if let Ok(config) = parse_config_contents(&backup_contents) {
+                        return Ok(config);
+                    }
+                }
+            }
+            Err("config.json inválido ou corrompido".to_string())
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn write_config(app: tauri::AppHandle, config: AppConfig) -> Result<(), String> {
-    let path_str = get_config_path(app).await?;
+    // Importante: este comando é chamado do frontend frequentemente com apenas um "patch"
+    // de configurações (campos ausentes/null). Para evitar perda de dados (ex.: credenciais),
+    // fazemos merge com o arquivo existente e só sobrescrevemos campos quando vierem como Some(_).
+    let path_str = get_config_path(app.clone()).await?;
     let path = PathBuf::from(&path_str);
+
+    let existing = match read_config(app.clone()).await {
+        Ok(c) => c,
+        Err(_) => {
+            if path.exists() {
+                return Err(CONFIG_CORRUPT_MSG.to_string());
+            }
+            AppConfig::default()
+        }
+    };
+
+    let mut merged = existing;
+    // Credenciais: nunca apagar por "None" (campo ausente/null no patch)
+    if config.profit_activation_key.is_some() {
+        merged.profit_activation_key = config.profit_activation_key;
+    }
+    if config.profit_user.is_some() {
+        merged.profit_user = config.profit_user;
+    }
+    if config.profit_password.is_some() {
+        merged.profit_password = config.profit_password;
+    }
+
+    if config.notifications_enabled.is_some() {
+        merged.notifications_enabled = config.notifications_enabled;
+    }
+    if config.sounds_enabled.is_some() {
+        merged.sounds_enabled = config.sounds_enabled;
+    }
+    if config.volume.is_some() {
+        merged.volume = config.volume;
+    }
+    if config.minimize_to_tray.is_some() {
+        merged.minimize_to_tray = config.minimize_to_tray;
+    }
+    if config.start_with_windows.is_some() {
+        merged.start_with_windows = config.start_with_windows;
+    }
+    if config.selected_ticker.is_some() {
+        merged.selected_ticker = config.selected_ticker;
+    }
+    if config.selected_exchange.is_some() {
+        merged.selected_exchange = config.selected_exchange;
+    }
+    if config.widget_windows.is_some() {
+        merged.widget_windows = config.widget_windows;
+    }
+
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
-    let contents = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
-    std::fs::write(&path, contents).map_err(|e| e.to_string())?;
+    let contents = serde_json::to_string_pretty(&merged).map_err(|e| e.to_string())?;
+
+    let tmp_path = path.parent().map(|p| p.join(CONFIG_TMP_FILENAME)).unwrap_or_else(|| PathBuf::from(CONFIG_TMP_FILENAME));
+    std::fs::write(&tmp_path, &contents).map_err(|e| e.to_string())?;
+    if let Ok(f) = std::fs::File::open(&tmp_path) {
+        let _ = f.sync_all();
+    }
+    std::fs::rename(&tmp_path, &path).map_err(|e| {
+        let _ = std::fs::remove_file(&tmp_path);
+        e.to_string()
+    })?;
+    if let Some(parent) = path.parent() {
+        let backup_path = parent.join(CONFIG_BACKUP_FILENAME);
+        let _ = std::fs::copy(&path, &backup_path);
+    }
     Ok(())
 }
 
@@ -174,7 +486,7 @@ pub async fn spawn_engine(
         ));
     }
 
-    let config: AppConfig = read_config(app.clone()).await.unwrap_or_default();
+    let config = read_config(app.clone()).await?;
 
     let key_ok = config
         .profit_activation_key
@@ -232,12 +544,23 @@ pub async fn spawn_engine(
         Stdio::null()
     };
 
+    // Debug session log in workspace root for agent instrumentation
+    let debug_session_log = std::fs::canonicalize(&engine_dir).ok().and_then(|mut p| {
+        for _ in 0..6 {
+            p = p.parent()?.to_path_buf();
+        }
+        Some(p.join("debug-d74a7b.log"))
+    });
+
     let mut cmd = Command::new(&engine_exe);
     cmd.current_dir(&engine_dir)
         .stdout(Stdio::null())
         .stderr(stderr_cfg)
         .env("DEBUG_LOG_PATH", &engine_log_path);
 
+    if let Some(ref path) = debug_session_log {
+        cmd.env("DEBUG_SESSION_LOG", path);
+    }
     if let Some(key) = &config.profit_activation_key {
         cmd.env("PROFIT_ACTIVATION_KEY", key);
     }
@@ -354,7 +677,7 @@ pub struct ProfitDiagnostic {
 
 #[tauri::command]
 pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagnostic, String> {
-    let config: AppConfig = read_config(app.clone()).await.unwrap_or_default();
+    let config = read_config(app.clone()).await?;
     let credentials_configured = config.profit_activation_key.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         && config.profit_user.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         && config.profit_password.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
@@ -413,7 +736,7 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
     } else if let (Some(st), Some(sb)) = (subscribe_ticker_ret, subscribe_offer_book_ret) {
         if st != 0 || sb != 0 {
             format!(
-                "Subscribe retornou códigos de erro: Ticker={}, OfferBook={}. 0=OK; -2147483646=NL_NOT_INITIALIZED (Market não pronto).",
+                "Subscribe retornou códigos de erro: Ticker={}, OfferBook={}. 0=OK; -2147483647=NL_INTERNAL_ERROR; -2147483646=NL_NOT_INITIALIZED (Market não pronto).",
                 st, sb
             )
         } else if offer_book_count == 0 && trade_count == 0 && daily_count == 0 {
@@ -472,7 +795,7 @@ pub async fn set_active_asset(
     let ticker = ticker.trim().to_uppercase();
     let bolsa_dll = exchange_to_bolsa_dll(&exchange).to_string();
 
-    let mut config: AppConfig = read_config(app.clone()).await.unwrap_or_default();
+    let mut config = read_config(app.clone()).await?;
     config.selected_ticker = Some(ticker.clone());
     config.selected_exchange = Some(exchange.trim().to_uppercase());
     write_config(app.clone(), config).await?;
@@ -539,7 +862,7 @@ pub async fn create_widget_window(app: tauri::AppHandle, widget_id: String) -> R
     };
 
     let title = widget_title(&widget_id);
-    let mut config = read_config(app.clone()).await.unwrap_or_default();
+    let mut config = read_config(app.clone()).await?;
     let state = config
         .widget_windows
         .get_or_insert_with(HashMap::new)
@@ -564,21 +887,16 @@ pub async fn create_widget_window(app: tauri::AppHandle, widget_id: String) -> R
 
     let app_handle = app.clone();
     let widget_id_clone = widget_id.clone();
-    window.on_window_event(move |event| {
-        if matches!(
-            event,
-            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)
-        ) {
-            let app = app_handle.clone();
-            let id = widget_id_clone.clone();
-            let label = format!("widget-{}", id);
-            if let Some(w) = app.get_webview_window(&label) {
-                let pos = w.inner_position().ok();
-                let size = w.inner_size().ok();
-                if let (Some(pos), Some(size)) = (pos, size) {
-                    tauri::async_runtime::spawn(async move {
-                        tokio::time::sleep(Duration::from_millis(250)).await;
-                        let mut cfg = read_config(app.clone()).await.unwrap_or_default();
+    let save_widget_state = move |app: &tauri::AppHandle, id: &str| {
+        let label = format!("widget-{}", id);
+        if let Some(w) = app.get_webview_window(&label) {
+            let pos = w.inner_position().ok();
+            let size = w.inner_size().ok();
+            if let (Some(pos), Some(size)) = (pos, size) {
+                let app = app.clone();
+                let id = id.to_string();
+                tauri::async_runtime::block_on(async move {
+                    if let Ok(mut cfg) = read_config(app.clone()).await {
                         let map = cfg.widget_windows.get_or_insert_with(HashMap::new);
                         map.insert(
                             id,
@@ -591,12 +909,78 @@ pub async fn create_widget_window(app: tauri::AppHandle, widget_id: String) -> R
                             },
                         );
                         let _ = write_config(app, cfg).await;
-                    });
+                    }
+                });
+            }
+        }
+    };
+
+    window.on_window_event(move |event| {
+        match event {
+            tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
+                let app = app_handle.clone();
+                let id = widget_id_clone.clone();
+                let label = format!("widget-{}", id);
+                if let Some(w) = app.get_webview_window(&label) {
+                    let pos = w.inner_position().ok();
+                    let size = w.inner_size().ok();
+                    if let (Some(pos), Some(size)) = (pos, size) {
+                        tauri::async_runtime::spawn(async move {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            if let Ok(mut cfg) = read_config(app.clone()).await {
+                                let map = cfg.widget_windows.get_or_insert_with(HashMap::new);
+                                map.insert(
+                                    id,
+                                    WidgetWindowState {
+                                        x: pos.x as f64,
+                                        y: pos.y as f64,
+                                        width: size.width as f64,
+                                        height: size.height as f64,
+                                        visible: true,
+                                    },
+                                );
+                                let _ = write_config(app, cfg).await;
+                            }
+                        });
+                    }
                 }
             }
+            tauri::WindowEvent::CloseRequested { .. } => {
+                save_widget_state(&app_handle, &widget_id_clone);
+            }
+            _ => {}
         }
     });
 
+    Ok(())
+}
+
+/// Persiste posição e tamanho de todas as janelas de widget abertas (ex.: ao fechar o app).
+pub async fn persist_widget_windows(app: tauri::AppHandle) -> Result<(), String> {
+    let mut cfg = read_config(app.clone()).await?;
+    let map = cfg.widget_windows.get_or_insert_with(HashMap::new);
+    let mut changed = false;
+    for id in VALID_WIDGET_IDS {
+        let label = format!("widget-{}", id);
+        if let Some(w) = app.get_webview_window(&label) {
+            if let (Ok(pos), Ok(size)) = (w.inner_position(), w.inner_size()) {
+                map.insert(
+                    (*id).to_string(),
+                    WidgetWindowState {
+                        x: pos.x as f64,
+                        y: pos.y as f64,
+                        width: size.width as f64,
+                        height: size.height as f64,
+                        visible: true,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        write_config(app, cfg).await?;
+    }
     Ok(())
 }
 
@@ -651,6 +1035,12 @@ pub async fn kill_services(processes: State<'_, ChildProcesses>) -> Result<(), S
     {
         let mut dist_guard = processes.distributor.lock().map_err(|e| e.to_string())?;
         if let Some(mut child) = dist_guard.take() {
+            let _ = child.kill();
+        }
+    }
+    {
+        let mut ocr_guard = processes.profit_ocr.lock().map_err(|e| e.to_string())?;
+        if let Some(mut child) = ocr_guard.take() {
             let _ = child.kill();
         }
     }

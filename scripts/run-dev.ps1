@@ -38,10 +38,20 @@ function Kill-StaleProcesses {
             Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
         }
     }
+
+    $netstat5556 = netstat -ano 2>$null | Select-String ":5556\s" | Select-String "LISTENING"
+    foreach ($line in $netstat5556) {
+        if ($line -match '\s(\d+)$') {
+            $procId = [int]$Matches[1]
+            Write-Host "Matando processo na porta 5556 (ocr_overlay, PID $procId)..." -ForegroundColor Yellow
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 $syncMonitorProcess = $null
 $distributorProcess = $null
+$ocrProcess = $null
 try {
     Kill-StaleProcesses
 
@@ -103,12 +113,29 @@ try {
     Push-Location $distDir
     pip install -r requirements.txt -q
     if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
+    if (Test-Path (Join-Path $distDir "requirements_ocr.txt")) {
+        pip install -r requirements_ocr.txt -q
+        if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
+    }
     Pop-Location
 
     # Start distributor (Python) so WS :8000 is up when Vite/Tauri load (evita ECONNREFUSED no proxy)
     Write-Host "=== Iniciando distributor (em background) ===" -ForegroundColor Cyan
     $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 1200
+
+    # Start OCR overlay service (Python) on :5558 (5557 = ZMQ sync_monitor)
+    $ocrScript = Join-Path $distDir "profit_ocr_service.py"
+    if (Test-Path $ocrScript) {
+        Write-Host "=== Iniciando OCR overlay service (porta 5558) ===" -ForegroundColor Cyan
+        $prevTesseractCmd = $env:TESSERACT_CMD
+        $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+        $ocrProcess = Start-Process -FilePath "python" -ArgumentList "profit_ocr_service.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
+        $env:TESSERACT_CMD = $prevTesseractCmd
+        Start-Sleep -Milliseconds 800
+    } else {
+        Write-Host "OCR service nao encontrado: $ocrScript" -ForegroundColor Yellow
+    }
 
     # Install and start sync_monitor (hidden, no terminal)
     $syncMonitorDir = Join-Path $root "sync_monitor"
@@ -128,11 +155,14 @@ try {
     Write-Host "=== Iniciando app Tauri ===" -ForegroundColor Cyan
     Write-Host "Distributor e sync_monitor ja em background. Inicie o engine pelas Configuracoes." -ForegroundColor Gray
     Push-Location (Join-Path $root "app")
-    npm run dev
+    npm run dev:tauri
     $exitCode = $LASTEXITCODE
     Pop-Location
     exit $exitCode
 } finally {
+    if ($ocrProcess -and -not $ocrProcess.HasExited) {
+        Stop-Process -Id $ocrProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if ($distributorProcess -and -not $distributorProcess.HasExited) {
         Stop-Process -Id $distributorProcess.Id -Force -ErrorAction SilentlyContinue
     }

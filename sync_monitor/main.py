@@ -42,7 +42,7 @@ def main() -> None:
             try:
                 prices = fetch_prices(TICKERS)
                 if not prices:
-                    logger.warning("Fetch returned no prices for %s (check yfinance/BOVA11.SA)", TICKERS)
+                    logger.warning("Fetch returned no prices for %s (check yfinance .SA symbols)", TICKERS)
                 result = calculate_sync(prices, SYNC_BAND_PCT)
                 raw_in_sync = result["in_sync"]
 

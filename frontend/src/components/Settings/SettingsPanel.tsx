@@ -87,9 +87,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     try {
       await invoke("write_config", {
         config: {
-          profit_activation_key: profitKey || null,
-          profit_user: profitUser || null,
-          profit_password: profitPass || null,
+          profit_activation_key: profitKey.trim() === "" ? undefined : profitKey,
+          profit_user: profitUser.trim() === "" ? undefined : profitUser,
+          profit_password: profitPass === "" ? undefined : profitPass,
           notifications_enabled: settings.notificationsEnabled,
           sounds_enabled: settings.soundsEnabled,
           volume: settings.volume,
@@ -99,12 +99,8 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       });
       if (credsChanged) {
         setInitialCreds({ key: profitKey, user: profitUser, pass: profitPass });
-        const restartNow = window.confirm(
-          "Credenciais salvas. Reiniciar serviços agora para aplicar no engine?"
-        );
-        if (restartNow) {
-          await handleRestartServices();
-        }
+        // Aplicar as credenciais imediatamente, sem exigir que o usuário feche/abra o app.
+        await handleRestartServices();
       }
       onClose();
     } finally {
@@ -120,6 +116,9 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       await new Promise((r) => setTimeout(r, 500));
       await invoke("spawn_engine");
       await invoke("spawn_distributor");
+      // Notifica o fluxo de startup para revalidar saúde e reenviar set_active_asset,
+      // fazendo o stream voltar sem reiniciar o app.
+      window.dispatchEvent(new Event("pq:services-restarted"));
     } finally {
       setRestarting(false);
     }

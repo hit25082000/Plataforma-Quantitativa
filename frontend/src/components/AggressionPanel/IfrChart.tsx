@@ -1,14 +1,4 @@
-import {
-  LineChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  YAxis,
-} from "recharts";
 import { useMarketStore } from "../../store/marketStore";
-
-const IFR_ABOVE = [70, 75, 80, 85, 90, 95] as const;
-const IFR_BELOW = [30, 20, 15, 10] as const;
 
 function calcRsiWilder(closes: number[], period: number): number {
   if (closes.length < period + 1) return 50;
@@ -38,17 +28,17 @@ interface IfrChartProps {
 function getVariantConfig(variant: IfrChartVariant) {
   switch (variant) {
     case "9":
-      return { period: 9, source: "macd-or-prices" as const, emptyLabel: "Aguardando dados IFR 9..." };
+      return { period: 9, source: "macd-or-prices" as const };
     case "30min":
-      return { period: 9, source: "macd-only" as const, emptyLabel: "Aguardando dados (candles 30min)..." };
+      return { period: 9, source: "macd-only" as const };
     case "18":
-      return { period: 18, source: "prices-only" as const, emptyLabel: "Aguardando dados IFR 18..." };
+      return { period: 18, source: "prices-only" as const };
   }
 }
 
 export function IfrChart({ variant, fillHeight }: IfrChartProps) {
   const config = getVariantConfig(variant);
-  const { period, source, emptyLabel } = config;
+  const { period, source } = config;
   const macdHistory = useMarketStore((s) => s.macdHistory);
   const priceCloses = useMarketStore((s) => s.priceCloses);
 
@@ -78,50 +68,18 @@ export function IfrChart({ variant, fillHeight }: IfrChartProps) {
           ? dataFromMacd
           : dataFromPrices;
   const showingEmpty = data.length === 0;
+  const currentRsi = data.length > 0 ? data[data.length - 1].rsi : null;
 
-  const heightClass = fillHeight ? "h-full min-h-[6rem]" : "h-24";
-
-  if (showingEmpty) {
-    return (
-      <div className={`${heightClass} w-full flex items-center justify-center rounded border border-border/50 bg-bg/50`}>
-        <p className="text-text/70 text-xs">{emptyLabel}</p>
-      </div>
-    );
-  }
+  const heightClass = fillHeight ? "h-full min-h-[4.5rem]" : "h-16";
 
   return (
-    <div className={`${heightClass} w-full`}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={data} margin={{ top: 4, right: 4, bottom: 4, left: 4 }}>
-          <YAxis domain={[0, 100]} hide width={0} />
-          {IFR_ABOVE.map((y) => (
-            <ReferenceLine
-              key={y}
-              y={y}
-              stroke="rgba(34, 197, 94, 0.5)"
-              strokeWidth={1}
-              strokeDasharray="2 2"
-            />
-          ))}
-          {IFR_BELOW.map((y) => (
-            <ReferenceLine
-              key={y}
-              y={y}
-              stroke="rgba(239, 68, 68, 0.5)"
-              strokeWidth={1}
-              strokeDasharray="2 2"
-            />
-          ))}
-          <Line
-            type="monotone"
-            dataKey="rsi"
-            stroke="#94a3b8"
-            strokeWidth={1.5}
-            dot={false}
-            isAnimationActive={false}
-          />
-        </LineChart>
-      </ResponsiveContainer>
+    <div
+      className={`${heightClass} w-full flex items-center justify-center rounded border border-border/50 bg-bg/50`}
+      aria-label={`IFR ${variant} (valor atual)`}
+    >
+      <span className="font-mono text-xs font-semibold text-text/90 tabular-nums">
+        {showingEmpty || currentRsi == null ? "—" : Math.round(currentRsi)}
+      </span>
     </div>
   );
 }

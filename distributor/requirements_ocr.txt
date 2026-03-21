@@ -1,0 +1,6 @@
+mss
+Pillow
+pytesseract
+pywin32
+fastapi
+uvicorn

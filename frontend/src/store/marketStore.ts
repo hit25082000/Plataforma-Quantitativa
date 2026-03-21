@@ -12,7 +12,6 @@ import type {
 } from "../types/messages";
 
 const MAX_ALERTS = 50;
-const MAX_AGGR_HISTORY = 50;
 const MAX_FLOW_INVERSIONS = 30;
 const MAX_MACD_HISTORY = 50;
 const MAX_PRICE_CLOSES = 50;
@@ -23,6 +22,18 @@ export const AGGRESSION_STEP = 100;
 export type WsStatus = "connecting" | "connected" | "disconnected";
 
 export type AssetSwitchStatus = "idle" | "switching" | "active" | "error";
+
+/** Calibração do gráfico na janela secundária do overlay (sincronizada por eventos Tauri). */
+export interface OverlayCalibrationState {
+  pricePerPixel: number;
+  originPrice: number;
+  originY: number;
+  chartX: number;
+  chartY: number;
+  chartWidth: number;
+  chartHeight: number;
+  updatedAt: string;
+}
 
 export interface DomLevel {
   price: number;
@@ -61,12 +72,12 @@ interface MarketStore {
 
   lastPrice: number;
   vwap: number;
-  netAggression: number;
-  totalBuyAggression: number;
-  totalSellAggression: number;
-  aggrHistory: number[];
   agentBuyTotals: Record<number, number>;
   agentSellTotals: Record<number, number>;
+  /** Σ (preço × qty) em trades onde o agente é agressor comprador */
+  agentBuyFinancial: Record<number, number>;
+  /** Σ (preço × qty) em trades onde o agente é agressor vendedor */
+  agentSellFinancial: Record<number, number>;
   agentNames: Record<number, string>;
   agentShortNames: Record<number, string>;
   updateTrade: (msg: TradeMessage) => void;
@@ -91,6 +102,12 @@ interface MarketStore {
 
   /** Últimos preços (close) por trade, para fallback de IFR quando não há macd_signal */
   priceCloses: number[];
+
+  /** Estado exclusivo da webview do overlay (pode ser atualizado pela janela principal via eventos). */
+  overlayCalibration: OverlayCalibrationState | null;
+  overlayUbsPrice: number | null;
+  overlayAvgPrice: number | null;
+  overlayLastUpdateTs: string | null;
 }
 
 export const useMarketStore = create<MarketStore>((set) => ({
@@ -119,12 +136,10 @@ export const useMarketStore = create<MarketStore>((set) => ({
       wallPriceByOfferId: {},
       lastPrice: 0,
       vwap: 0,
-      netAggression: 0,
-      totalBuyAggression: 0,
-      totalSellAggression: 0,
-      aggrHistory: [],
       agentBuyTotals: {},
       agentSellTotals: {},
+      agentBuyFinancial: {},
+      agentSellFinancial: {},
       agentNames: {},
       agentShortNames: {},
       dailyHigh: 0,
@@ -178,24 +193,23 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   lastPrice: 0,
   vwap: 0,
-  netAggression: 0,
-  totalBuyAggression: 0,
-  totalSellAggression: 0,
-  aggrHistory: [],
   agentBuyTotals: {},
   agentSellTotals: {},
+  agentBuyFinancial: {},
+  agentSellFinancial: {},
   agentNames: {},
   agentShortNames: {},
   updateTrade: (msg) =>
     set((state) => {
-      const net = msg.net_aggression;
-      const buyDelta = net > 0 ? net : 0;
-      const sellDelta = net < 0 ? -net : 0;
-
       const agentBuy = { ...state.agentBuyTotals };
       const agentSell = { ...state.agentSellTotals };
+      const agentBuyFin = { ...state.agentBuyFinancial };
+      const agentSellFin = { ...state.agentSellFinancial };
+      const fin = msg.price * msg.qty;
       agentBuy[msg.buy_agent] = (agentBuy[msg.buy_agent] ?? 0) + msg.qty;
       agentSell[msg.sell_agent] = (agentSell[msg.sell_agent] ?? 0) + msg.qty;
+      agentBuyFin[msg.buy_agent] = (agentBuyFin[msg.buy_agent] ?? 0) + fin;
+      agentSellFin[msg.sell_agent] = (agentSellFin[msg.sell_agent] ?? 0) + fin;
 
       const agentNames = { ...state.agentNames };
       if (msg.buy_agent_name != null)
@@ -209,33 +223,16 @@ export const useMarketStore = create<MarketStore>((set) => ({
       if (msg.sell_agent_short_name != null)
         agentShortNames[msg.sell_agent] = msg.sell_agent_short_name;
 
-      const cumulativeNet =
-        state.totalBuyAggression +
-        buyDelta -
-        (state.totalSellAggression + sellDelta);
-      const last =
-        state.aggrHistory.length > 0
-          ? state.aggrHistory[state.aggrHistory.length - 1]
-          : null;
-      const shouldAppendHistory =
-        last === null ||
-        Math.abs(cumulativeNet - last) >= AGGRESSION_STEP;
-      const history = shouldAppendHistory
-        ? [...state.aggrHistory, cumulativeNet].slice(-MAX_AGGR_HISTORY)
-        : state.aggrHistory;
-
       const priceCloses = [...(state.priceCloses ?? []), msg.price].slice(
         -MAX_PRICE_CLOSES,
       );
       return {
         lastPrice: msg.price,
         vwap: msg.vwap,
-        netAggression: net,
-        totalBuyAggression: state.totalBuyAggression + buyDelta,
-        totalSellAggression: state.totalSellAggression + sellDelta,
-        aggrHistory: history,
         agentBuyTotals: agentBuy,
         agentSellTotals: agentSell,
+        agentBuyFinancial: agentBuyFin,
+        agentSellFinancial: agentSellFin,
         agentNames,
         agentShortNames,
         priceCloses,
@@ -288,4 +285,14 @@ export const useMarketStore = create<MarketStore>((set) => ({
       macdHistory: [...state.macdHistory, msg].slice(-MAX_MACD_HISTORY),
       macdDirection: msg.direction,
     })),
+
+  overlayCalibration: null,
+  overlayUbsPrice: null,
+  overlayAvgPrice: null,
+  overlayLastUpdateTs: null,
 }));
+
+type MarketState = ReturnType<typeof useMarketStore.getState>;
+
+/** Fonte do preço médio usado para inicialização de posições do overlay OCR. */
+export const selectOverlayAveragePrice = (state: MarketState): number => state.vwap;

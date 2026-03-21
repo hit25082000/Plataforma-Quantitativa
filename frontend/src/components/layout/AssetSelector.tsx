@@ -16,11 +16,15 @@ const AVAILABLE_TICKERS = [
   { symbol: "BBDC4",  exchange: "BOVESPA", label: "Bradesco PN (BBDC4)" },
   { symbol: "B3SA3",  exchange: "BOVESPA", label: "B3 ON (B3SA3)" },
   { symbol: "ABEV3",  exchange: "BOVESPA", label: "Ambev ON (ABEV3)" },
-  { symbol: "BOVA11", exchange: "BOVESPA", label: "ETF BOVA11" },
 ];
 
 function isEngineNotListening(message: string): boolean {
-  const m = message.toLowerCase();
+  const raw = (message ?? "").trim();
+  if (!raw) {
+    // Em alguns cenários o engine não retorna texto no switch; manter fluxo de retry.
+    return true;
+  }
+  const m = raw.toLowerCase();
   return (
     m.includes("5556") ||
     m.includes("timed out") ||

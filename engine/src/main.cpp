@@ -17,7 +17,9 @@
 #include "zmq_publisher.h"
 #include <chrono>
 #include <cstdlib>
+#include <fstream>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <thread>
 
@@ -41,6 +43,7 @@ std::wstring to_wide(const char* s) {
 #endif
 
 namespace {
+
 constexpr int32_t MOCK_AGENT_BASE = 1000;
 const char* mock_agent_short_names[] = {
     "UBS", "BTG", "GOLDM", "XP", "ITAU", "CS", "MS", "CITI", "BARCL", "JPM"
@@ -94,7 +97,8 @@ int main(int argc, char* argv[]) {
     bridge.register_callbacks();
 
     const auto market_timeout = std::chrono::milliseconds(30000);
-    if (!bridge.wait_for_market_connected(market_timeout)) {
+    bool wait_ok = bridge.wait_for_market_connected(market_timeout);
+    if (!wait_ok) {
         std::cerr << "Market connection timeout. Subscribe may fail." << std::endl;
     }
 

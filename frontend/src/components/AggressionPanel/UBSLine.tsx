@@ -1,26 +1,7 @@
 import { useMarketStore } from "../../store/marketStore";
 import { formatQty } from "../../utils/formatters";
 import { AGGRESSION_STEP } from "../../store/marketStore";
-
-const UBS_SHORT_NAME = "UBS";
-
-function roundToStep(value: number, step: number): number {
-  return Math.round(value / step) * step;
-}
-
-/** Encontra o agentId cujo short name é UBS (ou nome contém UBS). */
-function findUbsAgentId(
-  agentShortNames: Record<number, string>,
-  agentNames: Record<number, string>
-): number | null {
-  for (const [id, short] of Object.entries(agentShortNames)) {
-    if (short === UBS_SHORT_NAME) return Number(id);
-  }
-  for (const [id, name] of Object.entries(agentNames)) {
-    if (name.toUpperCase().includes(UBS_SHORT_NAME)) return Number(id);
-  }
-  return null;
-}
+import { findUbsAgentId, roundToStep, UBS_SHORT_NAME } from "../../utils/ubs";
 
 export function UBSLine() {
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
@@ -32,7 +13,7 @@ export function UBSLine() {
   const ubsId = findUbsAgentId(agentShortNames, agentNames);
   if (ubsId == null) {
     return (
-      <div className="rounded border border-border/50 bg-bg/50 px-3 py-2">
+      <div className="px-0 py-0">
         <p className="text-xs text-text/60">UBS — aguardando dados (nenhum trade UBS ainda)</p>
       </div>
     );
@@ -48,8 +29,7 @@ export function UBSLine() {
   const ubsInversions = flowInversions.filter((m) => m.agent_name === UBS_SHORT_NAME).slice(0, 3);
 
   return (
-    <div className="rounded border border-border/50 bg-bg/50 px-3 py-2 space-y-1">
-      <h3 className="text-xs font-semibold text-text/60 mb-1.5">UBS — posição</h3>
+    <div className="space-y-1">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-sm">
         <span className="text-text/80">Compra</span>
         <span className="text-neon-buy">{formatQty(buyRounded)}</span>

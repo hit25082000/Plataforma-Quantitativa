@@ -24,6 +24,7 @@ function getAlertCooldownKey(alert: AlertMessage): string {
   return `${alert.ticker}|${alert.rule}|${alert.direction}`;
 }
 const INITIAL_BACKOFF_MS = 1000;
+const WS_CONNECT_TIMEOUT_MS = 10000;
 const WS_URL_TAURI = "ws://127.0.0.1:8000/ws";
 
 function getWsUrl(): string {
@@ -71,10 +72,6 @@ function handleMessage(
       else if (m.type === "flow_inversion")
         store.addFlowInversion(msg as FlowInversionMessage);
       else if (m.type === "macd_signal") {
-        // #region agent log
-        const macdMsg = msg as MacdSignalMessage & { rsi?: number };
-        fetch('http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'09d844'},body:JSON.stringify({sessionId:'09d844',location:'useWebSocket.ts:macd_signal',message:'macd_signal received',data:{hasRsi:macdMsg.rsi!=null,rsi:macdMsg.rsi},hypothesisId:'H1-H2-H5',timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         store.updateMacd(msg as MacdSignalMessage);
       }
     }
@@ -83,38 +80,62 @@ function handleMessage(
   }
 }
 
+/** Singleton compartilhado: uma única conexão WS e ref-count para não fechar no cleanup de um efeito enquanto outro ainda precisa. */
+let sharedWs: WebSocket | null = null;
+let wsRefCount = 0;
+let wsReconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let wsBackoffMs = INITIAL_BACKOFF_MS;
+
 /** Quando false (ex.: Tauri antes do distributor subir), não tenta conectar; evita erro "closed before connection established". */
 export function useWebSocket(enableConnection: boolean = true): void {
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
-  const backoffRef = useRef(INITIAL_BACKOFF_MS);
+  const subscribedRef = useRef(false);
 
   useEffect(() => {
     if (!enableConnection) {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
+      if (subscribedRef.current) {
+        subscribedRef.current = false;
+        wsRefCount--;
+        if (wsRefCount <= 0) {
+          wsRefCount = 0;
+          if (wsReconnectTimeoutId) {
+            clearTimeout(wsReconnectTimeoutId);
+            wsReconnectTimeoutId = null;
+          }
+          if (sharedWs) {
+            sharedWs.close();
+            sharedWs = null;
+          }
+        }
       }
       useMarketStore.getState().setWsStatus("disconnected");
       return;
     }
 
+    wsRefCount++;
+    subscribedRef.current = true;
+
     const connect = () => {
+      if (wsRefCount <= 0) return;
       const store = useMarketStore.getState();
       store.setWsStatus("connecting");
 
       const url = getWsUrl();
       const ws = new WebSocket(url);
-      wsRef.current = ws;
+      sharedWs = ws;
+
+      let connectTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+        connectTimeoutId = null;
+        if (ws.readyState === WebSocket.CONNECTING) {
+          ws.close();
+        }
+      }, WS_CONNECT_TIMEOUT_MS);
 
       ws.onopen = () => {
-        backoffRef.current = INITIAL_BACKOFF_MS;
+        if (connectTimeoutId) {
+          clearTimeout(connectTimeoutId);
+          connectTimeoutId = null;
+        }
+        wsBackoffMs = INITIAL_BACKOFF_MS;
         store.setWsStatus("connected");
       };
 
@@ -123,11 +144,16 @@ export function useWebSocket(enableConnection: boolean = true): void {
       };
 
       ws.onclose = () => {
-        wsRef.current = null;
+        if (connectTimeoutId) {
+          clearTimeout(connectTimeoutId);
+          connectTimeoutId = null;
+        }
+        if (sharedWs === ws) sharedWs = null;
         store.setWsStatus("disconnected");
-        const delay = Math.min(backoffRef.current, MAX_BACKOFF_MS);
-        backoffRef.current = Math.min(backoffRef.current * 2, MAX_BACKOFF_MS);
-        reconnectTimeoutRef.current = setTimeout(connect, delay);
+        if (wsRefCount <= 0) return;
+        const delay = Math.min(wsBackoffMs, MAX_BACKOFF_MS);
+        wsBackoffMs = Math.min(wsBackoffMs * 2, MAX_BACKOFF_MS);
+        wsReconnectTimeoutId = setTimeout(connect, delay);
       };
 
       ws.onerror = () => {
@@ -135,16 +161,27 @@ export function useWebSocket(enableConnection: boolean = true): void {
       };
     };
 
-    connect();
+    if (!sharedWs || sharedWs.readyState !== WebSocket.OPEN) {
+      connect();
+    } else {
+      useMarketStore.getState().setWsStatus("connected");
+    }
 
     return () => {
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current);
-        reconnectTimeoutRef.current = null;
-      }
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
+      if (subscribedRef.current) {
+        subscribedRef.current = false;
+        wsRefCount--;
+        if (wsRefCount <= 0) {
+          wsRefCount = 0;
+          if (wsReconnectTimeoutId) {
+            clearTimeout(wsReconnectTimeoutId);
+            wsReconnectTimeoutId = null;
+          }
+          if (sharedWs) {
+            sharedWs.close();
+            sharedWs = null;
+          }
+        }
       }
     };
   }, [enableConnection]);

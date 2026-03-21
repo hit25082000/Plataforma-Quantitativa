@@ -3,6 +3,8 @@ import { AppLayout } from "./components/layout/AppLayout";
 import { WidgetRoot } from "./components/WidgetRoot";
 import { SettingsPanel } from "./components/Settings/SettingsPanel";
 import { StartupScreen } from "./components/StartupScreen";
+import OverlayEmergencyControlPage from "./pages/OverlayEmergencyControlPage";
+import OverlayPage from "./pages/OverlayPage";
 import { useAlerts } from "./hooks/useAlerts";
 import { useTauriStartup } from "./hooks/useTauriStartup";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -49,6 +51,8 @@ function WidgetWindow({ widgetId }: { widgetId: string }) {
 
 function App() {
   const [widgetId, setWidgetId] = useState<string | null>(null);
+  const [isOverlayWindow, setIsOverlayWindow] = useState(false);
+  const [isOverlayControlWindow, setIsOverlayControlWindow] = useState(false);
   const [hasCheckedWindow, setHasCheckedWindow] = useState(false);
 
   useEffect(() => {
@@ -61,6 +65,12 @@ function App() {
       const label = w.label;
       if (label.startsWith("widget-")) {
         setWidgetId(label.replace(/^widget-/, ""));
+      }
+      if (label === "profit-overlay") {
+        setIsOverlayWindow(true);
+      }
+      if (label === "profit-overlay-control") {
+        setIsOverlayControlWindow(true);
       }
       setHasCheckedWindow(true);
     });
@@ -76,6 +86,14 @@ function App() {
 
   if (isTauri() && widgetId) {
     return <WidgetWindow widgetId={widgetId} />;
+  }
+
+  if (isTauri() && isOverlayWindow) {
+    return <OverlayPage />;
+  }
+
+  if (isTauri() && isOverlayControlWindow) {
+    return <OverlayEmergencyControlPage />;
   }
 
   return <AppContent />;

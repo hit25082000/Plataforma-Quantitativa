@@ -1,10 +1,15 @@
 import { useMarketStore } from "../../store/marketStore";
 
 const TICKER_LABELS: Record<string, string> = {
-  BOVA11: "BOVA11",
+  PETR4: "PETR4",
+  VALE3: "VALE3",
+  ITUB4: "ITUB4",
+  BBDC4: "BBDC4",
+  B3SA3: "B3SA3",
+  ABEV3: "ABEV3",
 };
 
-const ORDER = ["BOVA11"];
+const ORDER = ["PETR4", "VALE3", "ITUB4", "BBDC4", "B3SA3", "ABEV3"];
 
 export function SyncPanel() {
   const inSync = useMarketStore((s) => s.inSync);

@@ -14,7 +14,12 @@ const CONFIG_NEEDED_MESSAGE =
   'Configure usuário, senha e chave de acesso em Configurações e use "Reiniciar serviços" para aplicar.';
 
 function isEngineNotListening(message: string): boolean {
-  const m = message.toLowerCase();
+  const raw = (message ?? "").trim();
+  if (!raw) {
+    // Engine pode fechar socket sem payload; tratar como transitório para permitir retry.
+    return true;
+  }
+  const m = raw.toLowerCase();
   return (
     m.includes("5556") ||
     m.includes("timed out") ||
@@ -64,56 +69,25 @@ export function useTauriStartup() {
   useEffect(() => {
     if (!isTauri()) {
       setStatus("ready");
-      const label = useMarketStore.getState().selectedTicker;
-      const [ticker, exchange] = label.includes(" · ")
-        ? label.split(" · ").map((s) => s.trim())
-        : ["WINFUT", "BMF"];
-      let cleanup: (() => void) | undefined;
-      if (ticker && exchange) {
-        let cancelled = false;
-        const retryMs = 2000;
-        const maxAttempts = 15;
-        (async () => {
-          for (let i = 0; i < maxAttempts; i++) {
-            if (cancelled) return;
-            if (i > 0) await new Promise((r) => setTimeout(r, retryMs));
-            try {
-              const res = await fetch("/api/set-active-asset", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ticker, exchange }),
-              });
-              const body = (await res.json().catch(() => ({}))) as { success?: boolean; message?: string };
-              if (cancelled) return;
-              if (body?.success) return;
-              const msg = (body?.message ?? "").toLowerCase();
-              if (!(msg.includes("5556") || msg.includes("timed out") || msg.includes("connection refused") || msg.includes("escutando") || msg.includes("respondeu"))) return;
-            } catch {
-              // retry
-            }
-          }
-        })();
-        cleanup = () => {
-          cancelled = true;
-        };
-      }
-      return cleanup;
+      return;
     }
 
     let cancelled = false;
+    let running = false;
 
     const INITIAL_DELAY_MS = 5000;
 
-    async function run() {
-      await new Promise((r) => setTimeout(r, INITIAL_DELAY_MS));
-      if (cancelled) return;
-
-      setStatus("checking");
-      setError(null);
-
+    async function ensureReady(flow: "startup" | "external-trigger") {
+      if (running) return;
+      running = true;
       try {
-        const ok = await invoke<boolean>("check_health");
+        if (flow === "startup") {
+          await new Promise((r) => setTimeout(r, INITIAL_DELAY_MS));
+        }
         if (cancelled) return;
+
+        setStatus("checking");
+        setError(null);
 
         const cfg = await invoke<{
           profit_activation_key?: string | null;
@@ -132,18 +106,11 @@ export function useTauriStartup() {
             .setSelectedTicker(`${ticker} · ${exchange}`);
         }
 
-        if (ok) {
-          setStatus("ready");
-          if (ticker && exchange) {
-            await setActiveAssetWithRetry(ticker, exchange, () => cancelled, true);
-          }
-          return;
-        }
-
         const keyOk = (cfg.profit_activation_key ?? "").trim().length > 0;
         const userOk = (cfg.profit_user ?? "").trim().length > 0;
         const passOk = (cfg.profit_password ?? "").length > 0;
 
+        // Se ainda não há credenciais, não tenta subir serviços; mas mantém o app "ready" para abrir UI.
         if (!keyOk || !userOk || !passOk) {
           setStatus("ready");
           setConfigNeeded(true);
@@ -151,45 +118,75 @@ export function useTauriStartup() {
           return;
         }
 
-        setStatus("starting");
-        await invoke("spawn_engine");
+        // Credenciais ok: a UI não deve mais pedir configuração.
+        setConfigNeeded(false);
+
+        const ok = await invoke<boolean>("check_health");
         if (cancelled) return;
 
-        await invoke("spawn_distributor");
-        if (cancelled) return;
-
-        const timeout = 30000;
-        const pollInterval = 500;
-        const start = Date.now();
-
-        while (Date.now() - start < timeout) {
+        let healthOk = ok;
+        if (!ok) {
+          setStatus("starting");
+          await invoke("spawn_engine");
           if (cancelled) return;
-          const healthy = await invoke<boolean>("check_health");
-          if (healthy) {
-            setStatus("ready");
-            if (ticker && exchange) {
-              await new Promise((r) => setTimeout(r, 1500));
-              if (cancelled) return;
-              await setActiveAssetWithRetry(ticker, exchange, () => cancelled, true);
+          await invoke("spawn_distributor");
+          if (cancelled) return;
+
+          const timeout = 30000;
+          const pollInterval = 500;
+          const start = Date.now();
+          while (Date.now() - start < timeout) {
+            if (cancelled) return;
+            const healthy = await invoke<boolean>("check_health");
+            if (healthy) {
+              healthOk = true;
+              break;
             }
-            return;
+            await new Promise((r) => setTimeout(r, pollInterval));
           }
-          await new Promise((r) => setTimeout(r, pollInterval));
         }
 
         if (cancelled) return;
-        setStatus("error");
-        setError("Falha ao iniciar serviços. Verifique as credenciais Profit.");
+
+        if (!healthOk) {
+          setStatus("error");
+          setError(
+            "Distributor não iniciou a tempo (porta 8000). Verifique se nenhum outro processo usa a porta e tente \"Reiniciar serviços\" nas Configurações.",
+          );
+          return;
+        }
+
+        // Mesmo quando o distributor já estava de pé, garantimos que o engine receba o ativo selecionado
+        // (principalmente após "reiniciar serviços" ou salvar credenciais).
+        setStatus("ready");
+        if (ticker && exchange) {
+          await new Promise((r) => setTimeout(r, 1000));
+          if (cancelled) return;
+          await setActiveAssetWithRetry(
+            ticker,
+            exchange,
+            () => cancelled,
+            true,
+          );
+        }
       } catch (e) {
         if (cancelled) return;
         setStatus("error");
         setError(String(e));
+      } finally {
+        running = false;
       }
     }
 
-    run();
+    const onServicesRestarted = () => {
+      void ensureReady("external-trigger");
+    };
+    window.addEventListener("pq:services-restarted", onServicesRestarted);
+
+    void ensureReady("startup");
     return () => {
       cancelled = true;
+      window.removeEventListener("pq:services-restarted", onServicesRestarted);
     };
   }, []);
 

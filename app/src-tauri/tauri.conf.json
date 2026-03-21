@@ -24,16 +24,45 @@
       "csp": "default-src 'self' ipc: http://ipc.localhost; media-src 'self' asset: https://asset.localhost",
       "assetProtocol": {
         "enable": true,
-        "scope": ["**"]
+        "scope": [
+          "**"
+        ]
       },
       "capabilities": [
         {
+          "identifier": "app-default",
+          "description": "Permissões padrão do app (config, invoke, recursos)",
+          "windows": [
+            "*"
+          ],
+          "permissions": [
+            "core:default"
+          ]
+        },
+        {
           "identifier": "window-drag-close",
           "description": "Permite arrastar e fechar janelas (principal e widgets)",
-          "windows": ["*"],
+          "windows": [
+            "*"
+          ],
           "permissions": [
             "core:window:allow-close",
             "core:window:allow-start-dragging"
+          ]
+        },
+        {
+          "identifier": "overlay-window-control",
+          "description": "Permissões para criar e controlar janela de overlay transparente",
+          "windows": [
+            "*"
+          ],
+          "permissions": [
+            "core:window:allow-create",
+            "core:window:allow-show",
+            "core:window:allow-hide",
+            "core:window:allow-set-always-on-top",
+            "core:window:allow-set-ignore-cursor-events",
+            "core:webview:allow-create-webview-window"
           ]
         }
       ]
@@ -42,7 +71,9 @@
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["icons/icon.ico"],
+    "icon": [
+      "icons/icon.ico"
+    ],
     "windows": {
       "nsis": {
         "installMode": "currentUser",
@@ -50,6 +81,7 @@
       }
     },
     "resources": [
+      "resources/profit_ocr_service.py",
       "resources/engine.exe",
       "resources/distributor.exe",
       "resources/ProfitDLL.dll",

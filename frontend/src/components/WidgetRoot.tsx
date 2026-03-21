@@ -1,6 +1,4 @@
 import { AlertFeed } from "./AlertFeed/AlertFeed";
-import { AggressionChart } from "./AggressionPanel/AggressionChart";
-import { BuyVsSellBar } from "./AggressionPanel/BuyVsSellBar";
 import { IfrChart } from "./AggressionPanel/IfrChart";
 import { TopBrokersTable } from "./AggressionPanel/TopBrokersTable";
 import { UBSLine } from "./AggressionPanel/UBSLine";
@@ -13,9 +11,7 @@ const WIDGET_TITLES: Record<string, string> = {
   "alert-feed": "Alert Feed",
   macd: "MACD 30min",
   "flow-secagem": "Flow & Secagem",
-  "buy-vs-sell": "Buy vs Sell",
   "top-brokers": "Top Brokers",
-  "aggression-chart": "Aggression Chart",
   "ifr-9": "IFR 9",
   "ifr-30min": "IFR 30min",
   "ifr-18": "IFR 18",
@@ -52,22 +48,10 @@ export function WidgetRoot({ widgetId }: WidgetRootProps) {
             <FlowAndSecagemPanel />
           </div>
         );
-      case "buy-vs-sell":
-        return (
-          <div className={`${responsive} p-3`}>
-            <BuyVsSellBar />
-          </div>
-        );
       case "top-brokers":
         return (
           <div className={responsive}>
             <TopBrokersTable />
-          </div>
-        );
-      case "aggression-chart":
-        return (
-          <div className={`${responsive} p-3`}>
-            <AggressionChart />
           </div>
         );
       case "ifr-9":

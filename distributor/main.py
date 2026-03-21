@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import sys
+from contextlib import asynccontextmanager
 
 import uvicorn
 
@@ -16,7 +17,7 @@ from config import (
 )
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
-from websocket_server import app, init_app
+from websocket_server import create_app, init_app
 from zmq_consumer import ZmqConsumer
 
 logging.basicConfig(
@@ -42,12 +43,15 @@ if __name__ == "__main__":
 
     init_app(manager, consumer)
 
-    @app.on_event("startup")
-    async def startup() -> None:
+    @asynccontextmanager
+    async def lifespan(app):  # noqa: ARG001
         loop = asyncio.get_running_loop()
         consumer.start(loop=loop)
         consumer_sync.start(loop=loop)
         asyncio.create_task(consume_loop(queue, router))
+        yield
+
+    app = create_app(lifespan)
 
     try:
         uvicorn.run(app, host=WS_HOST, port=WS_PORT)

@@ -6,22 +6,15 @@ import { OpenAsWidgetButton } from "../OpenAsWidgetButton";
 import { FlowInversionCard } from "./FlowInversionCard";
 import { SecagemSignal as SecagemSignalComponent } from "./SecagemSignal";
 
-const SECAGEM_TICKER = "BOVA11";
 const SECAGEM_ALERT_DURATION_MS = 30_000;
 
 export function FlowAndSecagemPanel() {
   const domBuy = useMarketStore((s) => s.domBuy);
   const domSell = useMarketStore((s) => s.domSell);
   const lastPrice = useMarketStore((s) => s.lastPrice);
-  const streamingTicker = useMarketStore((s) => s.streamingTicker);
   const flowInversions = useMarketStore((s) => s.flowInversions);
 
-  const isBova11 = streamingTicker === SECAGEM_TICKER;
-  const domBuyForSecagem = isBova11 ? domBuy : [];
-  const domSellForSecagem = isBova11 ? domSell : [];
-  const lastPriceForSecagem = isBova11 ? lastPrice : 0;
-
-  const rawSecagem = useSecagemDetection(domBuyForSecagem, domSellForSecagem, lastPriceForSecagem);
+  const rawSecagem = useSecagemDetection(domBuy, domSell, lastPrice);
 
   const [displaySignal, setDisplaySignal] = useState<SecagemSignal>(null);
   const [signalExpiresAt, setSignalExpiresAt] = useState(0);
@@ -72,7 +65,7 @@ export function FlowAndSecagemPanel() {
       </section>
       <section className="flex-[0_0_50%] flex flex-col min-h-0 p-3 border-t border-border">
         <h2 className="text-sm font-semibold text-text/80 mb-2 shrink-0">
-          SECAGEM (BOVA11)
+          SECAGEM
         </h2>
         <div className="flex-1 min-h-0 flex items-start">
           <SecagemSignalComponent signal={displayedSignal} />
