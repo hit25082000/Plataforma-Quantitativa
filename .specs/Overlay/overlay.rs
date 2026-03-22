@@ -71,7 +71,7 @@ pub async fn set_overlay_positions(positions: Vec<f64>) -> Result<(), String> {
     let client = reqwest::Client::new();
     let body = serde_json::json!({ "positions": positions });
     client
-        .post("http://127.0.0.1:5556/positions")
+        .post("http://127.0.0.1:5558/positions")
         .json(&body)
         .send()
         .await

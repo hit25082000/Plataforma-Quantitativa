@@ -26,6 +26,7 @@ Plataforma Quantitativa/
 ├── frontend/         # React+TS (M4): UI tática
 ├── installer-resources/  # Sons e recursos para o bundle
 ├── scripts/          # run-dev.ps1, build-installer.ps1
+├── docs/             # PORTS.md (matriz de portas locais)
 ├── .specs/           # Specs do projeto (PROJECT, ROADMAP, STATE)
 ├── ProfitDLL.dll     # DLL 32 bits (Nelogica)
 ├── ProfitDLL64.dll   # DLL 64 bits (obrigatória para engine 64-bit; ver Manual)
@@ -51,9 +52,19 @@ Para subir **engine**, **distributor** e **app Tauri** de uma vez (desenvolvimen
    npm run dev
    ```
 
-O script inicia engine e distributor em background e o app em primeiro plano. Ao encerrar o app (Ctrl+C ou fechar a janela), engine e distributor são encerrados automaticamente.
+O script compila/copia a **engine**, inicia **distributor** e **sync_monitor** em background e abre o app Tauri. **Por defeito não inicia o OCR** (o Tauri faz spawn ao abrir o overlay, evitando dois binds na mesma porta). Para subir o OCR pelo script:
 
-**Pré-requisitos:** Engine já buildada (`engine\build\Release\engine.exe`), Python com pip, Node/npm. A pasta `engine\build\Release` deve existir (rode o build da engine antes, se necessário).
+```powershell
+.\scripts\run-dev.ps1 -StartOcr
+```
+
+Antes e depois do fluxo, o script tenta libertar listeners órfãos nas portas do stack (incl. OCR em 5558 ou `PQ_OCR_PORT`).
+
+**Pré-requisitos:** Python com pip, Node/npm. O script tenta gerar a engine.
+
+### Portas locais
+
+Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distributor; **5555** ZMQ mercado; **5556** TCP **SWITCH** do engine (não é OCR); **5557** ZMQ sync; **5558** OCR (ou `PQ_OCR_PORT` / `VITE_PQ_OCR_PORT` no frontend).
 
 ---
 
@@ -125,4 +136,3 @@ cd app && npm run dev
 ```
 
 (Requer engine e distributor rodando, ou o app fará spawn automático na primeira execução.)
-# Plataforma-Quantitativa

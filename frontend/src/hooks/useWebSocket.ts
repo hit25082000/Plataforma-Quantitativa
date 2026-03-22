@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { useMarketStore } from "../store/marketStore";
 import { isTauri } from "../utils/tauri";
 import type {
+  Agent007StateMessage,
   AlertMessage,
   DailyMessage,
   DomSnapshotMessage,
@@ -25,6 +26,7 @@ function getAlertCooldownKey(alert: AlertMessage): string {
 }
 const INITIAL_BACKOFF_MS = 1000;
 const WS_CONNECT_TIMEOUT_MS = 10000;
+/** Distributor WS. Ver docs/PORTS.md */
 const WS_URL_TAURI = "ws://127.0.0.1:8000/ws";
 
 function getWsUrl(): string {
@@ -57,6 +59,11 @@ function handleMessage(
 
     if (msg.topic === "sync") {
       store.updateSync(msg as SyncMessage);
+      return;
+    }
+
+    if (msg.topic === "agent007" && (msg as { type?: string }).type === "state") {
+      store.setAgent007State(msg as Agent007StateMessage);
       return;
     }
 
@@ -123,12 +130,15 @@ export function useWebSocket(enableConnection: boolean = true): void {
       const ws = new WebSocket(url);
       sharedWs = ws;
 
-      let connectTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-        connectTimeoutId = null;
-        if (ws.readyState === WebSocket.CONNECTING) {
-          ws.close();
-        }
-      }, WS_CONNECT_TIMEOUT_MS);
+      let connectTimeoutId: ReturnType<typeof setTimeout> | null = setTimeout(
+        () => {
+          connectTimeoutId = null;
+          if (ws.readyState === WebSocket.CONNECTING) {
+            ws.close();
+          }
+        },
+        WS_CONNECT_TIMEOUT_MS,
+      );
 
       ws.onopen = () => {
         if (connectTimeoutId) {

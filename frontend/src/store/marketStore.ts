@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  Agent007StateMessage,
   AlertMessage,
   DailyMessage,
   DomSnapshotMessage,
@@ -108,6 +109,9 @@ interface MarketStore {
   overlayUbsPrice: number | null;
   overlayAvgPrice: number | null;
   overlayLastUpdateTs: string | null;
+
+  agent007: Agent007StateMessage | null;
+  setAgent007State: (s: Agent007StateMessage) => void;
 }
 
 export const useMarketStore = create<MarketStore>((set) => ({
@@ -290,6 +294,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
   overlayUbsPrice: null,
   overlayAvgPrice: null,
   overlayLastUpdateTs: null,
+
+  agent007: null,
+  setAgent007State: (s) => set({ agent007: s }),
 }));
 
 type MarketState = ReturnType<typeof useMarketStore.getState>;

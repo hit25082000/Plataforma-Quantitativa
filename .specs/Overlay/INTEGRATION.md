@@ -65,7 +65,7 @@
 # ════════════════════════════════════════════════════════════════════════════════
 
 # # Após iniciar o distributor existente, adicione:
-# Write-Host "Iniciando serviço OCR (porta 5556)..."
+# Write-Host "Iniciando serviço OCR (porta 5558; ver docs/PORTS.md)..."
 # Start-Process -NoNewWindow python -ArgumentList "distributor/profit_ocr_service.py"
 # Start-Sleep -Seconds 1
 

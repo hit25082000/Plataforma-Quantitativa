@@ -50,7 +50,8 @@ def configure_tesseract_cmd() -> None:
 
 
 # Porta dedicada: 5557 é usada pelo sync_monitor (ZMQ PUB); evitar conflito TCP.
-OCR_PORT = 5558
+# Sobrescrever com PQ_OCR_PORT (alinhar Tauri + frontend: docs/PORTS.md).
+OCR_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
 REFRESH_MS = 400
 Y_AXIS_FRAC = 0.14
 TOOLBAR_H = 90
@@ -59,6 +60,7 @@ MIN_CONF = 22
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
 
 state: Dict[str, Any] = {
+    "targets": [],
     "positions": [],
     "chart_rect": None,
     "y_min": None,
@@ -79,8 +81,40 @@ app.add_middleware(
 )
 
 
+class OverlayTargetIn(BaseModel):
+    value: float
+    label: str = ""
+
+
 class PositionsUpdate(BaseModel):
-    positions: List[float]
+    """Novos clientes enviam targets; legado envia apenas positions."""
+
+    targets: Optional[List[OverlayTargetIn]] = None
+    positions: Optional[List[float]] = None
+
+
+def _targets_from_ws_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw = msg.get("targets")
+    if isinstance(raw, list) and raw:
+        out: List[Dict[str, Any]] = []
+        for t in raw:
+            if isinstance(t, dict) and "value" in t:
+                out.append(
+                    {
+                        "value": float(t["value"]),
+                        "label": str(t.get("label") or ""),
+                    }
+                )
+        return out
+    pos = msg.get("positions")
+    if isinstance(pos, list):
+        return [{"value": float(p), "label": ""} for p in pos]
+    return []
+
+
+def _apply_targets(targets: List[Dict[str, Any]]) -> None:
+    state["targets"] = targets
+    state["positions"] = [t["value"] for t in targets]
 
 
 def get_dpi_scale() -> float:
@@ -314,17 +348,19 @@ async def ocr_loop():
                         state["y_max"] = max(vals)
                         state["status"] = "ok"
                         lines = []
-                        for idx, pos in enumerate(state["positions"]):
-                            yf = (float(pos) - axis["intercept"]) / axis["slope"]
+                        for idx, t in enumerate(state["targets"]):
+                            pos = float(t["value"])
+                            yf = (pos - axis["intercept"]) / axis["slope"]
                             y_screen = int(round(yf))
                             if chart["top"] <= y_screen <= chart["top"] + chart["height"]:
                                 lines.append(
                                     {
-                                        "value": float(pos),
+                                        "value": pos,
                                         "y_screen": y_screen,
                                         "color": COLORS[idx % len(COLORS)],
                                         "chart_left": window["left"],
                                         "chart_right": window["right"],
+                                        "label": str(t.get("label") or ""),
                                     }
                                 )
                         state["lines"] = lines
@@ -392,7 +428,7 @@ async def ws_endpoint(websocket: WebSocket):
         async for raw in websocket.iter_text():
             msg = json.loads(raw)
             if msg.get("type") == "set_positions":
-                state["positions"] = [float(p) for p in msg.get("positions", [])]
+                _apply_targets(_targets_from_ws_message(msg))
     except WebSocketDisconnect:
         pass
     finally:
@@ -402,14 +438,22 @@ async def ws_endpoint(websocket: WebSocket):
 
 @app.post("/positions")
 async def set_positions(body: PositionsUpdate):
-    state["positions"] = body.positions
-    return {"ok": True, "positions": state["positions"]}
+    if body.targets is not None:
+        _apply_targets(
+            [{"value": t.value, "label": t.label} for t in body.targets]
+        )
+    elif body.positions is not None:
+        _apply_targets(
+            [{"value": float(p), "label": ""} for p in body.positions]
+        )
+    return {"ok": True, "targets": state["targets"], "positions": state["positions"]}
 
 
 @app.get("/status")
 async def get_status():
     return {
         "status": state["status"],
+        "targets": state["targets"],
         "positions": state["positions"],
         "lines": state["lines"],
         "y_min": state["y_min"],

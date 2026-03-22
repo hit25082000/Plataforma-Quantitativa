@@ -105,6 +105,43 @@ export interface MacdSignalMessage {
   rsi?: number;
 }
 
+export type Agent007Signal = "green" | "red" | "neutral";
+
+export type Agent007WeisSide = "buy" | "sell" | "unknown";
+
+export type Agent007PriceVsVwap = "above" | "below" | "at";
+
+export interface Agent007Alert {
+  kind: string;
+  text: string;
+  ts: string;
+}
+
+export interface Agent007InversionBrief {
+  agent_name?: string;
+  previous_delta?: number;
+  current_delta?: number;
+  ts?: string;
+}
+
+export interface Agent007StateMessage {
+  topic: "agent007";
+  type: "state";
+  ticker: string;
+  last_price: number;
+  vwap: number;
+  urgency_0_100: number;
+  signal: Agent007Signal;
+  weis_side: Agent007WeisSide;
+  weis_mode: string;
+  price_vs_vwap: Agent007PriceVsVwap;
+  entry_buy_valid: boolean;
+  entry_filter_reason: string | null;
+  recent_inversions: Agent007InversionBrief[];
+  alerts: Agent007Alert[];
+  ts: string;
+}
+
 export type WsMessage =
   | AlertMessage
   | TradeMessage
@@ -114,4 +151,5 @@ export type WsMessage =
   | DailyMessage
   | SyncMessage
   | FlowInversionMessage
-  | MacdSignalMessage;
+  | MacdSignalMessage
+  | Agent007StateMessage;

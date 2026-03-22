@@ -3,16 +3,20 @@
 import logging
 import socket
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, List, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 
+from agent_007 import Agent007Engine
+from agent_007_chat import check_rate_limit, run_agent007_chat
+from config import AGENT007_WEIS_MODE
 from connection_manager import ConnectionManager
 from zmq_consumer import ZmqConsumer
 
 logger = logging.getLogger(__name__)
 
+# TCP engine SWITCH: ver ../docs/PORTS.md
 ENGINE_CONTROL_PORT = 5556
 CONNECT_TIMEOUT_S = 2
 RECV_TIMEOUT_S = 15  # engine can take up to 10s to complete SWITCH
@@ -32,6 +36,7 @@ def _exchange_to_bolsa(exchange: str) -> str:
 # Shared state - initialized in main.py
 manager: Optional[ConnectionManager] = None
 zmq_consumer: Optional[ZmqConsumer] = None
+agent007_engine: Optional[Agent007Engine] = None
 
 
 @asynccontextmanager
@@ -42,11 +47,13 @@ async def _noop_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 def init_app(
     connection_manager: ConnectionManager,
     consumer: ZmqConsumer,
+    agent007: Optional[Agent007Engine] = None,
 ) -> None:
     """Initialize app with shared components (called from main.py)."""
-    global manager, zmq_consumer
+    global manager, zmq_consumer, agent007_engine
     manager = connection_manager
     zmq_consumer = consumer
+    agent007_engine = agent007
 
 
 def create_app(
@@ -117,6 +124,52 @@ def create_app(
                 s.close()
             except Exception:
                 pass
+
+    class ChatMessage(BaseModel):
+        role: str
+        content: str
+
+    class Agent007ChatBody(BaseModel):
+        messages: List[ChatMessage] = Field(default_factory=list)
+
+    class Agent007WeisBody(BaseModel):
+        side: str  # buy | sell | unknown
+
+    @app.get("/api/agent007/snapshot")
+    async def agent007_snapshot() -> dict:
+        if agent007_engine is None:
+            return {"error": "Agent007 não inicializado"}
+        return agent007_engine.get_snapshot()
+
+    @app.post("/api/agent007/chat")
+    async def agent007_chat(body: Agent007ChatBody, request: Request) -> dict:
+        if agent007_engine is None:
+            return {"ok": False, "error": "Agent007 não inicializado"}
+        client = request.client.host if request.client else "default"
+        ok_rl, msg_rl = check_rate_limit(client)
+        if not ok_rl:
+            return {"ok": False, "error": msg_rl}
+        snap = agent007_engine.get_snapshot()
+        user_msgs = [m.model_dump() for m in body.messages]
+        ok, text = run_agent007_chat(user_msgs, snap)
+        if not ok:
+            return {"ok": False, "error": text}
+        return {"ok": True, "reply": text}
+
+    @app.post("/api/agent007/weis")
+    async def agent007_weis(body: Agent007WeisBody) -> dict:
+        if agent007_engine is None:
+            return {"ok": False, "error": "Agent007 não inicializado"}
+        if AGENT007_WEIS_MODE != "manual":
+            return {
+                "ok": False,
+                "error": "Defina AGENT007_WEIS_MODE=manual no distributor para usar Weis manual.",
+            }
+        s = (body.side or "").strip().lower()
+        if s not in ("buy", "sell", "unknown"):
+            return {"ok": False, "error": "side deve ser buy, sell ou unknown"}
+        agent007_engine.set_manual_weis(s)
+        return {"ok": True, "side": s}
 
     return app
 

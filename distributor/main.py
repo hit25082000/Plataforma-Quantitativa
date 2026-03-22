@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 
+from agent_007 import Agent007Engine
 from config import (
     DOM_THROTTLE_MS,
     MARKET_QUEUE_MAXSIZE,
@@ -37,11 +38,12 @@ async def consume_loop(queue: asyncio.Queue[str], router: MessageRouter) -> None
 if __name__ == "__main__":
     queue = asyncio.Queue(maxsize=MARKET_QUEUE_MAXSIZE)
     manager = ConnectionManager()
-    router = MessageRouter(manager, DOM_THROTTLE_MS)
+    agent007_engine = Agent007Engine()
+    router = MessageRouter(manager, DOM_THROTTLE_MS, agent007_engine)
     consumer = ZmqConsumer(ZMQ_ADDRESS, queue)
     consumer_sync = ZmqConsumer(ZMQ_SYNC_ADDRESS, queue)
 
-    init_app(manager, consumer)
+    init_app(manager, consumer, agent007_engine)
 
     @asynccontextmanager
     async def lifespan(app):  # noqa: ARG001

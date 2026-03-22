@@ -25,6 +25,7 @@ pub fn run() {
             commands::open_profit_overlay,
             commands::close_profit_overlay,
             commands::set_overlay_positions,
+            commands::agent007_chat_invoke,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

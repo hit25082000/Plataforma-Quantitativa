@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Agent007Panel } from "../Agent007/Agent007Panel";
 import { useMarketStore } from "../../store/marketStore";
 import { formatPrice, formatTs } from "../../utils/formatters";
 import { AssetSelector } from "./AssetSelector";
@@ -16,6 +17,7 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
   const assetSwitchStatus = useMarketStore((s) => s.assetSwitchStatus);
   const assetSwitchMessage = useMarketStore((s) => s.assetSwitchMessage);
   const [time, setTime] = useState(formatTs(new Date().toISOString()));
+  const [agent007Open, setAgent007Open] = useState(false);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -54,6 +56,14 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
       )}
       <span className="text-text/80">VWAP: {vwap > 0 ? formatPrice(vwap) : "—"}</span>
       <span className="text-text/60 ml-auto flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setAgent007Open(true)}
+          className="px-2 py-1 rounded text-text/70 hover:text-text hover:bg-border/50 text-xs font-mono"
+          title="Agente 007 — análise em tempo real"
+        >
+          007
+        </button>
         <details className="relative">
           <summary
             className="list-none cursor-pointer px-2 py-1 rounded text-text/70 hover:text-text hover:bg-border/50 text-xs"
@@ -83,6 +93,31 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         )}
         {time}
       </span>
+
+      {agent007Open && (
+        <div className="fixed inset-0 z-[100] flex justify-end">
+          <button
+            type="button"
+            className="flex-1 bg-black/50 border-0 cursor-default"
+            aria-label="Fechar painel"
+            onClick={() => setAgent007Open(false)}
+          />
+          <div className="w-full max-w-md h-full bg-grid border-l border-border shadow-xl flex flex-col min-h-0">
+            <div className="shrink-0 flex justify-end border-b border-border px-2 py-1">
+              <button
+                type="button"
+                onClick={() => setAgent007Open(false)}
+                className="px-3 py-1 text-xs text-text/60 hover:text-text"
+              >
+                Fechar
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <Agent007Panel />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

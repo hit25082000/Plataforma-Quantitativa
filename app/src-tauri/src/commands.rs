@@ -16,7 +16,9 @@ const CONFIG_BACKUP_FILENAME: &str = "config.json.bak";
 const CONFIG_TMP_FILENAME: &str = "config.json.tmp";
 const CONFIG_CORRUPT_MSG: &str = "Arquivo de configuração corrompido. Não foi possível ler; alterações não foram salvas.";
 
+/// Health do distributor. Ver docs/PORTS.md
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
+const AGENT007_CHAT_URL: &str = "http://127.0.0.1:8000/api/agent007/chat";
 
 #[derive(Default)]
 pub struct ChildProcesses {
@@ -85,10 +87,24 @@ const VALID_WIDGET_IDS: &[&str] = &[
     "vwap",
 ];
 
+/// TCP do engine (SWITCH). Ver docs/PORTS.md
 const ENGINE_CONTROL_PORT: u16 = 5556;
-/// HTTP do serviço OCR (não usar 5557: reservado ao ZMQ do sync_monitor).
-const OCR_SERVICE_URL: &str = "http://127.0.0.1:5558/positions";
-const OCR_STATUS_URL: &str = "http://127.0.0.1:5558/status";
+
+/// Porta HTTP do OCR. Env `PQ_OCR_PORT` (alinhar Python + frontend). Ver docs/PORTS.md
+fn ocr_port() -> u16 {
+    std::env::var("PQ_OCR_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(5558)
+}
+
+fn ocr_status_url() -> String {
+    format!("http://127.0.0.1:{}/status", ocr_port())
+}
+
+fn ocr_positions_url() -> String {
+    format!("http://127.0.0.1:{}/positions", ocr_port())
+}
 
 fn get_resources_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     app.path()
@@ -104,7 +120,7 @@ async fn profit_ocr_http_reachable() -> bool {
         return false;
     };
     client
-        .get(OCR_STATUS_URL)
+        .get(ocr_status_url())
         .send()
         .await
         .map(|r| r.status().is_success())
@@ -173,10 +189,12 @@ async fn ensure_profit_ocr_running(
     };
 
     let script_str = script.to_string_lossy().to_string();
+    let ocr_port_env = ocr_port().to_string();
     let stderr_io = open_stderr(&stderr_path);
     let child = match Command::new("py")
         .args(["-3", &script_str])
         .current_dir(&res_sub)
+        .env("PQ_OCR_PORT", &ocr_port_env)
         .stdout(Stdio::null())
         .stderr(stderr_io)
         .spawn()
@@ -187,6 +205,7 @@ async fn ensure_profit_ocr_running(
             Command::new("python")
                 .arg(&script_str)
                 .current_dir(&res_sub)
+                .env("PQ_OCR_PORT", &ocr_port_env)
                 .stdout(Stdio::null())
                 .stderr(stderr_io2)
                 .spawn()
@@ -306,12 +325,20 @@ pub async fn close_profit_overlay(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Alvo de linha no overlay (preço + rótulo exibido na janela OCR).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OverlayTargetPayload {
+    pub value: f64,
+    #[serde(default)]
+    pub label: String,
+}
+
 #[tauri::command]
-pub async fn set_overlay_positions(positions: Vec<f64>) -> Result<(), String> {
+pub async fn set_overlay_positions(targets: Vec<OverlayTargetPayload>) -> Result<(), String> {
     let client = reqwest::Client::new();
-    let body = serde_json::json!({ "positions": positions });
+    let body = serde_json::json!({ "targets": targets });
     client
-        .post(OCR_SERVICE_URL)
+        .post(ocr_positions_url())
         .json(&body)
         .send()
         .await
@@ -453,6 +480,46 @@ pub async fn check_health() -> Result<bool, String> {
         Ok(r) => Ok(r.status().is_success()),
         Err(_) => Ok(false),
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Agent007ChatMsg {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Agent007ChatApiResult {
+    #[serde(default)]
+    pub ok: bool,
+    pub reply: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Proxy do chat Agente 007 → distributor (reqwest nativo; o `fetch` do WebView falha com CSP em devUrl).
+#[tauri::command]
+pub async fn agent007_chat_invoke(
+    messages: Vec<Agent007ChatMsg>,
+) -> Result<Agent007ChatApiResult, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .post(AGENT007_CHAT_URL)
+        .json(&serde_json::json!({ "messages": messages }))
+        .send()
+        .await
+        .map_err(|e| format!("Falha de rede ao distributor (127.0.0.1:8000): {e}"))?;
+    let status = res.status();
+    let text = res.text().await.map_err(|e| e.to_string())?;
+    let mut val: Agent007ChatApiResult =
+        serde_json::from_str(&text).map_err(|e| format!("Resposta inválida do distributor: {e}"))?;
+    if !status.is_success() && val.error.is_none() {
+        val.ok = false;
+        val.error = Some(format!("HTTP {status}"));
+    }
+    Ok(val)
 }
 
 #[cfg(target_os = "windows")]

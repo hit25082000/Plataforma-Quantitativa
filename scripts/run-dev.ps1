@@ -1,8 +1,33 @@
 # Run full stack: build engine, then start Tauri (which manages engine + distributor).
+# Portas canónicas: ver ../../docs/PORTS.md
 # Credentials are read from the app config by Tauri and passed to the engine process.
+#
+# Parâmetros:
+#   -StartOcr  Inicia profit_ocr_service.py em background (porta PQ_OCR_PORT ou 5558).
+#              Por defeito NÃO inicia o OCR: o Tauri faz spawn ao abrir o overlay.
+
+param(
+    [switch]$StartOcr
+)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+
+function Kill-ListenersOnPort {
+    param(
+        [int]$Port,
+        [string]$Label
+    )
+    $pattern = ":$Port\s"
+    $netstat = netstat -ano 2>$null | Select-String $pattern | Select-String "LISTENING"
+    foreach ($line in $netstat) {
+        if ($line -match '\s(\d+)$') {
+            $procId = [int]$Matches[1]
+            Write-Host "Matando processo na porta $Port ($Label, PID $procId)..." -ForegroundColor Yellow
+            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
 
 function Kill-StaleProcesses {
     $staleEngines = Get-Process -Name "engine" -ErrorAction SilentlyContinue
@@ -12,41 +37,19 @@ function Kill-StaleProcesses {
         Start-Sleep -Milliseconds 500
     }
 
-    $netstat = netstat -ano 2>$null | Select-String ":8000\s" | Select-String "LISTENING"
-    foreach ($line in $netstat) {
-        if ($line -match '\s(\d+)$') {
-            $procId = [int]$Matches[1]
-            Write-Host "Matando processo na porta 8000 (PID $procId)..." -ForegroundColor Yellow
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+    $ocrKillPort = 5558
+    if ($null -ne $env:PQ_OCR_PORT -and $env:PQ_OCR_PORT -ne "") {
+        $parsed = 0
+        if ([int]::TryParse($env:PQ_OCR_PORT, [ref]$parsed)) {
+            $ocrKillPort = $parsed
         }
     }
 
-    $netstat5555 = netstat -ano 2>$null | Select-String ":5555\s" | Select-String "LISTENING"
-    foreach ($line in $netstat5555) {
-        if ($line -match '\s(\d+)$') {
-            $procId = [int]$Matches[1]
-            Write-Host "Matando processo na porta 5555 (PID $procId)..." -ForegroundColor Yellow
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $netstat5557 = netstat -ano 2>$null | Select-String ":5557\s" | Select-String "LISTENING"
-    foreach ($line in $netstat5557) {
-        if ($line -match '\s(\d+)$') {
-            $procId = [int]$Matches[1]
-            Write-Host "Matando processo na porta 5557 (sync_monitor, PID $procId)..." -ForegroundColor Yellow
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        }
-    }
-
-    $netstat5556 = netstat -ano 2>$null | Select-String ":5556\s" | Select-String "LISTENING"
-    foreach ($line in $netstat5556) {
-        if ($line -match '\s(\d+)$') {
-            $procId = [int]$Matches[1]
-            Write-Host "Matando processo na porta 5556 (ocr_overlay, PID $procId)..." -ForegroundColor Yellow
-            Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-        }
-    }
+    Kill-ListenersOnPort -Port 8000 -Label "distributor HTTP/WS"
+    Kill-ListenersOnPort -Port 5555 -Label "ZMQ engine (mercado)"
+    Kill-ListenersOnPort -Port 5556 -Label "TCP engine SWITCH / troca de ativo"
+    Kill-ListenersOnPort -Port 5557 -Label "ZMQ sync_monitor"
+    Kill-ListenersOnPort -Port $ocrKillPort -Label "OCR overlay HTTP/WS"
 }
 
 $syncMonitorProcess = $null
@@ -124,17 +127,20 @@ try {
     $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 1200
 
-    # Start OCR overlay service (Python) on :5558 (5557 = ZMQ sync_monitor)
-    $ocrScript = Join-Path $distDir "profit_ocr_service.py"
-    if (Test-Path $ocrScript) {
-        Write-Host "=== Iniciando OCR overlay service (porta 5558) ===" -ForegroundColor Cyan
-        $prevTesseractCmd = $env:TESSERACT_CMD
-        $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
-        $ocrProcess = Start-Process -FilePath "python" -ArgumentList "profit_ocr_service.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
-        $env:TESSERACT_CMD = $prevTesseractCmd
-        Start-Sleep -Milliseconds 800
+    if ($StartOcr) {
+        $ocrScript = Join-Path $distDir "profit_ocr_service.py"
+        if (Test-Path $ocrScript) {
+            Write-Host "=== Iniciando OCR overlay service (-StartOcr; porta PQ_OCR_PORT ou 5558) ===" -ForegroundColor Cyan
+            $prevTesseractCmd = $env:TESSERACT_CMD
+            $env:TESSERACT_CMD = "C:\Program Files\Tesseract-OCR\tesseract.exe"
+            $ocrProcess = Start-Process -FilePath "python" -ArgumentList "profit_ocr_service.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
+            $env:TESSERACT_CMD = $prevTesseractCmd
+            Start-Sleep -Milliseconds 800
+        } else {
+            Write-Host "OCR service nao encontrado: $ocrScript" -ForegroundColor Yellow
+        }
     } else {
-        Write-Host "OCR service nao encontrado: $ocrScript" -ForegroundColor Yellow
+        Write-Host "OCR nao iniciado pelo script (use -StartOcr se precisar). O app Tauri sobe o OCR ao abrir o overlay." -ForegroundColor Gray
     }
 
     # Install and start sync_monitor (hidden, no terminal)

@@ -9,9 +9,9 @@ Serviço OCR para o Overlay do Gráfico de Profit.
 - Interpola posições (valor → pixel Y) para cada posição configurada
 - Publica atualizações via WebSocket a cada ~400 ms
 
-Portas:
-  HTTP  → 5556  (GET /status | POST /positions | GET /dpi)
-  WS    → ws://127.0.0.1:5556/ws
+Portas (canónico: docs/PORTS.md):
+  HTTP  → 5558  (GET /status | POST /positions | GET /dpi); env PQ_OCR_PORT
+  WS    → ws://127.0.0.1:5558/ws
 """
 
 import asyncio
@@ -39,7 +39,7 @@ except ImportError as e:
     sys.exit(1)
 
 # ─── Configurações ────────────────────────────────────────────────────────────
-OCR_PORT       = 5556
+OCR_PORT       = 5558
 REFRESH_MS     = 400          # Ciclo de captura
 Y_AXIS_FRAC    = 0.10         # Fração da largura usada para capturar o eixo Y
 TOOLBAR_H      = 90           # Altura estimada da toolbar do Profit (px lógicos)

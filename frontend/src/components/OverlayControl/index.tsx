@@ -1,5 +1,9 @@
 import { useRef, useState } from "react";
-import { useProfitOverlay } from "../../hooks/useProfitOverlay";
+import {
+  OVERLAY_METRIC_LABELS,
+  OVERLAY_METRIC_ORDER,
+  useProfitOverlay,
+} from "../../hooks/useProfitOverlay";
 
 const COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"];
 /** Valores do overlay são preços (eixo Y do gráfico), não saldo em contratos. */
@@ -9,10 +13,12 @@ export default function OverlayControl() {
   const {
     active,
     status,
-    positions,
+    targets,
     lines,
     y_min,
     y_max,
+    selectedMetricIds,
+    toggleMetric,
     openOverlay,
     closeOverlay,
     addPosition,
@@ -23,6 +29,7 @@ export default function OverlayControl() {
   const [newValue, setNewValue] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
 
+  const canActivate = selectedMetricIds.length > 0;
   const handleToggle = () => (active ? closeOverlay() : openOverlay());
 
   const handleAdd = () => {
@@ -50,9 +57,13 @@ export default function OverlayControl() {
       <div style={styles.header}>
         <span style={styles.title}>Overlay Profit</span>
         <button
+          type="button"
           onClick={handleToggle}
+          disabled={!active && !canActivate}
           style={{
             ...styles.toggleBtn,
+            opacity: !active && !canActivate ? 0.45 : 1,
+            cursor: !active && !canActivate ? "not-allowed" : "pointer",
             background: active ? "rgba(255,68,68,0.15)" : "rgba(0,255,136,0.15)",
             border: `1px solid ${active ? "#FF4444" : "#00FF88"}`,
             color: active ? "#FF4444" : "#00FF88",
@@ -60,6 +71,30 @@ export default function OverlayControl() {
         >
           {active ? "Desativar" : "Ativar"}
         </button>
+      </div>
+
+      {!canActivate && !active && (
+        <div style={styles.warnHint}>Marque ao menos um parâmetro para monitorar.</div>
+      )}
+
+      <div style={styles.section}>
+        <div style={styles.sectionLabel}>Monitorar</div>
+        <div style={styles.checkboxGrid}>
+          {OVERLAY_METRIC_ORDER.map((id) => {
+            const checked = selectedMetricIds.includes(id);
+            return (
+              <label key={id} style={styles.checkboxRow}>
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => toggleMetric(id)}
+                  style={styles.checkbox}
+                />
+                <span>{OVERLAY_METRIC_LABELS[id]}</span>
+              </label>
+            );
+          })}
+        </div>
       </div>
 
       <div style={styles.statusRow}>
@@ -74,16 +109,16 @@ export default function OverlayControl() {
 
       <div style={styles.section}>
         <div style={styles.sectionLabel}>Posicoes</div>
-        {positions.length === 0 && <div style={styles.emptyHint}>Nenhuma posicao configurada</div>}
-        {positions.map((pos, i) => {
-          const line = lines.find((l) => Math.abs(l.value - pos) < 0.001);
+        {targets.length === 0 && <div style={styles.emptyHint}>Nenhuma posicao configurada</div>}
+        {targets.map((t, i) => {
+          const line = lines.find((l) => Math.abs(l.value - t.value) < 0.001);
           const color = COLORS[i % COLORS.length];
           return (
-            <div key={i} style={styles.posRow}>
+            <div key={`${t.label}-${i}`} style={styles.posRow}>
               <span style={{ ...styles.colorDot, background: color }} />
               <input
                 type="number"
-                value={pos}
+                value={t.value}
                 step={POSITION_STEP}
                 onChange={(e) => {
                   const v = parseFloat(e.target.value);
@@ -91,10 +126,9 @@ export default function OverlayControl() {
                 }}
                 style={styles.posInput}
               />
-              {i === 0 && <span style={styles.defaultBadge}>MEDIO</span>}
-              {i === 1 && <span style={styles.defaultBadge}>UBS</span>}
+              <span style={styles.defaultBadge}>{t.label}</span>
               <span style={{ ...styles.yBadge, color }}>{line ? `y:${line.y_screen}px` : "-"}</span>
-              <button onClick={() => removePosition(i)} style={styles.removeBtn} title="Remover">
+              <button type="button" onClick={() => removePosition(i)} style={styles.removeBtn} title="Remover">
                 x
               </button>
             </div>
@@ -113,7 +147,7 @@ export default function OverlayControl() {
           onKeyDown={handleKeyDown}
           style={styles.addInput}
         />
-        <button onClick={handleAdd} style={styles.addBtn}>
+        <button type="button" onClick={handleAdd} style={styles.addBtn}>
           + Adicionar
         </button>
       </div>
@@ -145,6 +179,17 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     transition: "opacity 0.15s",
   },
+  warnHint: { fontSize: 11, color: "#FFB800", lineHeight: 1.35 },
+  checkboxGrid: { display: "flex", flexDirection: "column", gap: 4 },
+  checkboxRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    cursor: "pointer",
+    fontSize: 12,
+    color: "#C8CDD6",
+  },
+  checkbox: { cursor: "pointer", flexShrink: 0 },
   statusRow: { display: "flex", alignItems: "center", gap: 6, fontSize: 11, opacity: 0.85 },
   statusDot: { width: 7, height: 7, borderRadius: "50%" },
   statusText: { fontFamily: "monospace" },
@@ -187,6 +232,10 @@ const styles: Record<string, React.CSSProperties> = {
     padding: "0 4px",
     lineHeight: "14px",
     flexShrink: 0,
+    maxWidth: 120,
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
   },
   removeBtn: {
     background: "transparent",

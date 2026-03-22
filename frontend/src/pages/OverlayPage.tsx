@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { OCR_WS_URL } from "../config/ocrPort";
 
 interface OverlayLine {
   value: number;
@@ -6,6 +7,7 @@ interface OverlayLine {
   color: string;
   chart_left: number;
   chart_right: number;
+  label?: string;
 }
 
 interface OverlayData {
@@ -15,9 +17,8 @@ interface OverlayData {
   y_max: number | null;
 }
 
-const OCR_WS = "ws://127.0.0.1:5558/ws";
-const LABEL_W = 90;
-const LABEL_H = 22;
+const LABEL_W = 150;
+const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
 
 export default function OverlayPage() {
@@ -34,7 +35,7 @@ export default function OverlayPage() {
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    const ws = new WebSocket(OCR_WS);
+    const ws = new WebSocket(OCR_WS_URL);
     wsRef.current = ws;
 
     ws.onmessage = (ev) => {
@@ -114,15 +115,16 @@ export default function OverlayPage() {
 }
 
 function OverlayLineEl({ line }: { line: OverlayLine }) {
-  const { value, y_screen, color, chart_left, chart_right } = line;
+  const { value, y_screen, color, chart_left, chart_right, label: paramLabel } = line;
 
-  const label =
+  const priceStr =
     value >= 1000 || value <= -1000
       ? value.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
       : value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const lx = chart_right - LABEL_W - 4;
   const ly = y_screen - LABEL_H / 2;
+  const title = paramLabel?.trim() ? paramLabel.trim() : "";
 
   return (
     <g>
@@ -156,17 +158,31 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
         stroke={color}
         strokeWidth={1}
       />
+      {title ? (
+        <text
+          x={chart_right - 8}
+          y={y_screen - 3}
+          fill="rgba(200,210,225,0.95)"
+          fontSize={10}
+          fontFamily={FONT}
+          fontWeight="600"
+          textAnchor="end"
+          style={{ letterSpacing: "0.02em" }}
+        >
+          {title}
+        </text>
+      ) : null}
       <text
         x={chart_right - 8}
-        y={y_screen + 5}
+        y={y_screen + (title ? 12 : 5)}
         fill={color}
-        fontSize={12}
+        fontSize={title ? 12 : 12}
         fontFamily={FONT}
         fontWeight="700"
         textAnchor="end"
         style={{ letterSpacing: "0.04em" }}
       >
-        {label}
+        {priceStr}
       </text>
       <polygon
         points={`${chart_left},${y_screen - 5} ${chart_left + 10},${y_screen} ${chart_left},${y_screen + 5}`}

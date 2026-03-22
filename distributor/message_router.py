@@ -3,8 +3,9 @@
 import json
 import logging
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
+from agent_007 import Agent007Engine
 from candle_macd import CandleMacd
 from flow_tracker import FlowTracker
 from stats_logger import StatsLogger
@@ -18,7 +19,12 @@ logger = logging.getLogger(__name__)
 class MessageRouter:
     """Routes messages from ZMQ to WebSocket clients with validation and throttle."""
 
-    def __init__(self, manager: "ConnectionManager", throttle_ms: int) -> None:
+    def __init__(
+        self,
+        manager: "ConnectionManager",
+        throttle_ms: int,
+        agent007: Optional[Agent007Engine] = None,
+    ) -> None:
         self._manager = manager
         self._throttle_ms = throttle_ms
         self._last_dom_ts: float = 0.0
@@ -26,6 +32,7 @@ class MessageRouter:
         self._flow_tracker = FlowTracker()
         self._candle_macd = CandleMacd()
         self._stats_logger = StatsLogger()
+        self._agent007 = agent007 or Agent007Engine()
 
     async def route(self, raw: str) -> None:
         """Deserialize, validate, apply throttle, and broadcast if valid."""
@@ -60,12 +67,18 @@ class MessageRouter:
             if msg_type == "trade":
                 inversions = self._flow_tracker.on_trade(msg)
                 for inv in inversions:
+                    self._agent007.on_flow_inversion(inv)
                     inv_raw = json.dumps(inv)
                     await self._manager.broadcast(inv_raw)
                     self._stats_logger.log(inv)
                 macd_msg = self._candle_macd.on_trade(msg)
                 if macd_msg is not None:
+                    self._agent007.on_macd(macd_msg)
                     await self._manager.broadcast(json.dumps(macd_msg))
+
+                st = self._agent007.on_trade(msg)
+                if st is not None and self._agent007.should_broadcast(st):
+                    await self._manager.broadcast(json.dumps(st))
 
             if self._should_throttle(msg_type):
                 return

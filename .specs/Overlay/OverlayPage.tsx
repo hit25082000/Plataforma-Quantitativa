@@ -25,7 +25,7 @@ interface OverlayData {
 }
 
 // ─── Constantes ───────────────────────────────────────────────────────────────
-const OCR_WS = "ws://127.0.0.1:5556/ws";
+const OCR_WS = "ws://127.0.0.1:5558/ws";
 const LABEL_W = 90;
 const LABEL_H = 22;
 const FONT    = "'JetBrains Mono', 'Fira Mono', monospace";

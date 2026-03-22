@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { OCR_WS_URL } from "../config/ocrPort";
+import type { DomLevel } from "../store/marketStore";
 import { useMarketStore } from "../store/marketStore";
 import {
   computeAgentAggressorVwap,
@@ -10,7 +12,58 @@ import {
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
 
-const OCR_WS = "ws://127.0.0.1:5558/ws";
+const STORAGE_SELECTED_METRICS = "pq-overlay-selected-metrics";
+
+export type OverlayMetricId =
+  | "avg_price"
+  | "ubs"
+  | "best_bid"
+  | "best_ask";
+
+export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = [
+  "avg_price",
+  "ubs",
+  "best_bid",
+  "best_ask",
+];
+
+export const OVERLAY_METRIC_LABELS: Record<OverlayMetricId, string> = {
+  avg_price: "Preço médio",
+  ubs: "UBS",
+  best_bid: "Top comprador",
+  best_ask: "Top vendedor",
+};
+
+const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["avg_price", "ubs"];
+
+function loadSelectedMetrics(): OverlayMetricId[] {
+  try {
+    const raw = localStorage.getItem(STORAGE_SELECTED_METRICS);
+    if (!raw) return [...DEFAULT_SELECTED_METRICS];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [...DEFAULT_SELECTED_METRICS];
+    const allowed = new Set(OVERLAY_METRIC_ORDER);
+    const next = parsed.filter((x): x is OverlayMetricId => allowed.has(x as OverlayMetricId));
+    return next.length > 0 ? next : [...DEFAULT_SELECTED_METRICS];
+  } catch {
+    return [...DEFAULT_SELECTED_METRICS];
+  }
+}
+
+function saveSelectedMetrics(ids: OverlayMetricId[]) {
+  try {
+    localStorage.setItem(STORAGE_SELECTED_METRICS, JSON.stringify(ids));
+  } catch {
+    // ignore
+  }
+}
+
+export interface OverlayTarget {
+  value: number;
+  label: string;
+  /** Definido para linhas derivadas de métricas; ausente em linhas manuais. */
+  metricId?: OverlayMetricId;
+}
 
 export interface OverlayLine {
   value: number;
@@ -18,31 +71,64 @@ export interface OverlayLine {
   color: string;
   chart_left: number;
   chart_right: number;
+  label?: string;
 }
 
 export interface OverlayState {
   active: boolean;
   status: string;
-  positions: number[];
+  targets: OverlayTarget[];
   lines: OverlayLine[];
   y_min: number | null;
   y_max: number | null;
+}
+
+function bestBidPrice(domBuy: DomLevel[]): number | null {
+  if (!domBuy.length) return null;
+  const m = Math.max(...domBuy.map((l) => l.price));
+  return Number.isFinite(m) && m > 0 ? m : null;
+}
+
+function bestAskPrice(domSell: DomLevel[]): number | null {
+  if (!domSell.length) return null;
+  const m = Math.min(...domSell.map((l) => l.price));
+  return Number.isFinite(m) && m > 0 ? m : null;
+}
+
+function targetsEqual(a: OverlayTarget[], b: OverlayTarget[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (
+      a[i].value !== b[i].value ||
+      a[i].label !== b[i].label ||
+      a[i].metricId !== b[i].metricId
+    ) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function useProfitOverlay() {
   const [state, setState] = useState<OverlayState>({
     active: false,
     status: "idle",
-    positions: [],
+    targets: [],
     lines: [],
     y_min: null,
     y_max: null,
   });
 
+  const [selectedMetricIds, setSelectedMetricIdsState] = useState<OverlayMetricId[]>(
+    loadSelectedMetrics,
+  );
+
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
   const autoDynamicDefaultsRef = useRef(true);
   const wsRetryAttemptRef = useRef(0);
+  const targetsRef = useRef<OverlayTarget[]>([]);
+  const activeRef = useRef(false);
 
   const vwap = useMarketStore((s) => s.vwap);
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
@@ -51,22 +137,103 @@ export function useProfitOverlay() {
   const agentSellFinancial = useMarketStore((s) => s.agentSellFinancial);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
   const agentNames = useMarketStore((s) => s.agentNames);
+  const domBuy = useMarketStore((s) => s.domBuy);
+  const domSell = useMarketStore((s) => s.domSell);
+
+  useEffect(() => {
+    targetsRef.current = state.targets;
+  }, [state.targets]);
+
+  useEffect(() => {
+    activeRef.current = state.active;
+  }, [state.active]);
 
   const normalizePosition = useCallback(
     (value: number) => roundToStep(value, OVERLAY_CHART_PRICE_STEP),
     [],
   );
 
+  const buildMetricTargets = useCallback((): OverlayTarget[] => {
+    const out: OverlayTarget[] = [];
+    const avgPrice = vwap;
+    const ubsId = findUbsAgentId(agentShortNames, agentNames);
+    const ubsVwap =
+      ubsId == null
+        ? null
+        : computeAgentAggressorVwap(
+            ubsId,
+            agentBuyTotals,
+            agentSellTotals,
+            agentBuyFinancial,
+            agentSellFinancial,
+          );
+    const ubsPriceForChart =
+      ubsVwap != null && Number.isFinite(ubsVwap)
+        ? ubsVwap
+        : Number.isFinite(avgPrice) && avgPrice > 0
+          ? avgPrice
+          : null;
+
+    for (const id of OVERLAY_METRIC_ORDER) {
+      if (!selectedMetricIds.includes(id)) continue;
+      let raw: number | null = null;
+      if (id === "avg_price") {
+        raw =
+          Number.isFinite(avgPrice) && avgPrice > 0 ? normalizePosition(avgPrice) : null;
+      } else if (id === "ubs") {
+        if (ubsPriceForChart != null && Number.isFinite(ubsPriceForChart)) {
+          raw = normalizePosition(ubsPriceForChart);
+        }
+      } else if (id === "best_bid") {
+        const p = bestBidPrice(domBuy);
+        raw = p != null ? normalizePosition(p) : null;
+      } else if (id === "best_ask") {
+        const p = bestAskPrice(domSell);
+        raw = p != null ? normalizePosition(p) : null;
+      }
+      if (raw == null || !Number.isFinite(raw) || raw <= 0) continue;
+      out.push({
+        value: raw,
+        label: OVERLAY_METRIC_LABELS[id],
+        metricId: id,
+      });
+    }
+    return out;
+  }, [
+    agentBuyFinancial,
+    agentBuyTotals,
+    agentNames,
+    agentSellFinancial,
+    agentSellTotals,
+    agentShortNames,
+    domBuy,
+    domSell,
+    normalizePosition,
+    selectedMetricIds,
+    vwap,
+  ]);
+
+  const mergeTargets = useCallback(
+    (metrics: OverlayTarget[], manuals: OverlayTarget[]): OverlayTarget[] => [
+      ...metrics,
+      ...manuals,
+    ],
+    [],
+  );
+
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    const ws = new WebSocket(OCR_WS);
+    const ws = new WebSocket(OCR_WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
       wsRetryAttemptRef.current = 0;
-      // Reenvia estado atual ao conectar para nao perder set_positions enviado cedo.
       setState((prev) => {
-        ws.send(JSON.stringify({ type: "set_positions", positions: prev.positions }));
+        const valid = prev.targets.filter(
+          (t) => Number.isFinite(t.value) && t.value > 0,
+        );
+        const payload = valid.map(({ value, label }) => ({ value, label }));
+        ws.send(JSON.stringify({ type: "set_positions", targets: payload }));
         return prev;
       });
     };
@@ -105,63 +272,56 @@ export function useProfitOverlay() {
     };
   }, []);
 
-  const pushPositions = useCallback((positions: number[]) => {
+  const pushTargets = useCallback((targets: OverlayTarget[]) => {
+    const valid = targets.filter((t) => Number.isFinite(t.value) && t.value > 0);
+    const payload = valid.map(({ value, label }) => ({ value, label }));
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "set_positions", positions }));
+      wsRef.current.send(JSON.stringify({ type: "set_positions", targets: payload }));
     }
-    // Fallback deterministico: garante sincronizacao no OCR mesmo sem WS aberto.
-    invoke("set_overlay_positions", { positions }).catch(() => {});
+    invoke("set_overlay_positions", { targets: payload }).catch(() => {});
   }, []);
 
-  const buildDefaultPositions = useCallback((): number[] => {
-    const avgPrice = vwap;
+  const setSelectedMetricIds = useCallback((ids: OverlayMetricId[]) => {
+    const allowed = new Set(OVERLAY_METRIC_ORDER);
+    const next = ids.filter((id) => allowed.has(id));
+    setSelectedMetricIdsState(next);
+    saveSelectedMetrics(next);
+    if (activeRef.current) autoDynamicDefaultsRef.current = true;
+  }, []);
 
-    const ubsId = findUbsAgentId(agentShortNames, agentNames);
-    const ubsVwap =
-      ubsId == null
-        ? null
-        : computeAgentAggressorVwap(
-            ubsId,
-            agentBuyTotals,
-            agentSellTotals,
-            agentBuyFinancial,
-            agentSellFinancial,
-          );
-    const ubsPriceForChart =
-      ubsVwap != null && Number.isFinite(ubsVwap)
-        ? ubsVwap
-        : Number.isFinite(avgPrice) && avgPrice > 0
-          ? avgPrice
-          : 0;
-
-    const avgSafe = Number.isFinite(avgPrice) ? normalizePosition(avgPrice) : 0;
-    const ubsSafe = Number.isFinite(ubsPriceForChart)
-      ? normalizePosition(ubsPriceForChart)
-      : avgSafe;
-    return [avgSafe, ubsSafe];
-  }, [
-    agentBuyFinancial,
-    agentBuyTotals,
-    agentNames,
-    agentSellFinancial,
-    agentSellTotals,
-    agentShortNames,
-    normalizePosition,
-    vwap,
-  ]);
+  const toggleMetric = useCallback((id: OverlayMetricId) => {
+    setSelectedMetricIdsState((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      saveSelectedMetrics(next);
+      return next;
+    });
+    if (activeRef.current) autoDynamicDefaultsRef.current = true;
+  }, []);
 
   const openOverlay = useCallback(async () => {
+    if (selectedMetricIds.length === 0) {
+      console.warn("[overlay] Selecione ao menos um parâmetro para monitorar.");
+      return;
+    }
     try {
       await invoke("open_profit_overlay");
       connectWs();
-      const positions = buildDefaultPositions();
       autoDynamicDefaultsRef.current = true;
-      setState((prev) => ({ ...prev, active: true, positions }));
-      pushPositions(positions);
+      const metrics = buildMetricTargets();
+      const manuals = targetsRef.current.filter((t) => t.metricId == null);
+      const next = mergeTargets(metrics, manuals);
+      setState((prev) => ({ ...prev, active: true, targets: next }));
+      pushTargets(next);
     } catch (err) {
       console.error("[overlay] open_profit_overlay failed:", err);
     }
-  }, [buildDefaultPositions, connectWs, pushPositions]);
+  }, [
+    buildMetricTargets,
+    connectWs,
+    mergeTargets,
+    pushTargets,
+    selectedMetricIds,
+  ]);
 
   const closeOverlay = useCallback(async () => {
     try {
@@ -173,69 +333,96 @@ export function useProfitOverlay() {
     }
   }, []);
 
-  const setPositions = useCallback(
-    (positions: number[]) => {
+  const setTargets = useCallback(
+    (targets: OverlayTarget[]) => {
       autoDynamicDefaultsRef.current = false;
-      const normalized = positions.map(normalizePosition);
-      setState((prev) => ({ ...prev, positions: normalized }));
-      pushPositions(normalized);
+      const normalized = targets.map((t) => ({
+        ...t,
+        value: normalizePosition(t.value),
+      }));
+      setState((prev) => ({ ...prev, targets: normalized }));
+      pushTargets(normalized);
     },
-    [normalizePosition, pushPositions],
+    [normalizePosition, pushTargets],
   );
 
   const addPosition = useCallback(
     (value: number) => {
       autoDynamicDefaultsRef.current = false;
       setState((prev) => {
-        const positions = [...prev.positions, normalizePosition(value)];
-        pushPositions(positions);
-        return { ...prev, positions };
+        const manual: OverlayTarget = {
+          value: normalizePosition(value),
+          label: "Manual",
+        };
+        const next = [...prev.targets, manual];
+        pushTargets(next);
+        return { ...prev, targets: next };
       });
     },
-    [normalizePosition, pushPositions],
+    [normalizePosition, pushTargets],
   );
 
   const removePosition = useCallback(
     (index: number) => {
       autoDynamicDefaultsRef.current = false;
       setState((prev) => {
-        const positions = prev.positions.filter((_, i) => i !== index);
-        pushPositions(positions);
-        return { ...prev, positions };
+        const next = prev.targets.filter((_, i) => i !== index);
+        pushTargets(next);
+        return { ...prev, targets: next };
       });
     },
-    [pushPositions],
+    [pushTargets],
   );
 
   const updatePosition = useCallback(
     (index: number, value: number) => {
       autoDynamicDefaultsRef.current = false;
       setState((prev) => {
-        const positions = prev.positions.map((p, i) => (i === index ? normalizePosition(value) : p));
-        pushPositions(positions);
-        return { ...prev, positions };
+        const next = prev.targets.map((p, i) =>
+          i === index ? { ...p, value: normalizePosition(value) } : p,
+        );
+        pushTargets(next);
+        return { ...prev, targets: next };
       });
     },
-    [normalizePosition, pushPositions],
+    [normalizePosition, pushTargets],
   );
 
   useEffect(() => {
     if (!state.active || !autoDynamicDefaultsRef.current) return;
-    const next = buildDefaultPositions();
-    const same =
-      state.positions.length === 2 &&
-      state.positions[0] === next[0] &&
-      state.positions[1] === next[1];
-    if (same) return;
-    setState((prev) => ({ ...prev, positions: next }));
-    pushPositions(next);
-  }, [buildDefaultPositions, pushPositions, state.active, state.positions]);
+    setState((prev) => {
+      const manuals = prev.targets.filter((t) => t.metricId == null);
+      const metrics = buildMetricTargets();
+      const next = mergeTargets(metrics, manuals);
+      if (targetsEqual(next, prev.targets)) return prev;
+      pushTargets(next);
+      return { ...prev, targets: next };
+    });
+  }, [
+    buildMetricTargets,
+    mergeTargets,
+    pushTargets,
+    state.active,
+    vwap,
+    domBuy,
+    domSell,
+    agentBuyFinancial,
+    agentBuyTotals,
+    agentNames,
+    agentSellFinancial,
+    agentSellTotals,
+    agentShortNames,
+    selectedMetricIds,
+  ]);
 
   return {
     ...state,
+    selectedMetricIds,
+    setSelectedMetricIds,
+    toggleMetric,
     openOverlay,
     closeOverlay,
-    setPositions,
+    setTargets,
     addPosition,
     removePosition,
     updatePosition,

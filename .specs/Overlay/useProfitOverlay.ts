@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
-const OCR_WS = "ws://127.0.0.1:5556/ws";
+const OCR_WS = "ws://127.0.0.1:5558/ws";
 
 export interface OverlayLine {
   value: number;
@@ -35,7 +35,7 @@ export function useProfitOverlay() {
     y_max: null,
   });
 
-  const wsRef      = useRef<WebSocket | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
 
   // ── WS ─────────────────────────────────────────────────────────────────────
@@ -51,12 +51,14 @@ export function useProfitOverlay() {
           setState((prev) => ({
             ...prev,
             status: msg.data.status,
-            lines:  msg.data.lines ?? [],
-            y_min:  msg.data.y_min ?? null,
-            y_max:  msg.data.y_max ?? null,
+            lines: msg.data.lines ?? [],
+            y_min: msg.data.y_min ?? null,
+            y_max: msg.data.y_max ?? null,
           }));
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
 
     ws.onclose = () => {
@@ -75,9 +77,7 @@ export function useProfitOverlay() {
   // ── Enviar posições via WS ──────────────────────────────────────────────────
   const pushPositions = useCallback((positions: number[]) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(
-        JSON.stringify({ type: "set_positions", positions })
-      );
+      wsRef.current.send(JSON.stringify({ type: "set_positions", positions }));
     }
   }, []);
 
@@ -109,7 +109,7 @@ export function useProfitOverlay() {
       setState((prev) => ({ ...prev, positions }));
       pushPositions(positions);
     },
-    [pushPositions]
+    [pushPositions],
   );
 
   const addPosition = useCallback(
@@ -120,7 +120,7 @@ export function useProfitOverlay() {
         return { ...prev, positions };
       });
     },
-    [pushPositions]
+    [pushPositions],
   );
 
   const removePosition = useCallback(
@@ -131,18 +131,20 @@ export function useProfitOverlay() {
         return { ...prev, positions };
       });
     },
-    [pushPositions]
+    [pushPositions],
   );
 
   const updatePosition = useCallback(
     (index: number, value: number) => {
       setState((prev) => {
-        const positions = prev.positions.map((p, i) => (i === index ? value : p));
+        const positions = prev.positions.map((p, i) =>
+          i === index ? value : p,
+        );
         pushPositions(positions);
         return { ...prev, positions };
       });
     },
-    [pushPositions]
+    [pushPositions],
   );
 
   return {
