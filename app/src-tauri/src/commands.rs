@@ -6,6 +6,21 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
+
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
+
+/// `CREATE_NO_WINDOW` — subprocessos sem janela de consola (Windows).
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+#[cfg(target_os = "windows")]
+fn command_no_console(cmd: &mut Command) {
+    cmd.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(target_os = "windows"))]
+fn command_no_console(_cmd: &mut Command) {}
 use tauri::Manager;
 use tauri::State;
 use tauri::WebviewUrl;
@@ -43,6 +58,17 @@ pub struct AppConfig {
     pub profit_activation_key: Option<String>,
     pub profit_user: Option<String>,
     pub profit_password: Option<String>,
+    /// OpenRouter / Agente 007 — ver distributor/config.py (AGENT007_*).
+    #[serde(default)]
+    pub agent007_api_key: Option<String>,
+    #[serde(default)]
+    pub agent007_model: Option<String>,
+    #[serde(default)]
+    pub agent007_base_url: Option<String>,
+    #[serde(default)]
+    pub agent007_openrouter_http_referer: Option<String>,
+    #[serde(default)]
+    pub agent007_openrouter_app_title: Option<String>,
     pub notifications_enabled: Option<bool>,
     pub sounds_enabled: Option<bool>,
     pub volume: Option<u8>,
@@ -60,6 +86,11 @@ impl Default for AppConfig {
             profit_activation_key: None,
             profit_user: None,
             profit_password: None,
+            agent007_api_key: None,
+            agent007_model: None,
+            agent007_base_url: None,
+            agent007_openrouter_http_referer: None,
+            agent007_openrouter_app_title: None,
             notifications_enabled: Some(true),
             sounds_enabled: Some(true),
             volume: Some(80),
@@ -191,24 +222,26 @@ async fn ensure_profit_ocr_running(
     let script_str = script.to_string_lossy().to_string();
     let ocr_port_env = ocr_port().to_string();
     let stderr_io = open_stderr(&stderr_path);
-    let child = match Command::new("py")
+    let mut py_cmd = Command::new("py");
+    py_cmd
         .args(["-3", &script_str])
         .current_dir(&res_sub)
         .env("PQ_OCR_PORT", &ocr_port_env)
         .stdout(Stdio::null())
-        .stderr(stderr_io)
-        .spawn()
-    {
+        .stderr(stderr_io);
+    command_no_console(&mut py_cmd);
+    let child = match py_cmd.spawn() {
         Ok(c) => c,
         Err(e_py) => {
             let stderr_io2 = open_stderr(&stderr_path);
-            Command::new("python")
-                .arg(&script_str)
+            let mut alt = Command::new("python");
+            alt.arg(&script_str)
                 .current_dir(&res_sub)
                 .env("PQ_OCR_PORT", &ocr_port_env)
                 .stdout(Stdio::null())
-                .stderr(stderr_io2)
-                .spawn()
+                .stderr(stderr_io2);
+            command_no_console(&mut alt);
+            alt.spawn()
                 .map_err(|e_py2| format!("Falha ao iniciar OCR (py: {e_py}, python: {e_py2})"))?
         }
     };
@@ -364,7 +397,28 @@ pub async fn get_config_path(app: tauri::AppHandle) -> Result<String, String> {
 }
 
 fn parse_config_contents(contents: &str) -> Result<AppConfig, String> {
-    serde_json::from_str(contents).map_err(|e| format!("config.json inválido ou corrompido: {e}"))
+    let trimmed = contents
+        .strip_prefix('\u{feff}')
+        .unwrap_or(contents)
+        .trim();
+    if trimmed.is_empty() {
+        return Ok(AppConfig::default());
+    }
+    match serde_json::from_str::<AppConfig>(trimmed) {
+        Ok(c) => Ok(c),
+        Err(e) => {
+            let msg = e.to_string();
+            // Dois objetos colados, lixo após o `}`, etc. — `from_str` exige EOF; aqui lemos só o 1º valor.
+            if msg.contains("trailing characters") {
+                let mut de = serde_json::Deserializer::from_str(trimmed);
+                AppConfig::deserialize(&mut de).map_err(|e2| {
+                    format!("config.json inválido ou corrompido: {e2}")
+                })
+            } else {
+                Err(format!("config.json inválido ou corrompido: {e}"))
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -377,16 +431,24 @@ pub async fn read_config(app: tauri::AppHandle) -> Result<AppConfig, String> {
     let contents = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     match parse_config_contents(&contents) {
         Ok(config) => Ok(config),
-        Err(_) => {
-            let backup_path = path.parent().map(|p| p.join(CONFIG_BACKUP_FILENAME)).unwrap_or_else(|| PathBuf::from(CONFIG_BACKUP_FILENAME));
+        Err(main_err) => {
+            let backup_path = path
+                .parent()
+                .map(|p| p.join(CONFIG_BACKUP_FILENAME))
+                .unwrap_or_else(|| PathBuf::from(CONFIG_BACKUP_FILENAME));
             if backup_path.exists() {
                 if let Ok(backup_contents) = std::fs::read_to_string(&backup_path) {
-                    if let Ok(config) = parse_config_contents(&backup_contents) {
-                        return Ok(config);
+                    match parse_config_contents(&backup_contents) {
+                        Ok(config) => return Ok(config),
+                        Err(backup_err) => {
+                            return Err(format!(
+                                "config.json inválido ou corrompido (principal: {main_err}; backup: {backup_err})"
+                            ));
+                        }
                     }
                 }
             }
-            Err("config.json inválido ou corrompido".to_string())
+            Err(format!("config.json inválido ou corrompido: {main_err}"))
         }
     }
 }
@@ -444,6 +506,43 @@ pub async fn write_config(app: tauri::AppHandle, config: AppConfig) -> Result<()
     }
     if config.widget_windows.is_some() {
         merged.widget_windows = config.widget_windows;
+    }
+
+    // Agente 007: campo presente no JSON (Some) atualiza; string vazia limpa. Ausente (None) não altera.
+    if let Some(v) = config.agent007_api_key {
+        merged.agent007_api_key = if v.trim().is_empty() {
+            None
+        } else {
+            Some(v.trim().to_string())
+        };
+    }
+    if let Some(v) = config.agent007_model {
+        merged.agent007_model = if v.trim().is_empty() {
+            None
+        } else {
+            Some(v.trim().to_string())
+        };
+    }
+    if let Some(v) = config.agent007_base_url {
+        merged.agent007_base_url = if v.trim().is_empty() {
+            None
+        } else {
+            Some(v.trim().to_string())
+        };
+    }
+    if let Some(v) = config.agent007_openrouter_http_referer {
+        merged.agent007_openrouter_http_referer = if v.trim().is_empty() {
+            None
+        } else {
+            Some(v.trim().to_string())
+        };
+    }
+    if let Some(v) = config.agent007_openrouter_app_title {
+        merged.agent007_openrouter_app_title = if v.trim().is_empty() {
+            None
+        } else {
+            Some(v.trim().to_string())
+        };
     }
 
     if let Some(parent) = path.parent() {
@@ -524,11 +623,12 @@ pub async fn agent007_chat_invoke(
 
 #[cfg(target_os = "windows")]
 fn kill_stale_processes() {
-    let _ = Command::new("taskkill")
-        .args(["/F", "/IM", "engine.exe"])
+    let mut c = Command::new("taskkill");
+    c.args(["/F", "/IM", "engine.exe"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
+        .stderr(Stdio::null());
+    command_no_console(&mut c);
+    let _ = c.status();
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -663,9 +763,79 @@ pub async fn spawn_engine(
         );
     }
 
+    command_no_console(&mut cmd);
     let child = cmd.spawn().map_err(|e| e.to_string())?;
     *engine_guard = Some(child);
     Ok(())
+}
+
+/// Env do processo Tauri tem prioridade sobre `config.json` (útil em dev/CI).
+fn env_nonempty(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn apply_agent007_env(cmd: &mut Command, config: &AppConfig) {
+    let api = env_nonempty("AGENT007_API_KEY")
+        .or_else(|| env_nonempty("OPENROUTER_API_KEY"))
+        .or_else(|| {
+            config
+                .agent007_api_key
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(v) = api {
+        cmd.env("AGENT007_API_KEY", v);
+    }
+
+    let model = env_nonempty("AGENT007_MODEL").or_else(|| {
+        config
+            .agent007_model
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(v) = model {
+        cmd.env("AGENT007_MODEL", v);
+    }
+
+    let base = env_nonempty("AGENT007_BASE_URL").or_else(|| {
+        config
+            .agent007_base_url
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(v) = base {
+        cmd.env("AGENT007_BASE_URL", v);
+    }
+
+    let referer = env_nonempty("AGENT007_OPENROUTER_HTTP_REFERER")
+        .or_else(|| env_nonempty("OPENROUTER_HTTP_REFERER"))
+        .or_else(|| {
+            config
+                .agent007_openrouter_http_referer
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+        });
+    if let Some(v) = referer {
+        cmd.env("AGENT007_OPENROUTER_HTTP_REFERER", v);
+    }
+
+    let title = env_nonempty("AGENT007_OPENROUTER_APP_TITLE").or_else(|| {
+        config
+            .agent007_openrouter_app_title
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    });
+    if let Some(v) = title {
+        cmd.env("AGENT007_OPENROUTER_APP_TITLE", v);
+    }
 }
 
 #[tauri::command]
@@ -678,10 +848,7 @@ pub async fn spawn_distributor(
         return Ok(());
     }
 
-    let mut dist_guard = processes.distributor.lock().map_err(|e| e.to_string())?;
-    if dist_guard.is_some() {
-        return Err("Distributor já está em execução".to_string());
-    }
+    let config = read_config(app.clone()).await?;
 
     let resources = get_resources_dir(&app)?;
     let dist_dir = resources.join("resources");
@@ -713,12 +880,19 @@ pub async fn spawn_distributor(
         Stdio::null()
     };
 
-    let child = Command::new(&dist_exe)
-        .current_dir(&dist_dir)
+    let mut dist_guard = processes.distributor.lock().map_err(|e| e.to_string())?;
+    if dist_guard.is_some() {
+        return Err("Distributor já está em execução".to_string());
+    }
+
+    let mut cmd = Command::new(&dist_exe);
+    cmd.current_dir(&dist_dir)
         .stdout(Stdio::null())
-        .stderr(dist_stderr)
-        .spawn()
-        .map_err(|e| e.to_string())?;
+        .stderr(dist_stderr);
+    apply_agent007_env(&mut cmd, &config);
+
+    command_no_console(&mut cmd);
+    let child = cmd.spawn().map_err(|e| e.to_string())?;
 
     *dist_guard = Some(child);
     Ok(())

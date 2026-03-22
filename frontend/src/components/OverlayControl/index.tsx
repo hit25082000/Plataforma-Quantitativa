@@ -2,10 +2,9 @@ import { useRef, useState } from "react";
 import {
   OVERLAY_METRIC_LABELS,
   OVERLAY_METRIC_ORDER,
+  overlayLineColorForLabel,
   useProfitOverlay,
 } from "../../hooks/useProfitOverlay";
-
-const COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"];
 /** Valores do overlay são preços (eixo Y do gráfico), não saldo em contratos. */
 const POSITION_STEP = 1;
 
@@ -112,7 +111,8 @@ export default function OverlayControl() {
         {targets.length === 0 && <div style={styles.emptyHint}>Nenhuma posicao configurada</div>}
         {targets.map((t, i) => {
           const line = lines.find((l) => Math.abs(l.value - t.value) < 0.001);
-          const color = COLORS[i % COLORS.length];
+          const color =
+            line?.color ?? overlayLineColorForLabel(t.label ?? "", i);
           return (
             <div key={`${t.label}-${i}`} style={styles.posRow}>
               <span style={{ ...styles.colorDot, background: color }} />

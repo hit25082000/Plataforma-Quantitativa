@@ -20,6 +20,8 @@ interface OverlayData {
 const LABEL_W = 150;
 const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
+/** Recuo à direita para não cobrir a faixa de botões/ferramentas do Profit. */
+const OVERLAY_RIGHT_MARGIN_PX = 208;
 
 export default function OverlayPage() {
   const [data, setData] = useState<OverlayData>({
@@ -122,7 +124,11 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       ? value.toLocaleString("pt-BR", { minimumFractionDigits: 0, maximumFractionDigits: 0 })
       : value.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  const lx = chart_right - LABEL_W - 4;
+  const lineRight = Math.max(
+    chart_left + LABEL_W + 24,
+    chart_right - OVERLAY_RIGHT_MARGIN_PX,
+  );
+  const lx = lineRight - LABEL_W - 4;
   const ly = y_screen - LABEL_H / 2;
   const title = paramLabel?.trim() ? paramLabel.trim() : "";
 
@@ -131,7 +137,7 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       <line
         x1={chart_left}
         y1={y_screen}
-        x2={chart_right}
+        x2={lineRight}
         y2={y_screen}
         stroke="rgba(0,0,0,0.5)"
         strokeWidth={3.5}
@@ -141,7 +147,7 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       <line
         x1={chart_left}
         y1={y_screen}
-        x2={chart_right}
+        x2={lineRight}
         y2={y_screen}
         stroke={color}
         strokeWidth={1.8}
@@ -160,7 +166,7 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       />
       {title ? (
         <text
-          x={chart_right - 8}
+          x={lineRight - 8}
           y={y_screen - 3}
           fill="rgba(200,210,225,0.95)"
           fontSize={10}
@@ -173,7 +179,7 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
         </text>
       ) : null}
       <text
-        x={chart_right - 8}
+        x={lineRight - 8}
         y={y_screen + (title ? 12 : 5)}
         fill={color}
         fontSize={title ? 12 : 12}

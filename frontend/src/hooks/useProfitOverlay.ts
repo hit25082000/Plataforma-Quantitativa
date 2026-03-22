@@ -14,27 +14,40 @@ const OVERLAY_CHART_PRICE_STEP = 1;
 
 const STORAGE_SELECTED_METRICS = "pq-overlay-selected-metrics";
 
-export type OverlayMetricId =
-  | "avg_price"
-  | "ubs"
-  | "best_bid"
-  | "best_ask";
+export type OverlayMetricId = "ubs" | "best_bid" | "best_ask";
 
 export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = [
-  "avg_price",
   "ubs",
   "best_bid",
   "best_ask",
 ];
 
 export const OVERLAY_METRIC_LABELS: Record<OverlayMetricId, string> = {
-  avg_price: "Preço médio",
   ubs: "UBS",
-  best_bid: "Top comprador",
-  best_ask: "Top vendedor",
+  best_bid: "Líder comprador",
+  best_ask: "Líder vendedor",
 };
 
-const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["avg_price", "ubs"];
+/** Cores alinhadas ao serviço OCR (profit_ocr_service). */
+const OVERLAY_FALLBACK_COLORS = [
+  "#00FF88",
+  "#FF4444",
+  "#FFB800",
+  "#00CCFF",
+  "#FF88FF",
+  "#FFFFFF",
+];
+
+export function overlayLineColorForLabel(label: string, index: number): string {
+  const s = label.trim().toLowerCase();
+  if (s === "ubs") return "#A855F7";
+  if (s.includes("vendedor") || (s.includes("venda") && !s.includes("compra")))
+    return "#FF4444";
+  if (s.includes("comprador") || s.includes("compra")) return "#00FF88";
+  return OVERLAY_FALLBACK_COLORS[index % OVERLAY_FALLBACK_COLORS.length];
+}
+
+const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["ubs", "best_bid", "best_ask"];
 
 function loadSelectedMetrics(): OverlayMetricId[] {
   try {
@@ -43,7 +56,9 @@ function loadSelectedMetrics(): OverlayMetricId[] {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [...DEFAULT_SELECTED_METRICS];
     const allowed = new Set(OVERLAY_METRIC_ORDER);
-    const next = parsed.filter((x): x is OverlayMetricId => allowed.has(x as OverlayMetricId));
+    const next = parsed.filter((x): x is OverlayMetricId =>
+      allowed.has(x as OverlayMetricId),
+    );
     return next.length > 0 ? next : [...DEFAULT_SELECTED_METRICS];
   } catch {
     return [...DEFAULT_SELECTED_METRICS];
@@ -119,9 +134,8 @@ export function useProfitOverlay() {
     y_max: null,
   });
 
-  const [selectedMetricIds, setSelectedMetricIdsState] = useState<OverlayMetricId[]>(
-    loadSelectedMetrics,
-  );
+  const [selectedMetricIds, setSelectedMetricIdsState] =
+    useState<OverlayMetricId[]>(loadSelectedMetrics);
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
@@ -177,10 +191,7 @@ export function useProfitOverlay() {
     for (const id of OVERLAY_METRIC_ORDER) {
       if (!selectedMetricIds.includes(id)) continue;
       let raw: number | null = null;
-      if (id === "avg_price") {
-        raw =
-          Number.isFinite(avgPrice) && avgPrice > 0 ? normalizePosition(avgPrice) : null;
-      } else if (id === "ubs") {
+      if (id === "ubs") {
         if (ubsPriceForChart != null && Number.isFinite(ubsPriceForChart)) {
           raw = normalizePosition(ubsPriceForChart);
         }
@@ -273,10 +284,14 @@ export function useProfitOverlay() {
   }, []);
 
   const pushTargets = useCallback((targets: OverlayTarget[]) => {
-    const valid = targets.filter((t) => Number.isFinite(t.value) && t.value > 0);
+    const valid = targets.filter(
+      (t) => Number.isFinite(t.value) && t.value > 0,
+    );
     const payload = valid.map(({ value, label }) => ({ value, label }));
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "set_positions", targets: payload }));
+      wsRef.current.send(
+        JSON.stringify({ type: "set_positions", targets: payload }),
+      );
     }
     invoke("set_overlay_positions", { targets: payload }).catch(() => {});
   }, []);
@@ -291,7 +306,9 @@ export function useProfitOverlay() {
 
   const toggleMetric = useCallback((id: OverlayMetricId) => {
     setSelectedMetricIdsState((prev) => {
-      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      const next = prev.includes(id)
+        ? prev.filter((x) => x !== id)
+        : [...prev, id];
       saveSelectedMetrics(next);
       return next;
     });

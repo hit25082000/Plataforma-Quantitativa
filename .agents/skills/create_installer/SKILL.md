@@ -30,6 +30,8 @@ powershell -ExecutionPolicy Bypass -File .agents/skills/create_installer/scripts
 3. **Prepares Resources**: Copies `engine.exe`, `distributor.exe`, `ProfitDLL.dll`, and sound files to the `app/src-tauri/resources` directory.
 4. **Builds Tauri**: Executes `npm run tauri build` to generate the final installer.
 
+**Runtime:** O instalador não embute credenciais. Utilizadores finais configuram Profit e chaves API (ex. OpenRouter para o Agente 007) no menu **Configurações** da app; o Tauri repassa esses valores ao engine e ao `distributor.exe`.
+
 ## Outputs
 
 The final installer will be located in:

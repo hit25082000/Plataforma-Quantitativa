@@ -108,8 +108,8 @@ Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distribut
 - **App Tauri v2** em `app/` – wrapper que usa o frontend em `frontend/`
 - **Orquestração**: spawn automático de engine e distributor ao iniciar
 - **Notificações Windows** e **sons** por tipo de alerta (R2 → wall.wav, R5 → breakout.wav)
-- **Painel de Configurações**: credenciais Profit, notificações, sons, volume
-- **Instalador .exe** (NSIS) via `npm run tauri build`
+- **Painel de Configurações**: credenciais Profit, chave API OpenRouter (Agente 007), notificações, sons, volume
+- **Instalador .exe** (NSIS) via `npm run tauri build` — na app empacotada, segredos ficam em **Configurações** (persistidos em `config.json` na pasta de dados do app), não num `.env` do repositório
 
 ### Build do Instalador
 

@@ -59,6 +59,18 @@ AXIS_BOTTOM_CROP_PX = 42
 MIN_CONF = 22
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
 
+
+def line_color_for_label(label: str, idx: int) -> str:
+    """Verde: líder de compra; vermelho: líder de venda; roxo: UBS; demais: paleta."""
+    s = (label or "").strip().lower()
+    if s == "ubs":
+        return "#A855F7"
+    if "vendedor" in s or ("venda" in s and "compra" not in s):
+        return "#FF4444"
+    if "comprador" in s or "compra" in s:
+        return "#00FF88"
+    return COLORS[idx % len(COLORS)]
+
 state: Dict[str, Any] = {
     "targets": [],
     "positions": [],
@@ -353,14 +365,15 @@ async def ocr_loop():
                             yf = (pos - axis["intercept"]) / axis["slope"]
                             y_screen = int(round(yf))
                             if chart["top"] <= y_screen <= chart["top"] + chart["height"]:
+                                lbl = str(t.get("label") or "")
                                 lines.append(
                                     {
                                         "value": pos,
                                         "y_screen": y_screen,
-                                        "color": COLORS[idx % len(COLORS)],
+                                        "color": line_color_for_label(lbl, idx),
                                         "chart_left": window["left"],
                                         "chart_right": window["right"],
-                                        "label": str(t.get("label") or ""),
+                                        "label": lbl,
                                     }
                                 )
                         state["lines"] = lines
