@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { OCR_WS_URL } from "../config/ocrPort";
 
 interface OverlayLine {
@@ -22,6 +22,76 @@ const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
 /** Recuo à direita para não cobrir a faixa de botões/ferramentas do Profit. */
 const OVERLAY_RIGHT_MARGIN_PX = 208;
+const LABEL_MIN_GAP = LABEL_H + 4;
+const LABEL_MARGIN_PX = 2;
+
+interface PositionedOverlayLine extends OverlayLine {
+  labelY: number;
+  rank: number;
+  dense: boolean;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
+function layoutOverlayLines(lines: OverlayLine[], screenH: number): PositionedOverlayLine[] {
+  if (lines.length === 0) return [];
+
+  const sortedByY = lines
+    .map((line, index) => ({ line, index }))
+    .sort((a, b) => a.line.y_screen - b.line.y_screen);
+
+  const gaps: number[] = [];
+  for (let i = 1; i < sortedByY.length; i++) {
+    gaps.push(Math.abs(sortedByY[i].line.y_screen - sortedByY[i - 1].line.y_screen));
+  }
+  const avgGap = gaps.length > 0 ? gaps.reduce((acc, g) => acc + g, 0) / gaps.length : LABEL_MIN_GAP;
+  const dense = sortedByY.length >= 4 || avgGap < LABEL_MIN_GAP + 8;
+
+  const minCenter = LABEL_H / 2 + LABEL_MARGIN_PX;
+  const maxCenter = screenH - LABEL_H / 2 - LABEL_MARGIN_PX;
+  const centers = sortedByY.map((x) => clamp(x.line.y_screen, minCenter, maxCenter));
+
+  // Passo para baixo: garante distanciamento mínimo entre labels.
+  for (let i = 1; i < centers.length; i++) {
+    centers[i] = Math.max(centers[i], centers[i - 1] + LABEL_MIN_GAP);
+  }
+
+  const overflowBottom = centers[centers.length - 1] - maxCenter;
+  if (overflowBottom > 0) {
+    for (let i = 0; i < centers.length; i++) centers[i] -= overflowBottom;
+  }
+
+  // Passo para cima: corrige colisões restantes após ajustar o rodapé.
+  for (let i = centers.length - 2; i >= 0; i--) {
+    centers[i] = Math.min(centers[i], centers[i + 1] - LABEL_MIN_GAP);
+  }
+
+  const overflowTop = minCenter - centers[0];
+  if (overflowTop > 0) {
+    for (let i = 0; i < centers.length; i++) centers[i] += overflowTop;
+  }
+
+  const arranged = sortedByY.map((x, i) => ({
+    line: x.line,
+    index: x.index,
+    labelY: clamp(centers[i], minCenter, maxCenter),
+    rank: i + 1,
+    dense,
+  }));
+
+  const byOriginal = new Array<PositionedOverlayLine>(arranged.length);
+  for (const item of arranged) {
+    byOriginal[item.index] = {
+      ...item.line,
+      labelY: item.labelY,
+      rank: item.rank,
+      dense: item.dense,
+    };
+  }
+  return byOriginal;
+}
 
 export default function OverlayPage() {
   const [data, setData] = useState<OverlayData>({
@@ -33,12 +103,26 @@ export default function OverlayPage() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
+  const wsRetryRef = useRef(0);
+  const wsStartRef = useRef<number | null>(null);
+  const wsOpenLoggedRef = useRef(false);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    setData((prev) => ({ ...prev, status: "connecting" }));
+    if (wsStartRef.current == null) wsStartRef.current = performance.now();
 
     const ws = new WebSocket(OCR_WS_URL);
     wsRef.current = ws;
+    ws.onopen = () => {
+      wsRetryRef.current = 0;
+      if (!wsOpenLoggedRef.current && wsStartRef.current != null) {
+        const ms = Math.round(performance.now() - wsStartRef.current);
+        console.info(`[overlay-latency] overlay_page_ws_open elapsed_ms=${ms}`);
+        wsOpenLoggedRef.current = true;
+      }
+      setData((prev) => ({ ...prev, status: "connecting" }));
+    };
 
     ws.onmessage = (ev) => {
       try {
@@ -52,7 +136,14 @@ export default function OverlayPage() {
     };
 
     ws.onclose = () => {
-      retryTimer.current = setTimeout(connect, 1_000);
+      const delays = [200, 350, 600, 1000, 1500];
+      const i = Math.min(wsRetryRef.current++, delays.length - 1);
+      const ms = delays[i] ?? 1500;
+      setData((prev) => ({
+        ...prev,
+        status: wsRetryRef.current > 10 ? "ocr_unreachable_retrying" : "warming_up",
+      }));
+      retryTimer.current = setTimeout(connect, ms);
     };
 
     ws.onerror = () => ws.close();
@@ -87,6 +178,8 @@ export default function OverlayPage() {
 
   const W = window.screen.width;
   const H = window.screen.height;
+  const positionedLines = useMemo(() => layoutOverlayLines(data.lines, H), [data.lines, H]);
+
   return (
     <div
       style={{
@@ -106,7 +199,7 @@ export default function OverlayPage() {
         viewBox={`0 0 ${W} ${H}`}
         style={{ position: "absolute", inset: 0, display: "block" }}
       >
-        {data.lines.map((line, i) => (
+        {positionedLines.map((line, i) => (
           <OverlayLineEl key={i} line={line} />
         ))}
 
@@ -116,8 +209,13 @@ export default function OverlayPage() {
   );
 }
 
-function OverlayLineEl({ line }: { line: OverlayLine }) {
-  const { value, y_screen, color, chart_left, chart_right, label: paramLabel } = line;
+function OverlayLineEl({ line }: { line: PositionedOverlayLine }) {
+  const { value, y_screen, color, chart_left, chart_right, label: paramLabel, labelY, rank, dense } =
+    line;
+  const compact = dense;
+  const labelH = compact ? 32 : LABEL_H;
+  const titleFontSize = compact ? 9 : 10;
+  const priceFontSize = compact ? 11 : 12;
 
   const priceStr =
     value >= 1000 || value <= -1000
@@ -129,11 +227,21 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
     chart_right - OVERLAY_RIGHT_MARGIN_PX,
   );
   const lx = lineRight - LABEL_W - 4;
-  const ly = y_screen - LABEL_H / 2;
-  const title = paramLabel?.trim() ? paramLabel.trim() : "";
+  const ly = labelY - labelH / 2;
+  const baseTitle = paramLabel?.trim() ? paramLabel.trim() : "";
+  const title = baseTitle ? `${rank}) ${baseTitle}` : "";
 
   return (
     <g>
+      <line
+        x1={lineRight - 14}
+        y1={y_screen}
+        x2={lx - 3}
+        y2={labelY}
+        stroke={color}
+        strokeWidth={1}
+        opacity={0.78}
+      />
       <line
         x1={chart_left}
         y1={y_screen}
@@ -158,7 +266,7 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
         x={lx}
         y={ly}
         width={LABEL_W}
-        height={LABEL_H}
+        height={labelH}
         rx={3}
         fill="rgba(10,10,10,0.82)"
         stroke={color}
@@ -167,9 +275,9 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       {title ? (
         <text
           x={lineRight - 8}
-          y={y_screen - 3}
+          y={labelY - (compact ? 4 : 3)}
           fill="rgba(200,210,225,0.95)"
-          fontSize={10}
+          fontSize={titleFontSize}
           fontFamily={FONT}
           fontWeight="600"
           textAnchor="end"
@@ -180,9 +288,9 @@ function OverlayLineEl({ line }: { line: OverlayLine }) {
       ) : null}
       <text
         x={lineRight - 8}
-        y={y_screen + (title ? 12 : 5)}
+        y={labelY + (title ? (compact ? 10 : 12) : 5)}
         fill={color}
-        fontSize={title ? 12 : 12}
+        fontSize={priceFontSize}
         fontFamily={FONT}
         fontWeight="700"
         textAnchor="end"
@@ -210,7 +318,9 @@ function StatusBadge({
 }) {
   const H = window.screen.height;
   const ok = status === "ok";
-  const color = ok ? "#00FF88" : "#FF4444";
+  const isWaiting =
+    status === "connecting" || status === "warming_up" || status === "idle";
+  const color = ok ? "#00FF88" : isWaiting ? "#FFB800" : "#FF4444";
   const text = ok ? `OCR OK ${y_min?.toFixed(0)} - ${y_max?.toFixed(0)}` : `OCR ${status}`;
 
   return (

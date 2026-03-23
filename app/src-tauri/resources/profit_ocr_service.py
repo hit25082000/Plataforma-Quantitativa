@@ -53,6 +53,7 @@ def configure_tesseract_cmd() -> None:
 # Sobrescrever com PQ_OCR_PORT (alinhar Tauri + frontend: docs/PORTS.md).
 OCR_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
 REFRESH_MS = 400
+WINDOW_SCAN_INTERVAL_MS = 1200
 Y_AXIS_FRAC = 0.14
 TOOLBAR_H = 90
 AXIS_BOTTOM_CROP_PX = 42
@@ -83,6 +84,8 @@ state: Dict[str, Any] = {
     "dpi_scale": 1.0,
 }
 clients: List[WebSocket] = []
+service_started_at = time.monotonic()
+first_ok_logged = False
 
 app = FastAPI(title="Profit OCR Service")
 app.add_middleware(
@@ -169,6 +172,38 @@ def find_profit_window() -> Optional[Dict[str, Any]]:
     return max(found, key=lambda w: w["width"] * w["height"])
 
 
+def resolve_profit_window(now_monotonic: float) -> Optional[Dict[str, Any]]:
+    """Usa cache de hwnd/rect entre ciclos para evitar EnumWindows constante."""
+    cached = state.get("window_cache")
+    if isinstance(cached, dict):
+        hwnd = cached.get("hwnd")
+        if isinstance(hwnd, int):
+            try:
+                if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
+                    l, t, r, b = win32gui.GetWindowRect(hwnd)
+                    if r > l and b > t:
+                        cached["left"] = l
+                        cached["top"] = t
+                        cached["right"] = r
+                        cached["bottom"] = b
+                        cached["width"] = r - l
+                        cached["height"] = b - t
+                        cached["title"] = win32gui.GetWindowText(hwnd)
+                        state["window_cache"] = cached
+                        return cached
+            except Exception:
+                state["window_cache"] = None
+
+    last_scan = float(state.get("last_window_scan", 0.0))
+    if (now_monotonic - last_scan) * 1000.0 < WINDOW_SCAN_INTERVAL_MS:
+        return None
+
+    state["last_window_scan"] = now_monotonic
+    window = find_profit_window()
+    state["window_cache"] = window
+    return window
+
+
 def capture_region(left: int, top: int, width: int, height: int) -> Image.Image:
     with mss.mss() as sct:
         shot = sct.grab({"left": left, "top": top, "width": width, "height": height})
@@ -218,7 +253,7 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
 
     raw = capture_region(left, top, width, height)
 
-    # Multiplos passes para aumentar chance de leitura em temas/fontes diferentes.
+    # Passo 1 rapido; passos extras apenas quando o baseline nao for suficiente.
     passes = [
         {"threshold": 140, "contrast": 2.5, "psm": 6},
         {"threshold": 120, "contrast": 3.0, "psm": 6},
@@ -226,7 +261,8 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
     ]
 
     labels: List[Dict[str, float]] = []
-    for p in passes:
+
+    def _run_pass(p: Dict[str, float]) -> None:
         proc, scale = preprocess(raw, threshold=p["threshold"], contrast=p["contrast"])
         cfg = f"--psm {p['psm']} --oem 3 -c tessedit_char_whitelist=0123456789.,-+"
         data = pytesseract.image_to_data(proc, config=cfg, output_type=pytesseract.Output.DICT)
@@ -241,6 +277,13 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
             y_orig = (data["top"][i] + data["height"][i] / 2) / scale
             y_screen = top + y_orig
             labels.append({"value": float(val), "y_screen": float(y_screen)})
+
+    _run_pass(passes[0])
+    if len(labels) < 2:
+        for p in passes[1:]:
+            _run_pass(p)
+            if len(labels) >= 2:
+                break
 
     labels.sort(key=lambda x: x["y_screen"])
     deduped: List[Dict[str, float]] = []
@@ -332,10 +375,11 @@ def fit_value_axis(labels: List[Dict[str, float]]) -> Optional[Dict[str, float]]
 
 
 async def ocr_loop():
+    global first_ok_logged
     while True:
         t0 = time.monotonic()
         try:
-            window = find_profit_window()
+            window = resolve_profit_window(t0)
             if not window:
                 state["status"] = "window_not_found"
                 state["lines"] = []
@@ -359,6 +403,10 @@ async def ocr_loop():
                         state["y_min"] = min(vals)
                         state["y_max"] = max(vals)
                         state["status"] = "ok"
+                        if not first_ok_logged:
+                            first_ok_logged = True
+                            elapsed_ms = int((time.monotonic() - service_started_at) * 1000)
+                            print(f"[overlay-latency] ocr_first_ok elapsed_ms={elapsed_ms}")
                         lines = []
                         for idx, t in enumerate(state["targets"]):
                             pos = float(t["value"])

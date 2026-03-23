@@ -163,7 +163,12 @@ async fn ensure_profit_ocr_running(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    let t0 = std::time::Instant::now();
     if profit_ocr_http_reachable().await {
+        eprintln!(
+            "[overlay-latency] ensure_profit_ocr_running reachable_immediately elapsed_ms={}",
+            t0.elapsed().as_millis()
+        );
         return Ok(());
     }
 
@@ -184,18 +189,25 @@ async fn ensure_profit_ocr_running(
     if !spawn_new {
         for _ in 0..50 {
             if profit_ocr_http_reachable().await {
+                eprintln!(
+                    "[overlay-latency] ensure_profit_ocr_running existing_process_ready elapsed_ms={}",
+                    t0.elapsed().as_millis()
+                );
                 return Ok(());
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        return Ok(());
+        return Err("OCR em inicialização, mas não respondeu ao healthcheck em 5s.".to_string());
     }
 
     let resources = get_resources_dir(&app)?;
     let res_sub = resources.join("resources");
     let script = res_sub.join("profit_ocr_service.py");
     if !script.exists() {
-        return Ok(());
+        return Err(format!(
+            "Script OCR não encontrado em {}",
+            script.to_string_lossy()
+        ));
     }
 
     let stderr_path = app
@@ -253,11 +265,15 @@ async fn ensure_profit_ocr_running(
 
     for _ in 0..50 {
         if profit_ocr_http_reachable().await {
+            eprintln!(
+                "[overlay-latency] ensure_profit_ocr_running spawned_ready elapsed_ms={}",
+                t0.elapsed().as_millis()
+            );
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    Ok(())
+    Err("OCR iniciou, mas não ficou alcançável no healthcheck em 5s.".to_string())
 }
 
 #[tauri::command]
@@ -265,7 +281,7 @@ pub async fn open_profit_overlay(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
-    ensure_profit_ocr_running(app.clone(), processes).await?;
+    let t0 = std::time::Instant::now();
     if let Some(win) = app.get_webview_window("profit-overlay") {
         win.show().map_err(|e| e.to_string())?;
         win.set_always_on_top(true).map_err(|e| e.to_string())?;
@@ -343,6 +359,18 @@ pub async fn open_profit_overlay(
             .build()
             .map_err(|e| e.to_string())?;
     }
+
+    let app_for_ocr = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let process_state = app_for_ocr.state::<ChildProcesses>();
+        if let Err(err) = ensure_profit_ocr_running(app_for_ocr.clone(), process_state).await {
+            eprintln!("[overlay] OCR warmup failed: {err}");
+        }
+    });
+    eprintln!(
+        "[overlay-latency] open_profit_overlay windows_ready elapsed_ms={}",
+        t0.elapsed().as_millis()
+    );
 
     Ok(())
 }

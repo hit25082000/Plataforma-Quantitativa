@@ -276,6 +276,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
   macdDirection: null,
   updateMacd: (msg) =>
     set((state) => {
+      // #region agent log
+      fetch('http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'407c7f'},body:JSON.stringify({sessionId:'407c7f',runId:'pre-fix',hypothesisId:'H2',location:'frontend/src/store/marketStore.ts:updateMacd',message:'store_update_macd_called',data:{beforeLen:state.macdHistory.length,partial:msg.partial ?? false,rsi9:msg.rsi9 ?? null,rsi18:msg.rsi18 ?? null,rsi30:msg.rsi30 ?? null},timestamp:Date.now()})}).catch(()=>{});
+      // #endregion
       const last = state.macdHistory[state.macdHistory.length - 1];
       let nextHistory = state.macdHistory;
       if (msg.partial) {

@@ -215,8 +215,12 @@ export function useProfitOverlay() {
   const retryTimer = useRef<ReturnType<typeof setTimeout>>();
   const autoDynamicDefaultsRef = useRef(true);
   const wsRetryAttemptRef = useRef(0);
+  const wsTotalRetryRef = useRef(0);
   const targetsRef = useRef<OverlayTarget[]>([]);
   const activeRef = useRef(false);
+  const openStartMsRef = useRef<number | null>(null);
+  const wsOpenLoggedRef = useRef(false);
+  const firstOverlayLoggedRef = useRef(false);
 
   const vwap = useMarketStore((s) => s.vwap);
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
@@ -337,18 +341,30 @@ export function useProfitOverlay() {
 
   const connectWs = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (activeRef.current) {
+      setState((prev) => ({
+        ...prev,
+        status: prev.status === "ok" ? prev.status : "connecting",
+      }));
+    }
     const ws = new WebSocket(OCR_WS_URL);
     wsRef.current = ws;
 
     ws.onopen = () => {
       wsRetryAttemptRef.current = 0;
+      wsTotalRetryRef.current = 0;
+      if (!wsOpenLoggedRef.current && openStartMsRef.current != null) {
+        const ms = Math.round(performance.now() - openStartMsRef.current);
+        console.info(`[overlay-latency] ws_open elapsed_ms=${ms}`);
+        wsOpenLoggedRef.current = true;
+      }
       setState((prev) => {
         const valid = prev.targets.filter(
           (t) => Number.isFinite(t.value) && t.value > 0,
         );
         const payload = valid.map(({ value, label }) => ({ value, label }));
         ws.send(JSON.stringify({ type: "set_positions", targets: payload }));
-        return prev;
+        return { ...prev, status: "connecting" };
       });
     };
 
@@ -356,6 +372,15 @@ export function useProfitOverlay() {
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === "overlay_update") {
+          if (
+            msg.data?.status === "ok" &&
+            !firstOverlayLoggedRef.current &&
+            openStartMsRef.current != null
+          ) {
+            const ms = Math.round(performance.now() - openStartMsRef.current);
+            console.info(`[overlay-latency] first_overlay_ok elapsed_ms=${ms}`);
+            firstOverlayLoggedRef.current = true;
+          }
           setState((prev) => ({
             ...prev,
             status: msg.data.status,
@@ -372,7 +397,17 @@ export function useProfitOverlay() {
     ws.onclose = () => {
       const delays = [200, 350, 600, 1000, 1500];
       const i = Math.min(wsRetryAttemptRef.current++, delays.length - 1);
+      wsTotalRetryRef.current += 1;
       const ms = delays[i] ?? 1500;
+      if (activeRef.current) {
+        setState((prev) => ({
+          ...prev,
+          status:
+            wsTotalRetryRef.current > 10
+              ? "ocr_unreachable_retrying"
+              : "warming_up",
+        }));
+      }
       clearTimeout(retryTimer.current);
       retryTimer.current = setTimeout(connectWs, ms);
     };
@@ -395,6 +430,7 @@ export function useProfitOverlay() {
       wsRef.current.send(
         JSON.stringify({ type: "set_positions", targets: payload }),
       );
+      return;
     }
     invoke("set_overlay_positions", { targets: payload }).catch(() => {});
   }, []);
@@ -424,7 +460,15 @@ export function useProfitOverlay() {
       return;
     }
     try {
+      openStartMsRef.current = performance.now();
+      wsOpenLoggedRef.current = false;
+      firstOverlayLoggedRef.current = false;
+      setState((prev) => ({ ...prev, status: "warming_up" }));
       await invoke("open_profit_overlay");
+      if (openStartMsRef.current != null) {
+        const ms = Math.round(performance.now() - openStartMsRef.current);
+        console.info(`[overlay-latency] open_profit_overlay_resolved elapsed_ms=${ms}`);
+      }
       connectWs();
       autoDynamicDefaultsRef.current = true;
       const metrics = buildMetricTargets();
@@ -433,6 +477,7 @@ export function useProfitOverlay() {
       setState((prev) => ({ ...prev, active: true, targets: next }));
       pushTargets(next);
     } catch (err) {
+      setState((prev) => ({ ...prev, status: "open_failed" }));
       console.error("[overlay] open_profit_overlay failed:", err);
     }
   }, [
@@ -447,7 +492,10 @@ export function useProfitOverlay() {
     try {
       await invoke("close_profit_overlay");
       wsRef.current?.close();
-      setState((prev) => ({ ...prev, active: false, lines: [] }));
+      openStartMsRef.current = null;
+      wsOpenLoggedRef.current = false;
+      firstOverlayLoggedRef.current = false;
+      setState((prev) => ({ ...prev, active: false, lines: [], status: "idle" }));
     } catch (err) {
       console.error("[overlay] close_profit_overlay failed:", err);
     }

@@ -47,7 +47,9 @@ export default function OverlayControl() {
   const statusColor =
     status === "ok"
       ? "#00FF88"
-      : status === "connecting" || status === "idle"
+      : status === "connecting" ||
+          status === "warming_up" ||
+          status === "idle"
         ? "#FFB800"
         : "#FF4444";
 
