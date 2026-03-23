@@ -103,6 +103,10 @@ export interface MacdSignalMessage {
   candle_close: number;
   ts: string;
   rsi?: number;
+  rsi9?: number;
+  rsi18?: number;
+  rsi30?: number;
+  partial?: boolean;
 }
 
 export type Agent007Signal = "green" | "red" | "neutral";

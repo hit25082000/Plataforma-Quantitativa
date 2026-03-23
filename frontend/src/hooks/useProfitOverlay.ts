@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { OCR_WS_URL } from "../config/ocrPort";
-import type { DomLevel } from "../store/marketStore";
 import { useMarketStore } from "../store/marketStore";
 import {
   computeAgentAggressorVwap,
@@ -98,16 +97,91 @@ export interface OverlayState {
   y_max: number | null;
 }
 
-function bestBidPrice(domBuy: DomLevel[]): number | null {
-  if (!domBuy.length) return null;
-  const m = Math.max(...domBuy.map((l) => l.price));
-  return Number.isFinite(m) && m > 0 ? m : null;
+function collectAgentIds(
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+): number[] {
+  const ids = new Set<number>();
+  for (const rawId of Object.keys(buyTotals)) {
+    const id = Number(rawId);
+    if (Number.isFinite(id)) ids.add(id);
+  }
+  for (const rawId of Object.keys(sellTotals)) {
+    const id = Number(rawId);
+    if (Number.isFinite(id)) ids.add(id);
+  }
+  return [...ids];
 }
 
-function bestAskPrice(domSell: DomLevel[]): number | null {
-  if (!domSell.length) return null;
-  const m = Math.min(...domSell.map((l) => l.price));
-  return Number.isFinite(m) && m > 0 ? m : null;
+function agentNetVolume(
+  agentId: number,
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+): number {
+  const buy = Number(buyTotals[agentId] ?? 0);
+  const sell = Number(sellTotals[agentId] ?? 0);
+  if (!Number.isFinite(buy) || !Number.isFinite(sell)) return 0;
+  return buy - sell;
+}
+
+function topNetBuyerAgentId(
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+): number | null {
+  let bestId: number | null = null;
+  let bestNet = 0;
+  for (const id of collectAgentIds(buyTotals, sellTotals)) {
+    const net = agentNetVolume(id, buyTotals, sellTotals);
+    if (net > bestNet) {
+      bestNet = net;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
+function topNetSellerAgentId(
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+): number | null {
+  let bestId: number | null = null;
+  let bestNet = 0;
+  for (const id of collectAgentIds(buyTotals, sellTotals)) {
+    const net = agentNetVolume(id, buyTotals, sellTotals);
+    if (net < bestNet) {
+      bestNet = net;
+      bestId = id;
+    }
+  }
+  return bestId;
+}
+
+function sideAveragePrice(
+  agentId: number | null,
+  side: "buy" | "sell",
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+  buyFinancial: Record<number, number>,
+  sellFinancial: Record<number, number>,
+): number | null {
+  if (agentId == null) return null;
+  const qty = side === "buy" ? (buyTotals[agentId] ?? 0) : (sellTotals[agentId] ?? 0);
+  const fin =
+    side === "buy" ? (buyFinancial[agentId] ?? 0) : (sellFinancial[agentId] ?? 0);
+  if (!Number.isFinite(qty) || !Number.isFinite(fin) || qty <= 0) return null;
+  return fin / qty;
+}
+
+function formatBrokerName(
+  agentId: number | null,
+  agentShortNames: Record<number, string>,
+  agentNames: Record<number, string>,
+): string | null {
+  if (agentId == null) return null;
+  const short = agentShortNames[agentId]?.trim();
+  if (short) return short;
+  const full = agentNames[agentId]?.trim();
+  return full || null;
 }
 
 function targetsEqual(a: OverlayTarget[], b: OverlayTarget[]): boolean {
@@ -191,21 +265,50 @@ export function useProfitOverlay() {
     for (const id of OVERLAY_METRIC_ORDER) {
       if (!selectedMetricIds.includes(id)) continue;
       let raw: number | null = null;
+      let label = OVERLAY_METRIC_LABELS[id];
       if (id === "ubs") {
         if (ubsPriceForChart != null && Number.isFinite(ubsPriceForChart)) {
           raw = normalizePosition(ubsPriceForChart);
         }
       } else if (id === "best_bid") {
-        const p = bestBidPrice(domBuy);
+        const leaderId = topNetBuyerAgentId(agentBuyTotals, agentSellTotals);
+        const p = sideAveragePrice(
+          leaderId,
+          "buy",
+          agentBuyTotals,
+          agentSellTotals,
+          agentBuyFinancial,
+          agentSellFinancial,
+        );
         raw = p != null ? normalizePosition(p) : null;
+        const leader = formatBrokerName(
+          leaderId,
+          agentShortNames,
+          agentNames,
+        );
+        if (leader) label = `${OVERLAY_METRIC_LABELS.best_bid} (${leader})`;
       } else if (id === "best_ask") {
-        const p = bestAskPrice(domSell);
+        const leaderId = topNetSellerAgentId(agentBuyTotals, agentSellTotals);
+        const p = sideAveragePrice(
+          leaderId,
+          "sell",
+          agentBuyTotals,
+          agentSellTotals,
+          agentBuyFinancial,
+          agentSellFinancial,
+        );
         raw = p != null ? normalizePosition(p) : null;
+        const leader = formatBrokerName(
+          leaderId,
+          agentShortNames,
+          agentNames,
+        );
+        if (leader) label = `${OVERLAY_METRIC_LABELS.best_ask} (${leader})`;
       }
       if (raw == null || !Number.isFinite(raw) || raw <= 0) continue;
       out.push({
         value: raw,
-        label: OVERLAY_METRIC_LABELS[id],
+        label,
         metricId: id,
       });
     }

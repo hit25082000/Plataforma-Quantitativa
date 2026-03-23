@@ -1,19 +1,51 @@
-import { AGGRESSION_STEP, useMarketStore } from "../../store/marketStore";
+import { useMarketStore } from "../../store/marketStore";
 import { formatQty } from "../../utils/formatters";
-
-function roundToStep(value: number, step: number): number {
-  return Math.round(value / step) * step;
-}
 import { isTauri } from "../../utils/tauri";
 
-function getTopN(
-  totals: Record<number, number>,
-  n: number
-): { agentId: number; qty: number }[] {
-  return Object.entries(totals)
-    .map(([id, qty]) => ({ agentId: Number(id), qty }))
-    .sort((a, b) => b.qty - a.qty)
+interface AgentNetQty {
+  agentId: number;
+  netQty: number;
+}
+
+function collectAgentIds(
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+): number[] {
+  const ids = new Set<number>();
+  for (const rawId of Object.keys(buyTotals)) {
+    const id = Number(rawId);
+    if (Number.isFinite(id)) ids.add(id);
+  }
+  for (const rawId of Object.keys(sellTotals)) {
+    const id = Number(rawId);
+    if (Number.isFinite(id)) ids.add(id);
+  }
+  return [...ids];
+}
+
+function getTopByNet(
+  buyTotals: Record<number, number>,
+  sellTotals: Record<number, number>,
+  n: number,
+) {
+  const rows: AgentNetQty[] = collectAgentIds(buyTotals, sellTotals).map((agentId) => {
+    const buy = Number(buyTotals[agentId] ?? 0);
+    const sell = Number(sellTotals[agentId] ?? 0);
+    const netQty = Number.isFinite(buy) && Number.isFinite(sell) ? buy - sell : 0;
+    return { agentId, netQty };
+  });
+
+  const topBuyers = rows
+    .filter((r) => r.netQty > 0)
+    .sort((a, b) => b.netQty - a.netQty)
     .slice(0, n);
+
+  const topSellers = rows
+    .filter((r) => r.netQty < 0)
+    .sort((a, b) => a.netQty - b.netQty)
+    .slice(0, n);
+
+  return { topBuyers, topSellers };
 }
 
 export function TopBrokersTable() {
@@ -22,9 +54,11 @@ export function TopBrokersTable() {
   const agentNames = useMarketStore((s) => s.agentNames);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
 
-  const topBuyers = getTopN(agentBuyTotals, 5);
-  const topSellers = getTopN(agentSellTotals, 5);
-
+  const { topBuyers, topSellers } = getTopByNet(
+    agentBuyTotals,
+    agentSellTotals,
+    5,
+  );
   /** No Tauri usa nome abreviado; no browser usa nome completo. */
   const agentLabel = (agentId: number) =>
     isTauri()
@@ -39,10 +73,10 @@ export function TopBrokersTable() {
           {topBuyers.length === 0 ? (
             <p className="text-text/40">—</p>
           ) : (
-            topBuyers.map(({ agentId, qty }) => (
+            topBuyers.map(({ agentId, netQty }) => (
               <div key={agentId} className="flex justify-between">
                 <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-buy">{formatQty(roundToStep(qty, AGGRESSION_STEP))} lotes</span>
+                <span className="text-neon-buy">+{formatQty(netQty)} lotes</span>
               </div>
             ))
           )}
@@ -54,10 +88,10 @@ export function TopBrokersTable() {
           {topSellers.length === 0 ? (
             <p className="text-text/40">—</p>
           ) : (
-            topSellers.map(({ agentId, qty }) => (
+            topSellers.map(({ agentId, netQty }) => (
               <div key={agentId} className="flex justify-between">
                 <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-sell">{formatQty(roundToStep(qty, AGGRESSION_STEP))} lotes</span>
+                <span className="text-neon-sell">{formatQty(netQty)} lotes</span>
               </div>
             ))
           )}

@@ -21,6 +21,7 @@ build/
 distributor/build/
 distributor/dist/
 distributor/__pycache__/
+distributor/data/candle_macd_*.json
 
 # Frontend build
 frontend/dist/

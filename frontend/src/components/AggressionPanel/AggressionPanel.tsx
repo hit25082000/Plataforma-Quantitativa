@@ -47,8 +47,8 @@ export function AggressionPanel() {
           <IfrChart variant="9" />
         </AggressionSection>
 
-        <AggressionSection title="IFR 30min" widgetId="ifr-30min">
-          <IfrChart variant="30min" />
+        <AggressionSection title="IFR 30" widgetId="ifr-30">
+          <IfrChart variant="30" />
         </AggressionSection>
 
         <AggressionSection title="IFR 18" widgetId="ifr-18">

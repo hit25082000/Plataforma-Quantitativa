@@ -15,7 +15,6 @@ import type {
 const MAX_ALERTS = 50;
 const MAX_FLOW_INVERSIONS = 30;
 const MAX_MACD_HISTORY = 50;
-const MAX_PRICE_CLOSES = 50;
 
 /** Passo de agressão para o painel: indicadores e histórico atualizam de 100 em 100 */
 export const AGGRESSION_STEP = 100;
@@ -101,9 +100,6 @@ interface MarketStore {
   macdDirection: "buy" | "sell" | null;
   updateMacd: (msg: MacdSignalMessage) => void;
 
-  /** Últimos preços (close) por trade, para fallback de IFR quando não há macd_signal */
-  priceCloses: number[];
-
   /** Estado exclusivo da webview do overlay (pode ser atualizado pela janela principal via eventos). */
   overlayCalibration: OverlayCalibrationState | null;
   overlayUbsPrice: number | null;
@@ -156,7 +152,6 @@ export const useMarketStore = create<MarketStore>((set) => ({
       flowInversions: [],
       macdHistory: [],
       macdDirection: null,
-      priceCloses: [],
       streamingTicker: "",
     }),
 
@@ -227,9 +222,6 @@ export const useMarketStore = create<MarketStore>((set) => ({
       if (msg.sell_agent_short_name != null)
         agentShortNames[msg.sell_agent] = msg.sell_agent_short_name;
 
-      const priceCloses = [...(state.priceCloses ?? []), msg.price].slice(
-        -MAX_PRICE_CLOSES,
-      );
       return {
         lastPrice: msg.price,
         vwap: msg.vwap,
@@ -239,7 +231,6 @@ export const useMarketStore = create<MarketStore>((set) => ({
         agentSellFinancial: agentSellFin,
         agentNames,
         agentShortNames,
-        priceCloses,
         streamingTicker: msg.ticker,
       };
     }),
@@ -283,12 +274,26 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   macdHistory: [],
   macdDirection: null,
-  priceCloses: [],
   updateMacd: (msg) =>
-    set((state) => ({
-      macdHistory: [...state.macdHistory, msg].slice(-MAX_MACD_HISTORY),
-      macdDirection: msg.direction,
-    })),
+    set((state) => {
+      const last = state.macdHistory[state.macdHistory.length - 1];
+      let nextHistory = state.macdHistory;
+      if (msg.partial) {
+        nextHistory =
+          last?.partial
+            ? [...state.macdHistory.slice(0, -1), msg]
+            : [...state.macdHistory, msg];
+      } else {
+        nextHistory =
+          last?.partial
+            ? [...state.macdHistory.slice(0, -1), msg]
+            : [...state.macdHistory, msg];
+      }
+      return {
+        macdHistory: nextHistory.slice(-MAX_MACD_HISTORY),
+        macdDirection: msg.direction,
+      };
+    }),
 
   overlayCalibration: null,
   overlayUbsPrice: null,

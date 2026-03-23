@@ -13,7 +13,8 @@ const WIDGET_TITLES: Record<string, string> = {
   "flow-secagem": "Flow & Secagem",
   "top-brokers": "Top Brokers",
   "ifr-9": "IFR 9",
-  "ifr-30min": "IFR 30min",
+  "ifr-30": "IFR 30",
+  "ifr-30min": "IFR 30",
   "ifr-18": "IFR 18",
   "ubs-line": "UBS Line",
   vwap: "VWAP",
@@ -60,10 +61,11 @@ export function WidgetRoot({ widgetId }: WidgetRootProps) {
             <IfrChart variant="9" fillHeight />
           </div>
         );
+      case "ifr-30":
       case "ifr-30min":
         return (
           <div className="h-full min-h-0 w-full flex flex-col p-3">
-            <IfrChart variant="30min" fillHeight />
+            <IfrChart variant="30" fillHeight />
           </div>
         );
       case "ifr-18":
