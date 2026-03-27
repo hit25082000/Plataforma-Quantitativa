@@ -11,7 +11,7 @@ const WIDGET_TITLES: Record<string, string> = {
   "alert-feed": "Alert Feed",
   macd: "MACD 30min",
   "flow-secagem": "Flow & Secagem",
-  "top-brokers": "Top Brokers",
+  "top-brokers": "Saldo",
   "ifr-9": "IFR 9",
   "ifr-30": "IFR 30",
   "ifr-30min": "IFR 30",

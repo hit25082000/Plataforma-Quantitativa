@@ -103,7 +103,7 @@ void PROFIT_STDCALL tiny_book_callback(profit::TAssetIDRec rAssetID, double pric
 
 void PROFIT_STDCALL daily_callback(
     profit::TAssetIDRec rAssetID,
-    const wchar_t* /*pwcDate*/,
+    const wchar_t* pwcDate,
     double dOpen, double dHigh, double dLow, double dClose,
     double dVol, double /*dAjuste*/, double /*dMaxLimit*/, double /*dMinLimit*/,
     double /*dVolBuyer*/, double /*dVolSeller*/,
@@ -122,6 +122,7 @@ void PROFIT_STDCALL daily_callback(
     ev.open   = dOpen;
     ev.close  = dClose;
     ev.volume = dVol;
+    ev.trade_date = trim_ticker(wide_to_utf8(pwcDate));
     g_queue->push(ev);
 }
 

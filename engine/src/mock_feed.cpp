@@ -2,8 +2,11 @@
 #include "profit_types.h"
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <ctime>
 #include <iostream>
 #include <random>
+#include <string>
 
 namespace mock_feed {
 
@@ -18,6 +21,27 @@ constexpr int64_t QTY_BASE = 100;
 constexpr int32_t AGENT_BASE = 1000;
 constexpr int64_t OFFER_ID_BASE = 50000;
 
+} // namespace
+
+namespace {
+std::string mock_session_trade_date() {
+    std::time_t t = std::time(nullptr);
+    std::tm tm_buf{};
+#if defined(_WIN32)
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    char buf[16];
+    std::snprintf(
+        buf,
+        sizeof buf,
+        "%04d%02d%02d",
+        tm_buf.tm_year + 1900,
+        tm_buf.tm_mon + 1,
+        tm_buf.tm_mday);
+    return std::string(buf);
+}
 } // namespace
 
 MockFeed::MockFeed(event_bus::EventQueue& queue) : queue_(queue) {}
@@ -87,6 +111,8 @@ void MockFeed::run() {
         std::cerr << "[MockFeed] Initial book built: " << NUM_LEVELS << " levels per side" << std::endl;
     };
 
+    const std::string session_trade_date = mock_session_trade_date();
+
     // Send initial daily so the UI has OHLC from the start
     {
         event_bus::DailyEvent dev{};
@@ -96,6 +122,7 @@ void MockFeed::run() {
         dev.open = daily_open;
         dev.close = mid_price;
         dev.volume = 0;
+        dev.trade_date = session_trade_date;
         queue_.push(dev);
     }
 
@@ -141,6 +168,7 @@ void MockFeed::run() {
             dev.open = daily_open;
             dev.close = mid_price;
             dev.volume = daily_volume;
+            dev.trade_date = session_trade_date;
             queue_.push(dev);
         }
 

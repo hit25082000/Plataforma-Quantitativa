@@ -23,6 +23,19 @@ export function formatQty(qty: number): string {
   return qty.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
 }
 
+/** Volume financeiro (saldo / painéis): inteiro, pt-BR. */
+export function formatFinancialInt(n: number): string {
+  return Math.round(n).toLocaleString("pt-BR", { maximumFractionDigits: 0 });
+}
+
+/** Percentual com uma casa decimal (pt-BR). */
+export function formatPctOneDecimal(n: number): string {
+  return n.toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
+}
+
 export function formatRelativeTime(ts: string): string {
   try {
     const date = new Date(ts);

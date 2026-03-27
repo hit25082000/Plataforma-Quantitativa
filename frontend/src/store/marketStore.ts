@@ -59,6 +59,12 @@ interface MarketStore {
   /** Limpa alertas e todos os dados de mercado ao trocar de ativo */
   clearMarketData: () => void;
 
+  /**
+   * Última `trade_date` recebida em daily (engine). `null` até o primeiro daily com data.
+   * Troca de dia dispara zeragem só dos totais de corretora (saldo).
+   */
+  lastDailyTradeDate: string | null;
+
   alerts: AlertMessage[];
   addAlert: (a: AlertMessage) => void;
 
@@ -142,6 +148,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       agentSellFinancial: {},
       agentNames: {},
       agentShortNames: {},
+      lastDailyTradeDate: null,
       dailyHigh: 0,
       dailyLow: 0,
       dailyOpen: 0,
@@ -198,17 +205,22 @@ export const useMarketStore = create<MarketStore>((set) => ({
   agentSellFinancial: {},
   agentNames: {},
   agentShortNames: {},
+  lastDailyTradeDate: null,
   updateTrade: (msg) =>
     set((state) => {
       const agentBuy = { ...state.agentBuyTotals };
       const agentSell = { ...state.agentSellTotals };
       const agentBuyFin = { ...state.agentBuyFinancial };
       const agentSellFin = { ...state.agentSellFinancial };
-      const fin = msg.price * msg.qty;
-      agentBuy[msg.buy_agent] = (agentBuy[msg.buy_agent] ?? 0) + msg.qty;
-      agentSell[msg.sell_agent] = (agentSell[msg.sell_agent] ?? 0) + msg.qty;
-      agentBuyFin[msg.buy_agent] = (agentBuyFin[msg.buy_agent] ?? 0) + fin;
-      agentSellFin[msg.sell_agent] = (agentSellFin[msg.sell_agent] ?? 0) + fin;
+      /** Inteiros por negócio — alinha Vol. Fin. / Vol. Qtd ao Profit (sem drift de float). */
+      const qty = Math.trunc(Number(msg.qty));
+      const fin = Math.round(Number(msg.price) * qty);
+      if (qty !== 0 && Number.isFinite(fin)) {
+        agentBuy[msg.buy_agent] = (agentBuy[msg.buy_agent] ?? 0) + qty;
+        agentSell[msg.sell_agent] = (agentSell[msg.sell_agent] ?? 0) + qty;
+        agentBuyFin[msg.buy_agent] = (agentBuyFin[msg.buy_agent] ?? 0) + fin;
+        agentSellFin[msg.sell_agent] = (agentSellFin[msg.sell_agent] ?? 0) + fin;
+      }
 
       const agentNames = { ...state.agentNames };
       if (msg.buy_agent_name != null)
@@ -241,13 +253,31 @@ export const useMarketStore = create<MarketStore>((set) => ({
   dailyClose: 0,
   dailyVolume: 0,
   updateDaily: (msg) =>
-    set({
-      dailyHigh: msg.high,
-      dailyLow: msg.low,
-      dailyOpen: msg.open,
-      dailyClose: msg.close,
-      dailyVolume: msg.volume,
-      streamingTicker: msg.ticker,
+    set((state) => {
+      const td = msg.trade_date?.trim();
+      const base = {
+        dailyHigh: msg.high,
+        dailyLow: msg.low,
+        dailyOpen: msg.open,
+        dailyClose: msg.close,
+        dailyVolume: msg.volume,
+        streamingTicker: msg.ticker,
+      };
+      if (!td) return base;
+      const prev = state.lastDailyTradeDate;
+      if (prev != null && prev !== td) {
+        return {
+          ...base,
+          agentBuyTotals: {},
+          agentSellTotals: {},
+          agentBuyFinancial: {},
+          agentSellFinancial: {},
+          agentNames: {},
+          agentShortNames: {},
+          lastDailyTradeDate: td,
+        };
+      }
+      return { ...base, lastDailyTradeDate: td };
     }),
 
   inSync: true,
@@ -276,21 +306,16 @@ export const useMarketStore = create<MarketStore>((set) => ({
   macdDirection: null,
   updateMacd: (msg) =>
     set((state) => {
-      // #region agent log
-      fetch('http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'407c7f'},body:JSON.stringify({sessionId:'407c7f',runId:'pre-fix',hypothesisId:'H2',location:'frontend/src/store/marketStore.ts:updateMacd',message:'store_update_macd_called',data:{beforeLen:state.macdHistory.length,partial:msg.partial ?? false,rsi9:msg.rsi9 ?? null,rsi18:msg.rsi18 ?? null,rsi30:msg.rsi30 ?? null},timestamp:Date.now()})}).catch(()=>{});
-      // #endregion
       const last = state.macdHistory[state.macdHistory.length - 1];
       let nextHistory = state.macdHistory;
       if (msg.partial) {
-        nextHistory =
-          last?.partial
-            ? [...state.macdHistory.slice(0, -1), msg]
-            : [...state.macdHistory, msg];
+        nextHistory = last?.partial
+          ? [...state.macdHistory.slice(0, -1), msg]
+          : [...state.macdHistory, msg];
       } else {
-        nextHistory =
-          last?.partial
-            ? [...state.macdHistory.slice(0, -1), msg]
-            : [...state.macdHistory, msg];
+        nextHistory = last?.partial
+          ? [...state.macdHistory.slice(0, -1), msg]
+          : [...state.macdHistory, msg];
       }
       return {
         macdHistory: nextHistory.slice(-MAX_MACD_HISTORY),
@@ -310,4 +335,5 @@ export const useMarketStore = create<MarketStore>((set) => ({
 type MarketState = ReturnType<typeof useMarketStore.getState>;
 
 /** Fonte do preço médio usado para inicialização de posições do overlay OCR. */
-export const selectOverlayAveragePrice = (state: MarketState): number => state.vwap;
+export const selectOverlayAveragePrice = (state: MarketState): number =>
+  state.vwap;

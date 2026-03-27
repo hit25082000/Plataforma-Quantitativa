@@ -40,6 +40,8 @@ struct DailyEvent {
     double open;
     double close;
     double volume;
+    /** Data do pregão (UTF-8), ex. callback da DLL; vazio se indisponível. */
+    std::string trade_date;
 };
 
 using Event = std::variant<OfferBookEvent, TradeEvent, DailyEvent>;

@@ -224,6 +224,8 @@ void ZmqPublisher::run() {
                     {"volume", e.volume},
                     {"ts", timestamp_iso()}
                 };
+                if (!e.trade_date.empty())
+                    j["trade_date"] = e.trade_date;
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
             }

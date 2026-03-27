@@ -75,6 +75,8 @@ export interface DailyMessage {
   close: number;
   volume: number;
   ts: string;
+  /** Data do pregão (ex.: vinda da DLL); usada para zerar saldo por corretora ao mudar o dia. */
+  trade_date?: string;
 }
 
 export interface SyncMessage {

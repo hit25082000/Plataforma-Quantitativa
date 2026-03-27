@@ -1,101 +1,137 @@
+import { useMemo } from "react";
 import { useMarketStore } from "../../store/marketStore";
-import { formatQty } from "../../utils/formatters";
+import {
+  formatFinancialInt,
+  formatPctOneDecimal,
+  formatPrice,
+  formatQty,
+} from "../../utils/formatters";
 import { isTauri } from "../../utils/tauri";
+import { buildAgentSaldoRows } from "../../utils/agentVolume";
 
-interface AgentNetQty {
-  agentId: number;
-  netQty: number;
-}
-
-function collectAgentIds(
-  buyTotals: Record<number, number>,
-  sellTotals: Record<number, number>,
-): number[] {
-  const ids = new Set<number>();
-  for (const rawId of Object.keys(buyTotals)) {
-    const id = Number(rawId);
-    if (Number.isFinite(id)) ids.add(id);
-  }
-  for (const rawId of Object.keys(sellTotals)) {
-    const id = Number(rawId);
-    if (Number.isFinite(id)) ids.add(id);
-  }
-  return [...ids];
-}
-
-function getTopByNet(
-  buyTotals: Record<number, number>,
-  sellTotals: Record<number, number>,
-  n: number,
-) {
-  const rows: AgentNetQty[] = collectAgentIds(buyTotals, sellTotals).map((agentId) => {
-    const buy = Number(buyTotals[agentId] ?? 0);
-    const sell = Number(sellTotals[agentId] ?? 0);
-    const netQty = Number.isFinite(buy) && Number.isFinite(sell) ? buy - sell : 0;
-    return { agentId, netQty };
-  });
-
-  const topBuyers = rows
-    .filter((r) => r.netQty > 0)
-    .sort((a, b) => b.netQty - a.netQty)
-    .slice(0, n);
-
-  const topSellers = rows
-    .filter((r) => r.netQty < 0)
-    .sort((a, b) => a.netQty - b.netQty)
-    .slice(0, n);
-
-  return { topBuyers, topSellers };
-}
+/** Verdes/vermelhos próximos ao Profit (Times & Trades / Saldo): texto forte + fundos da coluna Média. */
+const SALDO = {
+  finBuy: "text-[#00ff66]",
+  finSell: "text-[#ff3344]",
+  rowBuy: "bg-[#040806]",
+  rowSell: "bg-[#080404]",
+  medBuyBg: "bg-[#0d3020]",
+  medSellBg: "bg-[#300d12]",
+  medText: "text-[#f0f0f0]",
+  border: "border-[#141414]",
+  headerBg: "bg-[#050505]",
+} as const;
 
 export function TopBrokersTable() {
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
   const agentSellTotals = useMarketStore((s) => s.agentSellTotals);
+  const agentBuyFinancial = useMarketStore((s) => s.agentBuyFinancial);
+  const agentSellFinancial = useMarketStore((s) => s.agentSellFinancial);
   const agentNames = useMarketStore((s) => s.agentNames);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
 
-  const { topBuyers, topSellers } = getTopByNet(
-    agentBuyTotals,
-    agentSellTotals,
-    5,
+  const rows = useMemo(
+    () =>
+      buildAgentSaldoRows(
+        agentBuyTotals,
+        agentSellTotals,
+        agentBuyFinancial,
+        agentSellFinancial,
+      ),
+    [agentBuyTotals, agentSellTotals, agentBuyFinancial, agentSellFinancial],
   );
-  /** No Tauri usa nome abreviado; no browser usa nome completo. */
-  const agentLabel = (agentId: number) =>
-    isTauri()
+
+  /** No Tauri usa nome abreviado; no browser usa nome completo. Profit costuma exibir siglas em caixa alta. */
+  const agentLabel = (agentId: number) => {
+    const raw = isTauri()
       ? (agentShortNames[agentId] ?? agentNames[agentId] ?? `#${agentId}`)
       : (agentNames[agentId] ?? `#${agentId}`);
+    return raw.trim().toUpperCase();
+  };
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div>
-        <h3 className="text-xs font-semibold text-text/60 mb-2">Top Compradores</h3>
-        <div className="space-y-1 font-mono text-sm">
-          {topBuyers.length === 0 ? (
-            <p className="text-text/40">—</p>
-          ) : (
-            topBuyers.map(({ agentId, netQty }) => (
-              <div key={agentId} className="flex justify-between">
-                <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-buy">+{formatQty(netQty)} lotes</span>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-      <div>
-        <h3 className="text-xs font-semibold text-text/60 mb-2">Top Vendedores</h3>
-        <div className="space-y-1 font-mono text-sm">
-          {topSellers.length === 0 ? (
-            <p className="text-text/40">—</p>
-          ) : (
-            topSellers.map(({ agentId, netQty }) => (
-              <div key={agentId} className="flex justify-between">
-                <span className="text-text/80">{agentLabel(agentId)}</span>
-                <span className="text-neon-sell">{formatQty(netQty)} lotes</span>
-              </div>
-            ))
-          )}
-        </div>
+    <div className="flex flex-col gap-1.5 min-h-0">
+      <p className="text-[9px] text-zinc-500 leading-tight px-0.5">
+        % = participação no volume financeiro total (todas as corretoras). Ordem = Vol. Fin.
+        líquido decrescente. Acumulado desde conexão / troca de ativo; zera ao mudar o dia
+        (data no feed).
+      </p>
+      <div
+        className={`pq-saldo-scroll overflow-y-auto max-h-[min(48vh,360px)] border ${SALDO.border} bg-black`}
+      >
+        <table className="w-full border-collapse text-[11px] font-mono leading-tight tabular-nums">
+          <thead className={`sticky top-0 z-10 ${SALDO.headerBg} border-b ${SALDO.border}`}>
+            <tr className="text-zinc-500 uppercase tracking-wide">
+              <th className="py-1 px-2 font-normal text-left text-[10px]">Corretora</th>
+              <th className="py-1 px-2 font-normal text-right text-[10px] w-12">%</th>
+              <th className="py-1 px-2 font-normal text-right text-[10px]">Vol. Fin.</th>
+              <th className="py-1 px-2 font-normal text-right text-[10px]">Vol. Qtd</th>
+              <th className="py-1 px-2 font-normal text-right text-[10px] min-w-[6.5rem]">
+                Média
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 ? (
+              <tr>
+                <td
+                  colSpan={5}
+                  className="py-6 text-center text-zinc-600 align-middle text-xs"
+                >
+                  —
+                </td>
+              </tr>
+            ) : (
+              rows.map(({ agentId, volQty, volFin, avgPrice, pct }) => {
+                const finClass =
+                  volFin > 0
+                    ? SALDO.finBuy
+                    : volFin < 0
+                      ? SALDO.finSell
+                      : "text-zinc-500";
+                const qtyClass =
+                  volQty > 0
+                    ? SALDO.finBuy
+                    : volQty < 0
+                      ? SALDO.finSell
+                      : "text-zinc-500";
+                const rowBg =
+                  volQty > 0 ? SALDO.rowBuy : volQty < 0 ? SALDO.rowSell : "bg-black";
+                const medWrap =
+                  volQty > 0
+                    ? `${SALDO.medBuyBg} ${SALDO.medText}`
+                    : volQty < 0
+                      ? `${SALDO.medSellBg} ${SALDO.medText}`
+                      : "bg-black text-zinc-500";
+
+                return (
+                  <tr
+                    key={agentId}
+                    className={`border-b ${SALDO.border} last:border-b-0 ${rowBg}`}
+                  >
+                    <td className="py-0.5 px-2 text-zinc-200 align-middle whitespace-nowrap">
+                      {agentLabel(agentId)}
+                    </td>
+                    <td className="py-0.5 px-2 text-right text-zinc-300 align-middle">
+                      {formatPctOneDecimal(pct)}
+                    </td>
+                    <td className={`py-0.5 px-2 text-right align-middle ${finClass}`}>
+                      {formatFinancialInt(volFin)}
+                    </td>
+                    <td className={`py-0.5 px-2 text-right align-middle ${qtyClass}`}>
+                      {formatQty(volQty)}
+                    </td>
+                    <td className={`py-0.5 px-2 text-right align-middle ${medWrap}`}>
+                      {avgPrice != null && Number.isFinite(avgPrice)
+                        ? formatPrice(avgPrice)
+                        : "—"}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

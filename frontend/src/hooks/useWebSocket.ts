@@ -62,7 +62,10 @@ function handleMessage(
       return;
     }
 
-    if (msg.topic === "agent007" && (msg as { type?: string }).type === "state") {
+    if (
+      msg.topic === "agent007" &&
+      (msg as { type?: string }).type === "state"
+    ) {
       store.setAgent007State(msg as Agent007StateMessage);
       return;
     }
@@ -79,9 +82,6 @@ function handleMessage(
       else if (m.type === "flow_inversion")
         store.addFlowInversion(msg as FlowInversionMessage);
       else if (m.type === "macd_signal") {
-        // #region agent log
-        fetch('http://127.0.0.1:7350/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'407c7f'},body:JSON.stringify({sessionId:'407c7f',runId:'pre-fix',hypothesisId:'H2',location:'frontend/src/hooks/useWebSocket.ts:macd_signal',message:'macd_signal_received_frontend',data:{partial:(msg as MacdSignalMessage).partial ?? false,rsi9:(msg as MacdSignalMessage).rsi9 ?? null,rsi18:(msg as MacdSignalMessage).rsi18 ?? null,rsi30:(msg as MacdSignalMessage).rsi30 ?? null,ts:(msg as MacdSignalMessage).ts},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
         store.updateMacd(msg as MacdSignalMessage);
       }
     }

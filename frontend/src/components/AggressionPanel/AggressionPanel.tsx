@@ -39,7 +39,7 @@ export function AggressionPanel() {
         <span>AGGRESSION PANEL</span>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
-        <AggressionSection title="Top Brokers" widgetId="top-brokers">
+        <AggressionSection title="Saldo" widgetId="top-brokers">
           <TopBrokersTable />
         </AggressionSection>
 
