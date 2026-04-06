@@ -19,6 +19,7 @@ set(ENGINE_SOURCES
   src/alert_bus.cpp
   src/dom_snapshot.cpp
   src/trade_stream.cpp
+  src/trade_reconciler.cpp
   src/event_dispatcher.cpp
   src/zmq_publisher.cpp
   src/rules/rule1_aggression.cpp

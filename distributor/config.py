@@ -7,8 +7,15 @@ ZMQ_ADDRESS = "tcp://localhost:5555"
 ZMQ_SYNC_ADDRESS = "tcp://localhost:5557"
 WS_PORT = int(os.environ.get("WS_PORT", "8000"))
 WS_HOST = "127.0.0.1"  # apenas localhost (single machine)
-DOM_THROTTLE_MS = 100  # máx 10 dom_snapshots/s para o frontend
-MARKET_QUEUE_MAXSIZE = 1000  # descarta se frontend não consumir
+# Alinhar com a engine: env DOM_SNAPSHOT_PUBLISH_MIN_MS (default 100 ms no ZmqPublisher).
+# O distributor só descarta dom_snapshot extra se chegar mais rápido que isto.
+DOM_THROTTLE_MS = int(os.environ.get("DOM_THROTTLE_MS", "100"))
+MARKET_QUEUE_MAXSIZE = int(os.environ.get("MARKET_QUEUE_MAXSIZE", "20000"))
+MARKET_QUEUE_DOM_SOFT_LIMIT_PCT = int(
+    os.environ.get("MARKET_QUEUE_DOM_SOFT_LIMIT_PCT", "70")
+)
+ROUTER_METRICS_LOG_EVERY_MS = int(os.environ.get("ROUTER_METRICS_LOG_EVERY_MS", "5000"))
+BROKER_SNAPSHOT_EVERY_MS = int(os.environ.get("BROKER_SNAPSHOT_EVERY_MS", "1000"))
 
 # Agente 007 (ver distributor/agent_007.py)
 _weis_mode = (os.environ.get("AGENT007_WEIS_MODE") or "proxy").strip().lower()

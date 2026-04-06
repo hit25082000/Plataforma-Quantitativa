@@ -4,6 +4,7 @@ import { Agent007Panel } from "../Agent007/Agent007Panel";
 import { useMarketStore } from "../../store/marketStore";
 import { formatPrice, formatTs } from "../../utils/formatters";
 import { AssetSelector } from "./AssetSelector";
+import { RenkoBrickSelector } from "./RenkoBrickSelector";
 import OverlayControl from "../OverlayControl";
 
 interface StatusBarProps {
@@ -48,7 +49,10 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         <span className={`w-2 h-2 rounded-full ${wsStatus === "connected" ? "bg-green-500" : wsStatus === "connecting" ? "bg-amber-400" : "bg-red-500"}`} />
         <span className={cfg.color}>{cfg.label}</span>
       </span>
-      <AssetSelector currentTicker={selectedTicker} />
+      <div className="flex items-center gap-2 shrink-0">
+        <AssetSelector currentTicker={selectedTicker} />
+        <RenkoBrickSelector />
+      </div>
       {assetSwitchStatus === "error" && assetSwitchMessage && (
         <span className="text-amber-400 text-xs max-w-[280px] truncate" title={assetSwitchMessage}>
           {assetSwitchMessage}

@@ -95,6 +95,8 @@ export function useTauriStartup() {
           profit_password?: string | null;
           selected_ticker?: string | null;
           selected_exchange?: string | null;
+          renko_brick_points?: number | null;
+          ifr_series?: string | null;
         }>("read_config");
         if (cancelled) return;
 
@@ -105,6 +107,14 @@ export function useTauriStartup() {
             .getState()
             .setSelectedTicker(`${ticker} · ${exchange}`);
         }
+
+        const ifrKey = (cfg.ifr_series ?? "").trim().toLowerCase();
+        let ifrMode: "42r" | "16r" | "30m" = "42r";
+        if (ifrKey === "30m" || ifrKey === "30min") ifrMode = "30m";
+        else if (ifrKey === "16r") ifrMode = "16r";
+        else if (ifrKey === "42r") ifrMode = "42r";
+        else if (cfg.renko_brick_points === 16) ifrMode = "16r";
+        useMarketStore.getState().setIfrSeries(ifrMode);
 
         const keyOk = (cfg.profit_activation_key ?? "").trim().length > 0;
         const userOk = (cfg.profit_user ?? "").trim().length > 0;
@@ -168,6 +178,15 @@ export function useTauriStartup() {
             () => cancelled,
             true,
           );
+        }
+        if (!cancelled) {
+          try {
+            await invoke("sync_ifr_series_to_distributor", {
+              series: ifrMode,
+            });
+          } catch {
+            // distributor pode ainda não estar pronto; usuário pode re-selecionar na barra
+          }
         }
       } catch (e) {
         if (cancelled) return;

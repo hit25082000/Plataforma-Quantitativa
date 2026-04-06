@@ -1,17 +1,26 @@
 """
 Serviço OCR para o Overlay do gráfico Profit.
+
+Fonte canónica: distributor/profit_ocr_service.py.
+Réplica para o bundle Tauri: scripts/sync-profit-ocr-to-tauri-resources.ps1
+(invocado por run-dev.ps1 e build-installer.ps1) → app/src-tauri/resources/.
 """
 
 import asyncio
+import contextlib
 import json
+import math
 import os
 import re
 import sys
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
 try:
     import ctypes
+    from ctypes import wintypes
+
     import mss
     import pytesseract
     import uvicorn
@@ -24,6 +33,39 @@ except ImportError as e:
     print(f"[OCR] Dependência ausente: {e}")
     print("Execute: pip install -r requirements_ocr.txt")
     sys.exit(1)
+
+
+def _enable_dpi_awareness() -> None:
+    """Per-monitor DPI evita desalinhamento entre GetWindowRect (lógico) e captura mss (físico) em 2+ telas."""
+    try:
+        user32 = ctypes.windll.user32
+        ctx = ctypes.c_void_p(-4)  # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
+        if hasattr(user32, "SetProcessDpiAwarenessContext"):
+            if user32.SetProcessDpiAwarenessContext(ctx):
+                return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
+
+def _logical_rect_to_physical(hwnd: int, l: int, t: int, r: int, b: int) -> tuple[int, int, int, int]:
+    user32 = ctypes.windll.user32
+    if hasattr(user32, "LogicalToPhysicalPoint"):
+        pt_lo = wintypes.POINT(l, t)
+        pt_hi = wintypes.POINT(r, b)
+        user32.LogicalToPhysicalPoint(hwnd, ctypes.byref(pt_lo))
+        user32.LogicalToPhysicalPoint(hwnd, ctypes.byref(pt_hi))
+        return pt_lo.x, pt_lo.y, pt_hi.x, pt_hi.y
+    return l, t, r, b
+
+
+_enable_dpi_awareness()
 
 
 def configure_tesseract_cmd() -> None:
@@ -55,9 +97,27 @@ OCR_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
 REFRESH_MS = 400
 WINDOW_SCAN_INTERVAL_MS = 1200
 Y_AXIS_FRAC = 0.14
-TOOLBAR_H = 90
-AXIS_BOTTOM_CROP_PX = 42
-MIN_CONF = 22
+TOOLBAR_H = int(os.environ.get("PQ_OVERLAY_TOOLBAR_H", "90"))
+AXIS_BOTTOM_CROP_PX = int(os.environ.get("PQ_OVERLAY_AXIS_BOTTOM_CROP_PX", "42"))
+try:
+    MIN_CONF = int(os.environ.get("PQ_OCR_MIN_CONF", "20"))
+except ValueError:
+    MIN_CONF = 20
+# Primeiros segundos: não assustar com "0 labels" enquanto CPU/Tesseract aquecem (PC lento / 1ª captura).
+try:
+    AXIS_WARMUP_SECS = float(os.environ.get("PQ_OCR_AXIS_WARMUP_SECS", "30"))
+except ValueError:
+    AXIS_WARMUP_SECS = 30.0
+# Suavização das linhas do overlay (0 = desligado; 0.35–0.55 típico).
+try:
+    LINE_Y_SMOOTH_ALPHA = float(os.environ.get("PQ_OVERLAY_LINE_SMOOTH_ALPHA", "0.45"))
+except ValueError:
+    LINE_Y_SMOOTH_ALPHA = 0.45
+try:
+    AXIS_BLEND_BETA = float(os.environ.get("PQ_OCR_AXIS_BLEND_BETA", "0.30"))
+except ValueError:
+    AXIS_BLEND_BETA = 0.30
+AXIS_BLEND_BETA = min(1.0, max(0.01, AXIS_BLEND_BETA))
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
 
 
@@ -82,12 +142,30 @@ state: Dict[str, Any] = {
     "status": "searching",
     "last_update": 0.0,
     "dpi_scale": 1.0,
+    # Região opcional só para leitura/verificação (não altera o cálculo das linhas).
+    "analysis_roi": None,
+    "analysis_sample": None,
+    "axis_deltas": None,
+    "axis_diagnostics": None,
 }
 clients: List[WebSocket] = []
 service_started_at = time.monotonic()
 first_ok_logged = False
 
-app = FastAPI(title="Profit OCR Service")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    configure_tesseract_cmd()
+    state["dpi_scale"] = get_dpi_scale()
+    task = asyncio.create_task(ocr_loop())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="Profit OCR Service", lifespan=_lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -106,6 +184,19 @@ class PositionsUpdate(BaseModel):
 
     targets: Optional[List[OverlayTargetIn]] = None
     positions: Optional[List[float]] = None
+
+
+class AnalysisRoiRect(BaseModel):
+    left: int
+    top: int
+    width: int
+    height: int
+
+
+class AnalysisRoiBody(BaseModel):
+    """Retângulo em pixels físicos de ecrã (mss). `rect: null` limpa."""
+
+    rect: Optional[AnalysisRoiRect] = None
 
 
 def _targets_from_ws_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -135,7 +226,6 @@ def _apply_targets(targets: List[Dict[str, Any]]) -> None:
 def get_dpi_scale() -> float:
     try:
         user32 = ctypes.windll.user32
-        user32.SetProcessDPIAware()
         dc = user32.GetDC(0)
         dpi = ctypes.windll.gdi32.GetDeviceCaps(dc, 88)
         user32.ReleaseDC(0, dc)
@@ -153,6 +243,7 @@ def find_profit_window() -> Optional[Dict[str, Any]]:
         title = win32gui.GetWindowText(hwnd).lower()
         if "profit" in title or "nelogica" in title:
             l, t, r, b = win32gui.GetWindowRect(hwnd)
+            l, t, r, b = _logical_rect_to_physical(hwnd, l, t, r, b)
             found.append(
                 {
                     "hwnd": hwnd,
@@ -181,6 +272,7 @@ def resolve_profit_window(now_monotonic: float) -> Optional[Dict[str, Any]]:
             try:
                 if win32gui.IsWindow(hwnd) and win32gui.IsWindowVisible(hwnd):
                     l, t, r, b = win32gui.GetWindowRect(hwnd)
+                    l, t, r, b = _logical_rect_to_physical(hwnd, l, t, r, b)
                     if r > l and b > t:
                         cached["left"] = l
                         cached["top"] = t
@@ -258,6 +350,9 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
         {"threshold": 140, "contrast": 2.5, "psm": 6},
         {"threshold": 120, "contrast": 3.0, "psm": 6},
         {"threshold": 165, "contrast": 2.1, "psm": 11},
+        # Temas escuros / contraste baixo (outro monitor ou escala de texto)
+        {"threshold": 100, "contrast": 3.2, "psm": 6},
+        {"threshold": 85, "contrast": 3.5, "psm": 11},
     ]
 
     labels: List[Dict[str, float]] = []
@@ -374,6 +469,240 @@ def fit_value_axis(labels: List[Dict[str, float]]) -> Optional[Dict[str, float]]
     return {"slope": slope, "intercept": intercept, "value_per_px": value_per_px}
 
 
+def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str, float]], Dict[str, Any]]:
+    """
+    Mantém labels coerentes com um eixo de preço monotónico.
+    1) monotonicidade (y crescente -> value decrescente)
+    2) rejeição de outlier por value/px via mediana + MAD
+    """
+    if len(labels) < 2:
+        return labels, {"raw_labels": len(labels), "kept_labels": len(labels), "rejected": 0}
+
+    by_y = sorted(labels, key=lambda x: x["y_screen"])
+    kept = [by_y[0]]
+    monotonic_rejects = 0
+    for lb in by_y[1:]:
+        prev = kept[-1]
+        dy = lb["y_screen"] - prev["y_screen"]
+        dv = lb["value"] - prev["value"]
+        if dy <= 2:
+            monotonic_rejects += 1
+            continue
+        if dv >= 0:
+            monotonic_rejects += 1
+            continue
+        kept.append(lb)
+
+    if len(kept) < 2:
+        return by_y[:2], {
+            "raw_labels": len(labels),
+            "kept_labels": min(2, len(by_y)),
+            "rejected": len(labels) - min(2, len(by_y)),
+            "rejected_monotonic": monotonic_rejects,
+            "rejected_slope_outlier": 0,
+        }
+
+    seg_slopes: List[float] = []
+    for i in range(1, len(kept)):
+        dy = kept[i]["y_screen"] - kept[i - 1]["y_screen"]
+        dv = kept[i]["value"] - kept[i - 1]["value"]
+        if dy > 0 and dv < 0:
+            seg_slopes.append(abs(dv / dy))
+
+    if not seg_slopes:
+        return kept, {
+            "raw_labels": len(labels),
+            "kept_labels": len(kept),
+            "rejected": len(labels) - len(kept),
+            "rejected_monotonic": monotonic_rejects,
+            "rejected_slope_outlier": 0,
+        }
+
+    sorted_slopes = sorted(seg_slopes)
+    median = sorted_slopes[len(sorted_slopes) // 2]
+    deviations = sorted(abs(x - median) for x in sorted_slopes)
+    mad = deviations[len(deviations) // 2]
+    tolerance = max(0.02, mad * 2.8, median * 0.35)
+
+    filtered = [kept[0]]
+    slope_rejects = 0
+    for i in range(1, len(kept)):
+        prev = filtered[-1]
+        cur = kept[i]
+        dy = cur["y_screen"] - prev["y_screen"]
+        dv = cur["value"] - prev["value"]
+        if dy <= 0 or dv >= 0:
+            slope_rejects += 1
+            continue
+        slope = abs(dv / dy)
+        if abs(slope - median) > tolerance:
+            slope_rejects += 1
+            continue
+        filtered.append(cur)
+
+    if len(filtered) < 2:
+        filtered = kept[:2]
+
+    return filtered, {
+        "raw_labels": len(labels),
+        "kept_labels": len(filtered),
+        "rejected": len(labels) - len(filtered),
+        "rejected_monotonic": monotonic_rejects,
+        "rejected_slope_outlier": slope_rejects,
+        "segment_slope_median": median,
+        "segment_slope_mad": mad,
+    }
+
+
+def compute_axis_deltas(labels: List[Dict[str, float]]) -> Optional[Dict[str, Any]]:
+    if len(labels) < 2:
+        return None
+    by_y = sorted(labels, key=lambda x: x["y_screen"])
+    first = by_y[0]
+    last = by_y[-1]
+    intervals: List[Dict[str, float]] = []
+    for i in range(1, len(by_y)):
+        prev = by_y[i - 1]
+        cur = by_y[i]
+        value_delta = float(cur["value"] - prev["value"])
+        y_delta = float(cur["y_screen"] - prev["y_screen"])
+        value_per_px_segment = abs(value_delta / y_delta) if abs(y_delta) > 1e-9 else math.inf
+        intervals.append(
+            {
+                "i": i - 1,
+                "value_delta": value_delta,
+                "y_delta": y_delta,
+                "value_per_px_segment": value_per_px_segment,
+            }
+        )
+    return {
+        "delta_first_last_value": float(last["value"] - first["value"]),
+        "delta_first_last_y": float(last["y_screen"] - first["y_screen"]),
+        "delta_intervals": intervals,
+        "labels_count": len(by_y),
+    }
+
+
+def blend_axis_with_hysteresis(new_axis: Dict[str, float]) -> Dict[str, float]:
+    prev = state.get("_axis_ema")
+    if not isinstance(prev, dict):
+        state["_axis_ema"] = new_axis
+        state["_axis_jump_count"] = 0
+        return new_axis
+
+    prev_slope = float(prev.get("slope", 0.0))
+    prev_intercept = float(prev.get("intercept", 0.0))
+    slope_rel_jump = abs(new_axis["slope"] - prev_slope) / max(abs(prev_slope), 1e-9)
+    intercept_jump = abs(new_axis["intercept"] - prev_intercept)
+    jump_limit = max(6.0, float(prev.get("value_per_px", 0.0)) * 8.0)
+    jump_detected = slope_rel_jump > 0.10 or intercept_jump > jump_limit
+
+    if jump_detected:
+        state["_axis_jump_count"] = int(state.get("_axis_jump_count", 0)) + 1
+        beta = min(0.14, AXIS_BLEND_BETA)
+    else:
+        state["_axis_jump_count"] = 0
+        beta = AXIS_BLEND_BETA
+
+    blended = {
+        "slope": prev_slope * (1.0 - beta) + new_axis["slope"] * beta,
+        "intercept": prev_intercept * (1.0 - beta) + new_axis["intercept"] * beta,
+    }
+    blended["value_per_px"] = abs(blended["slope"])
+    state["_axis_ema"] = blended
+    return blended
+
+
+def value_to_y_hybrid(value: float, labels: List[Dict[str, float]], axis: Dict[str, float]) -> int:
+    if len(labels) >= 2:
+        by_val = sorted(labels, key=lambda x: x["value"])
+        for i in range(len(by_val) - 1):
+            lo, hi = by_val[i], by_val[i + 1]
+            if hi["value"] == lo["value"]:
+                continue
+            if lo["value"] <= value <= hi["value"]:
+                t = (value - lo["value"]) / (hi["value"] - lo["value"])
+                return int(round(lo["y_screen"] + t * (hi["y_screen"] - lo["y_screen"])))
+    yf = (value - axis["intercept"]) / axis["slope"]
+    return int(round(yf))
+
+
+def extract_analysis_sample(rect: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    OCR numa região definida pelo utilizador (painéis, legendas, etc.).
+    Não participa no ajuste do eixo nem nas posições das linhas do overlay.
+    """
+    left = int(rect["left"])
+    top = int(rect["top"])
+    w = max(1, int(rect["width"]))
+    h = max(1, int(rect["height"]))
+    img = capture_region(left, top, w, h)
+    gray = img.convert("L")
+    gray = ImageEnhance.Contrast(gray).enhance(2.3)
+    cfg = "--psm 6 --oem 3"
+    try:
+        text = pytesseract.image_to_string(gray, config=cfg).strip()
+        err_tex = ""
+    except Exception as tex_exc:
+        text = ""
+        err_tex = str(tex_exc)
+    numbers: List[float] = []
+    seen: set = set()
+    try:
+        data = pytesseract.image_to_data(
+            gray, config=cfg, output_type=pytesseract.Output.DICT
+        )
+        for i, word in enumerate(data["text"]):
+            word = (word or "").strip()
+            if not word:
+                continue
+            conf = int(data["conf"][i]) if str(data["conf"][i]).strip() else -1
+            if conf < 10:
+                continue
+            val = parse_number(word)
+            if val is None:
+                continue
+            key = round(val, 4)
+            if key not in seen:
+                seen.add(key)
+                numbers.append(float(val))
+    except Exception:
+        pass
+    out: Dict[str, Any] = {
+        "text": text[:4000],
+        "numbers": numbers[:80],
+        "ts": time.time(),
+    }
+    if err_tex:
+        out["tesseract_error"] = err_tex[:500]
+    return out
+
+
+def apply_line_y_smoothing(
+    lines: List[Dict[str, Any]], targets: List[Dict[str, Any]]
+) -> None:
+    """EMA em y_screen para reduzir jitter; não altera chart_left/right."""
+    if LINE_Y_SMOOTH_ALPHA <= 0 or not lines:
+        return
+    tk = tuple(
+        (round(float(t.get("value", 0)), 4), str(t.get("label") or ""))
+        for t in targets
+    )
+    if state.get("_smooth_key") != tk:
+        state["_line_y_smooth"] = {}
+        state["_smooth_key"] = tk
+    ema: Dict[int, float] = state.setdefault("_line_y_smooth", {})
+    alpha = min(1.0, max(0.01, LINE_Y_SMOOTH_ALPHA))
+    for idx, ln in enumerate(lines):
+        y = float(ln["y_screen"])
+        prev = ema.get(idx)
+        if prev is None:
+            ema[idx] = y
+        else:
+            ema[idx] = alpha * y + (1.0 - alpha) * prev
+        ln["y_screen"] = int(round(ema[idx]))
+
+
 async def ocr_loop():
     global first_ok_logged
     while True:
@@ -391,10 +720,14 @@ async def ocr_loop():
                     "height": window["height"] - TOOLBAR_H,
                 }
                 state["chart_rect"] = chart
-                labels = extract_y_axis(chart)
+                labels_raw = extract_y_axis(chart)
+                labels, diagnostics = sanitize_axis_labels(labels_raw)
+                state["axis_diagnostics"] = diagnostics
 
                 if len(labels) >= 2:
-                    axis = fit_value_axis(labels)
+                    state["axis_deltas"] = compute_axis_deltas(labels)
+                    axis_fit = fit_value_axis(labels)
+                    axis = blend_axis_with_hysteresis(axis_fit) if axis_fit is not None else None
                     if axis is None:
                         state["status"] = "ocr_axis_fit_failed"
                         state["lines"] = []
@@ -410,29 +743,53 @@ async def ocr_loop():
                         lines = []
                         for idx, t in enumerate(state["targets"]):
                             pos = float(t["value"])
-                            yf = (pos - axis["intercept"]) / axis["slope"]
-                            y_screen = int(round(yf))
-                            if chart["top"] <= y_screen <= chart["top"] + chart["height"]:
-                                lbl = str(t.get("label") or "")
-                                lines.append(
-                                    {
-                                        "value": pos,
-                                        "y_screen": y_screen,
-                                        "color": line_color_for_label(lbl, idx),
-                                        "chart_left": window["left"],
-                                        "chart_right": window["right"],
-                                        "label": lbl,
-                                    }
-                                )
+                            y_screen = value_to_y_hybrid(pos, labels, axis)
+                            chart_top = chart["top"]
+                            chart_bottom = chart["top"] + chart["height"]
+                            clamped_y = max(chart_top, min(y_screen, chart_bottom))
+                            lbl = str(t.get("label") or "")
+                            lines.append(
+                                {
+                                    "value": pos,
+                                    "y_screen": clamped_y,
+                                    "color": line_color_for_label(lbl, idx),
+                                    "chart_left": window["left"],
+                                    "chart_right": window["right"],
+                                    "label": lbl,
+                                    "out_of_bounds": y_screen != clamped_y,
+                                }
+                            )
+                        apply_line_y_smoothing(lines, state["targets"])
                         state["lines"] = lines
                 else:
-                    state["status"] = f"ocr_insufficient_labels:{len(labels)}"
+                    state["axis_deltas"] = None
+                    elapsed_svc = time.monotonic() - service_started_at
+                    if len(labels) == 0 and elapsed_svc < AXIS_WARMUP_SECS:
+                        state["status"] = "ocr_axis_warming"
+                    else:
+                        state["status"] = f"ocr_insufficient_labels:{len(labels)}"
                     state["lines"] = []
         except Exception as exc:
             state["status"] = f"error: {exc}"
             state["lines"] = []
 
         state["last_update"] = time.time()
+
+        analysis_sample: Optional[Dict[str, Any]] = None
+        roi = state.get("analysis_roi")
+        if isinstance(roi, dict) and int(roi.get("width", 0)) >= 4 and int(roi.get("height", 0)) >= 4:
+            try:
+                analysis_sample = extract_analysis_sample(roi)
+            except Exception as analy_exc:
+                analysis_sample = {
+                    "text": "",
+                    "numbers": [],
+                    "error": str(analy_exc)[:500],
+                    "ts": time.time(),
+                }
+            state["analysis_sample"] = analysis_sample
+        else:
+            state["analysis_sample"] = None
 
         if clients:
             payload = json.dumps(
@@ -444,6 +801,10 @@ async def ocr_loop():
                         "y_min": state["y_min"],
                         "y_max": state["y_max"],
                         "chart_rect": state["chart_rect"],
+                        "axis_deltas": state.get("axis_deltas"),
+                        "axis_diagnostics": state.get("axis_diagnostics"),
+                        "analysis_roi": state.get("analysis_roi"),
+                        "analysis_sample": analysis_sample,
                         "ts": state["last_update"],
                     },
                 }
@@ -462,12 +823,6 @@ async def ocr_loop():
         await asyncio.sleep(max(0.0, REFRESH_MS / 1000 - elapsed))
 
 
-@app.on_event("startup")
-async def startup_event():
-    state["dpi_scale"] = get_dpi_scale()
-    asyncio.create_task(ocr_loop())
-
-
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -481,6 +836,10 @@ async def ws_endpoint(websocket: WebSocket):
                     "status": state["status"],
                     "y_min": state["y_min"],
                     "y_max": state["y_max"],
+                    "axis_deltas": state.get("axis_deltas"),
+                    "axis_diagnostics": state.get("axis_diagnostics"),
+                    "analysis_roi": state.get("analysis_roi"),
+                    "analysis_sample": state.get("analysis_sample"),
                 },
             }
         )
@@ -510,6 +869,21 @@ async def set_positions(body: PositionsUpdate):
     return {"ok": True, "targets": state["targets"], "positions": state["positions"]}
 
 
+@app.post("/analysis_roi")
+async def set_analysis_roi(body: AnalysisRoiBody):
+    if body.rect is None:
+        state["analysis_roi"] = None
+        state["analysis_sample"] = None
+    else:
+        state["analysis_roi"] = {
+            "left": int(body.rect.left),
+            "top": int(body.rect.top),
+            "width": max(1, int(body.rect.width)),
+            "height": max(1, int(body.rect.height)),
+        }
+    return {"ok": True, "analysis_roi": state["analysis_roi"]}
+
+
 @app.get("/status")
 async def get_status():
     return {
@@ -519,8 +893,12 @@ async def get_status():
         "lines": state["lines"],
         "y_min": state["y_min"],
         "y_max": state["y_max"],
+        "axis_deltas": state.get("axis_deltas"),
+        "axis_diagnostics": state.get("axis_diagnostics"),
         "dpi_scale": state["dpi_scale"],
         "last_update": state["last_update"],
+        "analysis_roi": state.get("analysis_roi"),
+        "analysis_sample": state.get("analysis_sample"),
     }
 
 

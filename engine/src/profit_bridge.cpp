@@ -4,10 +4,13 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <cstdio>
 #include <cstring>
+#include <cwchar>
 #include <fstream>
 #include <iostream>
 #include <atomic>
+#include <ctime>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -35,6 +38,13 @@ std::mutex g_market_mutex;
 std::condition_variable g_market_cv;
 bool g_market_connected = false;
 bool g_activation_valid = false;
+
+std::mutex g_history_mutex;
+std::condition_variable g_history_cv;
+bool g_history_in_progress = false;
+bool g_history_ready = false;
+int64_t g_history_trades_received = 0;
+std::atomic<bool> g_history_last_packet{false};
 
 std::atomic<bool> g_first_trade{true};
 std::atomic<bool> g_first_offerbook{true};
@@ -67,6 +77,51 @@ static std::string trim_ticker(std::string s) {
     return s.substr(start, end == std::string::npos ? std::string::npos : end - start + 1);
 }
 
+static std::string format_trade_date(const profit::SystemTime& st) {
+    if (st.wYear == 0 || st.wMonth == 0 || st.wDay == 0) return {};
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%04u%02u%02u", st.wYear, st.wMonth, st.wDay);
+    return std::string(buf);
+}
+
+static int64_t system_time_to_epoch_ms(const profit::SystemTime& st) {
+    if (st.wYear == 0 || st.wMonth == 0 || st.wDay == 0) return 0;
+    std::tm tmv{};
+    tmv.tm_year = static_cast<int>(st.wYear) - 1900;
+    tmv.tm_mon = static_cast<int>(st.wMonth) - 1;
+    tmv.tm_mday = static_cast<int>(st.wDay);
+    tmv.tm_hour = static_cast<int>(st.wHour);
+    tmv.tm_min = static_cast<int>(st.wMinute);
+    tmv.tm_sec = static_cast<int>(st.wSecond);
+    std::time_t tt = std::mktime(&tmv);
+    if (tt < 0) return 0;
+    return static_cast<int64_t>(tt) * 1000 + static_cast<int64_t>(st.wMilliseconds);
+}
+
+static void push_trade_event(
+    const std::string& ticker,
+    const std::string& bolsa,
+    const profit::TConnectorTrade& trade,
+    uint32_t flags,
+    event_bus::TradeSource source)
+{
+    if (!g_queue) return;
+    event_bus::TradeEvent ev;
+    ev.ticker = ticker;
+    ev.bolsa = bolsa;
+    ev.trade_date = format_trade_date(trade.TradeDate);
+    ev.price = trade.Price;
+    ev.qty = trade.Quantity;
+    ev.buy_agent = trade.BuyAgent;
+    ev.sell_agent = trade.SellAgent;
+    ev.trade_type = trade.TradeType;
+    ev.trade_number = trade.TradeNumber;
+    ev.trade_flags = flags;
+    ev.trade_epoch_ms = system_time_to_epoch_ms(trade.TradeDate);
+    ev.source = source;
+    g_queue->push(ev);
+}
+
 void PROFIT_STDCALL state_callback(int32_t nType, int32_t nResult) {
     const char* type_str = "?";
     switch (nType) {
@@ -89,8 +144,14 @@ void PROFIT_STDCALL state_callback(int32_t nType, int32_t nResult) {
 
 void PROFIT_STDCALL progress_callback(profit::TAssetIDRec rAssetID, int32_t nProgress) {
     (void)rAssetID;
-    (void)nProgress;
-    // Progresso de download de histórico - ignorar
+    if (nProgress >= 1000) {
+        {
+            std::lock_guard<std::mutex> lk(g_history_mutex);
+            g_history_in_progress = false;
+            g_history_ready = true;
+        }
+        g_history_cv.notify_all();
+    }
 }
 
 void PROFIT_STDCALL tiny_book_callback(profit::TAssetIDRec rAssetID, double price, int32_t qtd, int32_t side) {
@@ -162,16 +223,42 @@ void PROFIT_STDCALL trade_callback_v2(
             std::cerr << "[Profit] First TRADE for " << ticker
                       << " price=" << trade.Price << " qty=" << trade.Quantity
                       << " type=" << (int)trade.TradeType << std::endl;
-        event_bus::TradeEvent ev;
-        ev.ticker     = ticker;
-        ev.bolsa      = wide_to_utf8(assetId.Exchange);
-        ev.price      = trade.Price;
-        ev.qty        = trade.Quantity;
-        ev.buy_agent  = trade.BuyAgent;
-        ev.sell_agent = trade.SellAgent;
-        ev.trade_type = trade.TradeType;
-        (void)flags;
-        g_queue->push(ev);
+        push_trade_event(
+            ticker,
+            wide_to_utf8(assetId.Exchange),
+            trade,
+            flags,
+            event_bus::TradeSource::Realtime);
+    }
+}
+
+void PROFIT_STDCALL history_trade_callback_v2(
+    profit::TConnectorAssetIdentifier assetId, size_t pTrade, uint32_t flags)
+{
+    std::string ticker = trim_ticker(wide_to_utf8(assetId.Ticker));
+    if (!g_queue || !g_translate_trade) return;
+    profit::TConnectorTrade trade{};
+    trade.Version = 0;
+    int32_t tr_result = g_translate_trade(pTrade, &trade);
+    if (tr_result == profit::NL_OK) {
+        push_trade_event(
+            ticker,
+            wide_to_utf8(assetId.Exchange),
+            trade,
+            flags,
+            event_bus::TradeSource::History);
+        {
+            std::lock_guard<std::mutex> lk(g_history_mutex);
+            g_history_trades_received++;
+            if ((flags & profit::TC_LAST_PACKET) == profit::TC_LAST_PACKET) {
+                g_history_last_packet.store(true);
+                g_history_in_progress = false;
+                g_history_ready = true;
+            }
+        }
+        if ((flags & profit::TC_LAST_PACKET) == profit::TC_LAST_PACKET) {
+            g_history_cv.notify_all();
+        }
     }
 }
 
@@ -230,6 +317,8 @@ bool ProfitBridge::load(const std::string& dll_path) {
     // GetAgentNameByID / GetAgentShortNameByID opcionais (DLLs antigas podem não exportar)
     fn_GetAgentNameByID_ = (decltype(fn_GetAgentNameByID_))GET_PROC(dll_handle_, "GetAgentNameByID");
     fn_GetAgentShortNameByID_ = (decltype(fn_GetAgentShortNameByID_))GET_PROC(dll_handle_, "GetAgentShortNameByID");
+    fn_SetHistoryTradeCallbackV2_ = (decltype(fn_SetHistoryTradeCallbackV2_))GET_PROC(dll_handle_, "SetHistoryTradeCallbackV2");
+    fn_GetHistoryTrades_ = (decltype(fn_GetHistoryTrades_))GET_PROC(dll_handle_, "GetHistoryTrades");
 
 #undef RESOLVE
     g_queue = &queue_;
@@ -251,6 +340,8 @@ void ProfitBridge::unload() {
     }
     fn_GetAgentNameByID_ = nullptr;
     fn_GetAgentShortNameByID_ = nullptr;
+    fn_SetHistoryTradeCallbackV2_ = nullptr;
+    fn_GetHistoryTrades_ = nullptr;
 }
 
 std::string ProfitBridge::get_agent_name(int32_t agent_id) const {
@@ -286,6 +377,8 @@ void ProfitBridge::register_callbacks() {
     if (fn_SetTinyBookCallback_)     log_set("SetTinyBookCallback",     fn_SetTinyBookCallback_(tiny_book_callback));
     if (fn_SetOfferBookCallbackV2_)  log_set("SetOfferBookCallbackV2",  fn_SetOfferBookCallbackV2_(offer_book_callback_v2));
     if (fn_SetTradeCallbackV2_)      log_set("SetTradeCallbackV2",      fn_SetTradeCallbackV2_(trade_callback_v2));
+    if (fn_SetHistoryTradeCallbackV2_) log_set("SetHistoryTradeCallbackV2", fn_SetHistoryTradeCallbackV2_(history_trade_callback_v2));
+    else                             std::cerr << "[Profit] SetHistoryTradeCallbackV2 not available" << std::endl;
     if (fn_SetDailyCallback_)        log_set("SetDailyCallback",        fn_SetDailyCallback_(daily_callback));
     else                             std::cerr << "[Profit] SetDailyCallback not available, using init fallback" << std::endl;
 }
@@ -329,6 +422,55 @@ int32_t ProfitBridge::SubscribeOfferBook(const wchar_t* ticker, const wchar_t* b
 
 int32_t ProfitBridge::UnsubscribeOfferBook(const wchar_t* ticker, const wchar_t* bolsa) {
     return fn_UnsubscribeOfferBook_ ? fn_UnsubscribeOfferBook_(ticker, bolsa) : profit::NL_NOT_INITIALIZED;
+}
+
+int32_t ProfitBridge::GetHistoryTrades(const wchar_t* ticker, const wchar_t* bolsa,
+                                       const wchar_t* date_start, const wchar_t* date_end) {
+    return fn_GetHistoryTrades_
+        ? fn_GetHistoryTrades_(ticker, bolsa, date_start, date_end)
+        : profit::NL_NOT_INITIALIZED;
+}
+
+int32_t ProfitBridge::request_history_today(const wchar_t* ticker, const wchar_t* bolsa) {
+    std::time_t t = std::time(nullptr);
+    std::tm tm_buf{};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &t);
+#else
+    localtime_r(&t, &tm_buf);
+#endif
+    wchar_t date_buf[16];
+    std::swprintf(date_buf, sizeof(date_buf) / sizeof(wchar_t), L"%02d/%02d/%04d",
+                  tm_buf.tm_mday, tm_buf.tm_mon + 1, tm_buf.tm_year + 1900);
+    {
+        std::lock_guard<std::mutex> lk(g_history_mutex);
+        g_history_in_progress = true;
+        g_history_ready = false;
+        g_history_trades_received = 0;
+        g_history_last_packet.store(false);
+    }
+    int32_t ret = GetHistoryTrades(ticker, bolsa, date_buf, date_buf);
+    if (ret < profit::NL_OK) {
+        std::lock_guard<std::mutex> lk(g_history_mutex);
+        g_history_in_progress = false;
+        g_history_ready = false;
+    }
+    return ret;
+}
+
+bool ProfitBridge::wait_for_history_ready(std::chrono::milliseconds timeout) {
+    std::unique_lock<std::mutex> lk(g_history_mutex);
+    return g_history_cv.wait_for(lk, timeout, [] {
+        return g_history_ready || g_history_last_packet.load();
+    });
+}
+
+void ProfitBridge::reset_history_state() {
+    std::lock_guard<std::mutex> lk(g_history_mutex);
+    g_history_in_progress = false;
+    g_history_ready = false;
+    g_history_trades_received = 0;
+    g_history_last_packet.store(false);
 }
 
 static std::string get_engine_log_path() {

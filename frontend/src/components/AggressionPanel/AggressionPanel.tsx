@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { useMarketStore } from "../../store/marketStore";
+import { ifrSeriesShortLabel, useMarketStore } from "../../store/marketStore";
 import { formatPrice } from "../../utils/formatters";
 import { OpenAsWidgetButton } from "../OpenAsWidgetButton";
-import { IfrChart } from "./IfrChart";
+import { IfrChart, type IfrChartVariant } from "./IfrChart";
 import { TopBrokersTable } from "./TopBrokersTable";
 import { UBSLine } from "./UBSLine";
 
@@ -32,6 +32,10 @@ function AggressionSection({
 
 export function AggressionPanel() {
   const vwap = useMarketStore((s) => s.vwap);
+  const selectedTicker = useMarketStore((s) => s.selectedTicker);
+  const ifrSeries = useMarketStore((s) => s.ifrSeries);
+  const getIfrTitle = (period: IfrChartVariant) =>
+    `IFR ${selectedTicker} (${ifrSeriesShortLabel(ifrSeries)}, IFR ${period})`;
 
   return (
     <div className="h-full flex flex-col">
@@ -43,15 +47,15 @@ export function AggressionPanel() {
           <TopBrokersTable />
         </AggressionSection>
 
-        <AggressionSection title="IFR 9" widgetId="ifr-9">
+        <AggressionSection title={getIfrTitle("9")} widgetId="ifr-9">
           <IfrChart variant="9" />
         </AggressionSection>
 
-        <AggressionSection title="IFR 30" widgetId="ifr-30">
+        <AggressionSection title={getIfrTitle("30")} widgetId="ifr-30">
           <IfrChart variant="30" />
         </AggressionSection>
 
-        <AggressionSection title="IFR 18" widgetId="ifr-18">
+        <AggressionSection title={getIfrTitle("18")} widgetId="ifr-18">
           <IfrChart variant="18" />
         </AggressionSection>
 

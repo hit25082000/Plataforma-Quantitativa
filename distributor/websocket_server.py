@@ -3,15 +3,17 @@
 import logging
 import socket
 from contextlib import asynccontextmanager
-from typing import Any, AsyncGenerator, List, Optional
+from typing import Any, AsyncGenerator, List, Optional, cast
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agent_007 import Agent007Engine
 from agent_007_chat import check_rate_limit, run_agent007_chat
 from config import AGENT007_WEIS_MODE
 from connection_manager import ConnectionManager
+from message_router import MessageRouter
 from zmq_consumer import ZmqConsumer
 
 logger = logging.getLogger(__name__)
@@ -36,7 +38,10 @@ def _exchange_to_bolsa(exchange: str) -> str:
 # Shared state - initialized in main.py
 manager: Optional[ConnectionManager] = None
 zmq_consumer: Optional[ZmqConsumer] = None
+zmq_consumer_sync: Optional[ZmqConsumer] = None
 agent007_engine: Optional[Agent007Engine] = None
+message_router: Optional[MessageRouter] = None
+market_queue: Optional[Any] = None  # asyncio.Queue[str]; evita import circular
 
 
 @asynccontextmanager
@@ -48,12 +53,19 @@ def init_app(
     connection_manager: ConnectionManager,
     consumer: ZmqConsumer,
     agent007: Optional[Agent007Engine] = None,
+    router: Optional[MessageRouter] = None,
+    *,
+    sync_consumer: Optional[ZmqConsumer] = None,
+    market_queue_ref: Optional[Any] = None,
 ) -> None:
     """Initialize app with shared components (called from main.py)."""
-    global manager, zmq_consumer, agent007_engine
+    global manager, zmq_consumer, zmq_consumer_sync, agent007_engine, message_router, market_queue
     manager = connection_manager
     zmq_consumer = consumer
+    zmq_consumer_sync = sync_consumer
     agent007_engine = agent007
+    message_router = router
+    market_queue = market_queue_ref
 
 
 def create_app(
@@ -82,12 +94,57 @@ def create_app(
 
     @app.get("/health")
     async def health() -> dict:
-        """Health check with client count and ZMQ consumer status."""
-        return {
+        """Health check: liveness + métricas do pipeline quando inicializado via main."""
+        out: dict[str, Any] = {
             "status": "ok",
             "clients": len(manager.active) if manager else 0,
             "zmq": zmq_consumer.is_alive() if zmq_consumer else False,
         }
+        if zmq_consumer_sync is not None:
+            out["zmq_sync"] = zmq_consumer_sync.is_alive()
+        if market_queue is not None:
+            q = market_queue
+            out["backlog"] = int(cast(Any, q).qsize())
+            out["queue_maxsize"] = int(
+                getattr(cast(Any, q), "maxsize", 0) or 0
+            )
+        if message_router is not None:
+            r = message_router.metrics()
+            out["route_avg_ms"] = float(r["route_avg_ms"])
+            out["route_total"] = int(r["route_count_total"])
+            out["throttled_dom"] = int(r["throttled_dom_count"])
+            out["invalid_json"] = int(r["invalid_json_count"])
+        if zmq_consumer is not None:
+            out["zmq_metrics_main"] = zmq_consumer.metrics()
+        if zmq_consumer_sync is not None:
+            out["zmq_metrics_sync"] = zmq_consumer_sync.metrics()
+        if zmq_consumer is not None and zmq_consumer_sync is not None:
+            m_main = zmq_consumer.metrics()
+            m_sync = zmq_consumer_sync.metrics()
+            out["dropped_dom_total"] = int(
+                m_main["dropped_dom"] + m_sync["dropped_dom"]
+            )
+            out["rescued_trade_like_total"] = int(
+                m_main["rescued_trade_like"] + m_sync["rescued_trade_like"]
+            )
+        return out
+
+    @app.get("/api/warm-macd")
+    async def warm_macd(ticker: str = "WINFUT") -> Any:
+        """Último MACD/IFR a partir de estado persistido + CSV (útil ao abrir o app sem trade imediato)."""
+        if message_router is None:
+            return JSONResponse(
+                {"detail": "router not initialized"},
+                status_code=503,
+            )
+        t = (ticker or "WINFUT").strip().upper() or "WINFUT"
+        snap = message_router.warm_macd_snapshot(t)
+        if snap is None:
+            return JSONResponse(
+                {"detail": "insufficient_data"},
+                status_code=404,
+            )
+        return snap
 
     class SetActiveAssetBody(BaseModel):
         ticker: str
@@ -124,6 +181,50 @@ def create_app(
                 s.close()
             except Exception:
                 pass
+
+    class SetRenkoBrickBody(BaseModel):
+        """`series` tem prioridade. Compat: só `brick_points` (16 ou 42)."""
+
+        series: Optional[str] = None
+        brick_points: Optional[float] = None
+
+    @app.post("/api/set-renko-brick")
+    async def set_renko_brick(body: SetRenkoBrickBody) -> dict:
+        """Define série do IFR: Renko 42r/16r ou candle 30m (macd_signal)."""
+        if message_router is None:
+            return {"success": False, "message": "Router não inicializado"}
+        raw = (body.series or "").strip().lower() if body.series is not None else ""
+        if raw:
+            message_router.set_ifr_series(raw)
+            if raw in ("30m", "30min", "30_min", "30_minutos", "30 min", "30minutos"):
+                return {
+                    "success": True,
+                    "message": "IFR em candles de 30 minutos",
+                    "series": "30m",
+                    "brick_points": None,
+                }
+            bp = 16 if raw.startswith("16") else 42
+            return {
+                "success": True,
+                "message": f"Renko {bp}R ativo",
+                "series": f"{bp}r",
+                "brick_points": bp,
+            }
+        if body.brick_points is not None:
+            pts = float(body.brick_points)
+            if pts not in (16.0, 42.0):
+                return {"success": False, "message": "brick_points deve ser 16 ou 42"}
+            message_router.set_renko_brick_points(pts)
+            return {
+                "success": True,
+                "message": f"Renko {int(pts)}R ativo",
+                "series": f"{int(pts)}r",
+                "brick_points": int(pts),
+            }
+        return {
+            "success": False,
+            "message": "Informe series (42r, 16r ou 30m) ou brick_points (16 ou 42)",
+        }
 
     class ChatMessage(BaseModel):
         role: str

@@ -93,13 +93,45 @@ export interface OverlayLine {
   label?: string;
 }
 
+/** Região opcional só para leitura OCR (painéis do Profit); não define posição das linhas. */
+export interface OcrAnalysisRoi {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface OcrAnalysisSample {
+  text?: string;
+  numbers?: number[];
+  ts?: number;
+  error?: string;
+  tesseract_error?: string;
+}
+
 export interface OverlayState {
   active: boolean;
+  /** True enquanto `open_profit_overlay` está em curso (OCR + janelas). */
+  activating: boolean;
   status: string;
   targets: OverlayTarget[];
   lines: OverlayLine[];
   y_min: number | null;
   y_max: number | null;
+  axis_deltas: {
+    delta_first_last_value: number;
+    delta_first_last_y: number;
+    delta_intervals: Array<{
+      i: number;
+      value_delta: number;
+      y_delta: number;
+      value_per_px_segment: number;
+    }>;
+    labels_count: number;
+  } | null;
+  axis_diagnostics: Record<string, unknown> | null;
+  analysisRoi: OcrAnalysisRoi | null;
+  analysisSample: OcrAnalysisSample | null;
 }
 
 function formatBrokerName(
@@ -131,11 +163,16 @@ function targetsEqual(a: OverlayTarget[], b: OverlayTarget[]): boolean {
 export function useProfitOverlay() {
   const [state, setState] = useState<OverlayState>({
     active: false,
+    activating: false,
     status: "idle",
     targets: [],
     lines: [],
     y_min: null,
     y_max: null,
+    axis_deltas: null,
+    axis_diagnostics: null,
+    analysisRoi: null,
+    analysisSample: null,
   });
 
   const [selectedMetricIds, setSelectedMetricIdsState] =
@@ -169,6 +206,44 @@ export function useProfitOverlay() {
   useEffect(() => {
     activeRef.current = state.active;
   }, [state.active]);
+
+  /** ROI de análise persistida em config.json — mostrar mesmo antes de ligar o WebSocket. */
+  useEffect(() => {
+    let cancelled = false;
+    invoke<{
+      ocr_analysis_roi?: {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+      } | null;
+    }>("read_config")
+      .then((cfg) => {
+        if (cancelled) return;
+        const r = cfg.ocr_analysis_roi;
+        if (
+          r &&
+          typeof r.width === "number" &&
+          typeof r.height === "number" &&
+          r.width >= 4 &&
+          r.height >= 4
+        ) {
+          setState((p) => ({
+            ...p,
+            analysisRoi: {
+              left: r.left,
+              top: r.top,
+              width: r.width,
+              height: r.height,
+            },
+          }));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const normalizePosition = useCallback(
     (value: number) => roundToStep(value, OVERLAY_CHART_PRICE_STEP),
@@ -331,6 +406,11 @@ export function useProfitOverlay() {
             lines: msg.data.lines ?? [],
             y_min: msg.data.y_min ?? null,
             y_max: msg.data.y_max ?? null,
+            axis_deltas: msg.data.axis_deltas ?? null,
+            axis_diagnostics: msg.data.axis_diagnostics ?? null,
+            analysisRoi: (msg.data.analysis_roi as OcrAnalysisRoi | null | undefined) ?? null,
+            analysisSample:
+              (msg.data.analysis_sample as OcrAnalysisSample | null | undefined) ?? null,
           }));
         }
       } catch {
@@ -339,15 +419,17 @@ export function useProfitOverlay() {
     };
 
     ws.onclose = () => {
-      const delays = [200, 350, 600, 1000, 1500];
+      const delays = [
+        250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
+      ];
       const i = Math.min(wsRetryAttemptRef.current++, delays.length - 1);
       wsTotalRetryRef.current += 1;
-      const ms = delays[i] ?? 1500;
+      const ms = delays[i] ?? 4500;
       if (activeRef.current) {
         setState((prev) => ({
           ...prev,
           status:
-            wsTotalRetryRef.current > 10
+            wsTotalRetryRef.current > 32
               ? "ocr_unreachable_retrying"
               : "warming_up",
         }));
@@ -407,7 +489,11 @@ export function useProfitOverlay() {
       openStartMsRef.current = performance.now();
       wsOpenLoggedRef.current = false;
       firstOverlayLoggedRef.current = false;
-      setState((prev) => ({ ...prev, status: "warming_up" }));
+      setState((prev) => ({
+        ...prev,
+        status: "warming_up",
+        activating: true,
+      }));
       await invoke("open_profit_overlay");
       if (openStartMsRef.current != null) {
         const ms = Math.round(performance.now() - openStartMsRef.current);
@@ -418,10 +504,24 @@ export function useProfitOverlay() {
       const metrics = buildMetricTargets();
       const manuals = targetsRef.current.filter((t) => t.metricId == null);
       const next = mergeTargets(metrics, manuals);
-      setState((prev) => ({ ...prev, active: true, targets: next }));
+      setState((prev) => ({
+        ...prev,
+        active: true,
+        activating: false,
+        targets: next,
+      }));
       pushTargets(next);
     } catch (err) {
-      setState((prev) => ({ ...prev, status: "open_failed" }));
+      const msg = err instanceof Error ? err.message : String(err ?? "");
+      const userFacing =
+        msg && msg.length > 0
+          ? `open_failed: ${msg}`
+          : "open_failed";
+      setState((prev) => ({
+        ...prev,
+        activating: false,
+        status: userFacing,
+      }));
       console.error("[overlay] open_profit_overlay failed:", err);
     }
   }, [
@@ -439,7 +539,13 @@ export function useProfitOverlay() {
       openStartMsRef.current = null;
       wsOpenLoggedRef.current = false;
       firstOverlayLoggedRef.current = false;
-      setState((prev) => ({ ...prev, active: false, lines: [], status: "idle" }));
+      setState((prev) => ({
+        ...prev,
+        active: false,
+        activating: false,
+        lines: [],
+        status: "idle",
+      }));
     } catch (err) {
       console.error("[overlay] close_profit_overlay failed:", err);
     }
@@ -500,6 +606,23 @@ export function useProfitOverlay() {
     [normalizePosition, pushTargets],
   );
 
+  const openOcrRoiPicker = useCallback(async () => {
+    try {
+      await invoke("open_ocr_roi_picker");
+    } catch (err) {
+      console.error("[overlay] open_ocr_roi_picker failed:", err);
+    }
+  }, []);
+
+  const clearOcrAnalysisRoi = useCallback(async () => {
+    try {
+      await invoke("clear_ocr_analysis_roi");
+      setState((prev) => ({ ...prev, analysisRoi: null, analysisSample: null }));
+    } catch (err) {
+      console.error("[overlay] clear_ocr_analysis_roi failed:", err);
+    }
+  }, []);
+
   useEffect(() => {
     if (!state.active || !autoDynamicDefaultsRef.current) return;
     setState((prev) => {
@@ -534,6 +657,8 @@ export function useProfitOverlay() {
     toggleMetric,
     openOverlay,
     closeOverlay,
+    openOcrRoiPicker,
+    clearOcrAnalysisRoi,
     setTargets,
     addPosition,
     removePosition,

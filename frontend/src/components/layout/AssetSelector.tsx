@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useMarketStore } from "../../store/marketStore";
 import { isTauri } from "../../utils/tauri";
+import { fetchWarmMacdSnapshot } from "../../utils/warmMacd";
 
 // Lista de ativos disponíveis (futuros B3)
 const AVAILABLE_TICKERS = [
@@ -95,7 +96,10 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
             if (!isEngineNotListening(result.message)) break;
           }
         }
-        if (result.success) clearMarketData();
+        if (result.success) {
+          clearMarketData();
+          void fetchWarmMacdSnapshot();
+        }
         setAssetSwitchStatus(result.success ? "active" : "error", result.message);
         if (!result.success) console.warn("Troca de ativo:", result.message);
       } catch (e) {
@@ -111,7 +115,10 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
           body: JSON.stringify({ ticker: ticker.symbol, exchange: ticker.exchange }),
         });
         const result = await res.json().catch(() => ({ success: false, message: "Resposta inválida" }));
-        if (result.success) clearMarketData();
+        if (result.success) {
+          clearMarketData();
+          void fetchWarmMacdSnapshot();
+        }
         setAssetSwitchStatus(result.success ? "active" : "error", result.message ?? "");
       } catch (e) {
         setAssetSwitchStatus("error", String(e));

@@ -108,6 +108,8 @@ try {
                 Copy-Item $src $tauriResources -Force
             }
         }
+
+        & (Join-Path $root "scripts\sync-profit-ocr-to-tauri-resources.ps1") -RepoRoot $root
     }
 
     # Install distributor dependencies

@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { OCR_WS_URL } from "../config/ocrPort";
+import {
+  type OcrAxisDeltas,
+  overlayStatusColor,
+  overlayStatusText,
+} from "../utils/ocrStatus";
 
 interface OverlayLine {
   value: number;
@@ -15,15 +21,27 @@ interface OverlayData {
   status: string;
   y_min: number | null;
   y_max: number | null;
+  axis_deltas?: OcrAxisDeltas | null;
+  axis_diagnostics?: {
+    raw_labels?: number;
+    kept_labels?: number;
+    rejected?: number;
+    rejected_monotonic?: number;
+    rejected_slope_outlier?: number;
+  } | null;
 }
 
 const LABEL_W = 150;
 const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
 /** Recuo à direita para não cobrir a faixa de botões/ferramentas do Profit. */
-const OVERLAY_RIGHT_MARGIN_PX = 208;
+const DEFAULT_OVERLAY_RIGHT_MARGIN_PX = 208;
 const LABEL_MIN_GAP = LABEL_H + 4;
 const LABEL_MARGIN_PX = 2;
+
+type AppConfigRead = {
+  overlay_right_margin_px?: number | null;
+};
 
 interface PositionedOverlayLine extends OverlayLine {
   labelY: number;
@@ -99,6 +117,8 @@ export default function OverlayPage() {
     status: "connecting",
     y_min: null,
     y_max: null,
+    axis_deltas: null,
+    axis_diagnostics: null,
   });
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -106,6 +126,13 @@ export default function OverlayPage() {
   const wsRetryRef = useRef(0);
   const wsStartRef = useRef<number | null>(null);
   const wsOpenLoggedRef = useRef(false);
+  const [overlayRightMarginPx, setOverlayRightMarginPx] = useState<number>(
+    DEFAULT_OVERLAY_RIGHT_MARGIN_PX,
+  );
+  const [viewport, setViewport] = useState({
+    width: window.innerWidth,
+    height: window.innerHeight,
+  });
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -136,12 +163,14 @@ export default function OverlayPage() {
     };
 
     ws.onclose = () => {
-      const delays = [200, 350, 600, 1000, 1500];
+      const delays = [
+        250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
+      ];
       const i = Math.min(wsRetryRef.current++, delays.length - 1);
-      const ms = delays[i] ?? 1500;
+      const ms = delays[i] ?? 4500;
       setData((prev) => ({
         ...prev,
-        status: wsRetryRef.current > 10 ? "ocr_unreachable_retrying" : "warming_up",
+        status: wsRetryRef.current > 32 ? "ocr_unreachable_retrying" : "warming_up",
       }));
       retryTimer.current = setTimeout(connect, ms);
     };
@@ -156,6 +185,30 @@ export default function OverlayPage() {
       clearTimeout(retryTimer.current);
     };
   }, [connect]);
+
+  useEffect(() => {
+    const onResize = () => {
+      setViewport({ width: window.innerWidth, height: window.innerHeight });
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+    invoke<AppConfigRead>("read_config")
+      .then((cfg) => {
+        if (!mounted) return;
+        const v = cfg?.overlay_right_margin_px;
+        if (typeof v === "number" && Number.isFinite(v) && v >= 0) {
+          setOverlayRightMarginPx(v);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     const html = document.documentElement;
@@ -176,9 +229,24 @@ export default function OverlayPage() {
     };
   }, []);
 
-  const W = window.screen.width;
-  const H = window.screen.height;
-  const positionedLines = useMemo(() => layoutOverlayLines(data.lines, H), [data.lines, H]);
+  const renderScale = useMemo(() => {
+    const dpr = window.devicePixelRatio || 1;
+    if (!Number.isFinite(dpr) || dpr <= 0) return 1;
+    return 1 / dpr;
+  }, []);
+  const scaledLines = useMemo(
+    () =>
+      data.lines.map((line) => ({
+        ...line,
+        y_screen: line.y_screen * renderScale,
+        chart_left: line.chart_left * renderScale,
+        chart_right: line.chart_right * renderScale,
+      })),
+    [data.lines, renderScale],
+  );
+  const W = viewport.width;
+  const H = viewport.height;
+  const positionedLines = useMemo(() => layoutOverlayLines(scaledLines, H), [scaledLines, H]);
 
   return (
     <div
@@ -200,16 +268,29 @@ export default function OverlayPage() {
         style={{ position: "absolute", inset: 0, display: "block" }}
       >
         {positionedLines.map((line, i) => (
-          <OverlayLineEl key={i} line={line} />
+          <OverlayLineEl key={i} line={line} rightMarginPx={overlayRightMarginPx} />
         ))}
 
-        <StatusBadge status={data.status} y_min={data.y_min} y_max={data.y_max} />
+        <StatusBadge
+          status={data.status}
+          y_min={data.y_min}
+          y_max={data.y_max}
+          axis_deltas={data.axis_deltas}
+          axis_diagnostics={data.axis_diagnostics}
+          viewportHeight={H}
+        />
       </svg>
     </div>
   );
 }
 
-function OverlayLineEl({ line }: { line: PositionedOverlayLine }) {
+function OverlayLineEl({
+  line,
+  rightMarginPx,
+}: {
+  line: PositionedOverlayLine;
+  rightMarginPx: number;
+}) {
   const { value, y_screen, color, chart_left, chart_right, label: paramLabel, labelY, rank, dense } =
     line;
   const compact = dense;
@@ -224,7 +305,7 @@ function OverlayLineEl({ line }: { line: PositionedOverlayLine }) {
 
   const lineRight = Math.max(
     chart_left + LABEL_W + 24,
-    chart_right - OVERLAY_RIGHT_MARGIN_PX,
+    chart_right - rightMarginPx,
   );
   const lx = lineRight - LABEL_W - 4;
   const ly = labelY - labelH / 2;
@@ -311,24 +392,46 @@ function StatusBadge({
   status,
   y_min,
   y_max,
+  axis_deltas,
+  axis_diagnostics,
+  viewportHeight,
 }: {
   status: string;
   y_min: number | null;
   y_max: number | null;
+  axis_deltas?: OcrAxisDeltas | null;
+  axis_diagnostics?: {
+    raw_labels?: number;
+    kept_labels?: number;
+    rejected?: number;
+  } | null;
+  viewportHeight: number;
 }) {
-  const H = window.screen.height;
-  const ok = status === "ok";
-  const isWaiting =
-    status === "connecting" || status === "warming_up" || status === "idle";
-  const color = ok ? "#00FF88" : isWaiting ? "#FFB800" : "#FF4444";
-  const text = ok ? `OCR OK ${y_min?.toFixed(0)} - ${y_max?.toFixed(0)}` : `OCR ${status}`;
+  const color = overlayStatusColor(status);
+  const text = overlayStatusText(status, y_min, y_max, axis_deltas);
+  const diagText =
+    axis_diagnostics && typeof axis_diagnostics.kept_labels === "number"
+      ? `labels ${axis_diagnostics.kept_labels}/${axis_diagnostics.raw_labels ?? "?"} | rej ${axis_diagnostics.rejected ?? 0}`
+      : "";
 
   return (
     <g>
-      <rect x={8} y={H - 28} width={240} height={20} rx={3} fill="rgba(0,0,0,0.65)" />
-      <text x={14} y={H - 13} fill={color} fontSize={11} fontFamily={FONT} fontWeight="600">
+      <rect x={8} y={viewportHeight - 44} width={940} height={36} rx={3} fill="rgba(0,0,0,0.65)" />
+      <text x={14} y={viewportHeight - 13} fill={color} fontSize={11} fontFamily={FONT} fontWeight="600">
         {text}
       </text>
+      {diagText ? (
+        <text
+          x={14}
+          y={viewportHeight - 29}
+          fill="rgba(210,220,230,0.86)"
+          fontSize={10}
+          fontFamily={FONT}
+          fontWeight="500"
+        >
+          {diagText}
+        </text>
+      ) : null}
     </g>
   );
 }

@@ -1,35 +1,46 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   OVERLAY_METRIC_LABELS,
   OVERLAY_METRIC_ORDER,
   overlayLineColorForLabel,
   useProfitOverlay,
 } from "../../hooks/useProfitOverlay";
+import { overlayStatusColor, overlayStatusText } from "../../utils/ocrStatus";
 /** Valores do overlay são preços (eixo Y do gráfico), não saldo em contratos. */
 const POSITION_STEP = 1;
 
 export default function OverlayControl() {
   const {
     active,
+    activating,
     status,
     targets,
     lines,
     y_min,
     y_max,
+    analysisRoi,
+    analysisSample,
     selectedMetricIds,
     toggleMetric,
     openOverlay,
     closeOverlay,
+    openOcrRoiPicker,
+    clearOcrAnalysisRoi,
     addPosition,
     removePosition,
     updatePosition,
   } = useProfitOverlay();
 
   const [newValue, setNewValue] = useState("");
+  const [roiFeedback, setRoiFeedback] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  const lastRoiKeyRef = useRef<string | null>(null);
 
   const canActivate = selectedMetricIds.length > 0;
-  const handleToggle = () => (active ? closeOverlay() : openOverlay());
+  const handleToggle = () => {
+    if (activating) return;
+    active ? void closeOverlay() : void openOverlay();
+  };
 
   const handleAdd = () => {
     const val = parseFloat(newValue.replace(",", "."));
@@ -44,14 +55,24 @@ export default function OverlayControl() {
     if (e.key === "Enter") handleAdd();
   };
 
-  const statusColor =
-    status === "ok"
-      ? "#00FF88"
-      : status === "connecting" ||
-          status === "warming_up" ||
-          status === "idle"
-        ? "#FFB800"
-        : "#FF4444";
+  const statusColor = activating ? "#FFB800" : overlayStatusColor(status);
+  const statusText = activating
+    ? "Overlay: a ligar o serviço (aguarde; em PC lento pode demorar até ~2 min)…"
+    : overlayStatusText(status, y_min, y_max);
+
+  useEffect(() => {
+    if (!analysisRoi) {
+      lastRoiKeyRef.current = null;
+      setRoiFeedback(null);
+      return;
+    }
+    const roiKey = `${analysisRoi.left}:${analysisRoi.top}:${analysisRoi.width}:${analysisRoi.height}`;
+    if (lastRoiKeyRef.current === roiKey) return;
+    lastRoiKeyRef.current = roiKey;
+    setRoiFeedback("Região confirmada com sucesso.");
+    const timer = window.setTimeout(() => setRoiFeedback(null), 4500);
+    return () => window.clearTimeout(timer);
+  }, [analysisRoi]);
 
   return (
     <div style={styles.container}>
@@ -60,17 +81,21 @@ export default function OverlayControl() {
         <button
           type="button"
           onClick={handleToggle}
-          disabled={!active && !canActivate}
+          disabled={activating || (!active && !canActivate)}
           style={{
             ...styles.toggleBtn,
-            opacity: !active && !canActivate ? 0.45 : 1,
-            cursor: !active && !canActivate ? "not-allowed" : "pointer",
-            background: active ? "rgba(255,68,68,0.15)" : "rgba(0,255,136,0.15)",
-            border: `1px solid ${active ? "#FF4444" : "#00FF88"}`,
-            color: active ? "#FF4444" : "#00FF88",
+            opacity: activating || (!active && !canActivate) ? 0.45 : 1,
+            cursor: activating || (!active && !canActivate) ? "not-allowed" : "pointer",
+            background: active
+              ? "rgba(255,68,68,0.15)"
+              : activating
+                ? "rgba(255,184,0,0.15)"
+                : "rgba(0,255,136,0.15)",
+            border: `1px solid ${active ? "#FF4444" : activating ? "#FFB800" : "#00FF88"}`,
+            color: active ? "#FF4444" : activating ? "#FFB800" : "#00FF88",
           }}
         >
-          {active ? "Desativar" : "Ativar"}
+          {activating ? "A ligar…" : active ? "Desativar" : "Ativar"}
         </button>
       </div>
 
@@ -100,12 +125,79 @@ export default function OverlayControl() {
 
       <div style={styles.statusRow}>
         <span style={{ ...styles.statusDot, background: statusColor }} />
-        <span style={{ ...styles.statusText, color: statusColor }}>{status}</span>
+        <span style={{ ...styles.statusText, color: statusColor }}>{statusText}</span>
         {y_min !== null && y_max !== null && (
           <span style={styles.range}>
             {y_min.toFixed(0)} - {y_max.toFixed(0)}
           </span>
         )}
+      </div>
+
+      <div style={styles.section}>
+        <div style={styles.sectionLabel}>OCR análise (opcional)</div>
+        <div style={styles.analysisHint}>
+          Área só para ler texto/números no Profit. <strong>Não altera</strong> onde as linhas do overlay são
+          desenhadas. A região fica <strong>guardada</strong> (config.json) e é reaplicada ao ativar o overlay —
+          não precisa redesenhar sempre.
+        </div>
+        <div style={styles.roiBtnRow}>
+          <button
+            type="button"
+            disabled={!active}
+            onClick={() => void openOcrRoiPicker()}
+            style={{
+              ...styles.roiBtn,
+              opacity: active ? 1 : 0.45,
+              cursor: active ? "pointer" : "not-allowed",
+            }}
+            title={active ? undefined : "Ative o overlay para o serviço OCR estar em execução"}
+          >
+            Desenhar região…
+          </button>
+          <button
+            type="button"
+            disabled={!analysisRoi}
+            onClick={() => void clearOcrAnalysisRoi()}
+            style={{
+              ...styles.roiBtnSecondary,
+              opacity: analysisRoi ? 1 : 0.45,
+              cursor: analysisRoi ? "pointer" : "not-allowed",
+            }}
+          >
+            Limpar região
+          </button>
+        </div>
+        {analysisRoi ? (
+          <div style={styles.roiMeta}>
+            ROI físico: {analysisRoi.left},{analysisRoi.top} +{analysisRoi.width}×{analysisRoi.height}
+          </div>
+        ) : null}
+        {analysisRoi ? <div style={styles.roiActiveBadge}>Região OCR ativa</div> : null}
+        {roiFeedback ? <div style={styles.roiSuccessToast}>{roiFeedback}</div> : null}
+        {analysisSample ? (
+          <div style={styles.analysisOut}>
+            {analysisSample.error ? (
+              <span style={{ color: "#FF8888" }}>{analysisSample.error}</span>
+            ) : (
+              <>
+                {analysisSample.numbers && analysisSample.numbers.length > 0 ? (
+                  <div style={styles.analysisNumbers}>
+                    Números: {analysisSample.numbers.slice(0, 12).join(" · ")}
+                    {analysisSample.numbers.length > 12 ? "…" : ""}
+                  </div>
+                ) : null}
+                {analysisSample.text ? (
+                  <div style={styles.analysisText} title={analysisSample.text}>
+                    {analysisSample.text.slice(0, 120)}
+                    {analysisSample.text.length > 120 ? "…" : ""}
+                  </div>
+                ) : (
+                  <div style={styles.analysisTextMuted}>Sem texto na última captura</div>
+                )}
+              </>
+            )}
+          </div>
+        ) : null}
       </div>
 
       <div style={styles.section}>
@@ -272,4 +364,60 @@ const styles: Record<string, React.CSSProperties> = {
     fontWeight: 600,
     whiteSpace: "nowrap",
   },
+  analysisHint: {
+    fontSize: 10,
+    color: "#8892A4",
+    lineHeight: 1.4,
+  },
+  roiBtnRow: { display: "flex", gap: 6, flexWrap: "wrap" },
+  roiBtn: {
+    background: "rgba(0,204,255,0.12)",
+    border: "1px solid #00CCFF",
+    color: "#00CCFF",
+    borderRadius: 5,
+    padding: "5px 10px",
+    cursor: "pointer",
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  roiBtnSecondary: {
+    background: "transparent",
+    border: "1px solid rgba(136,146,164,0.5)",
+    color: "#8892A4",
+    borderRadius: 5,
+    padding: "5px 10px",
+    cursor: "pointer",
+    fontSize: 11,
+    fontWeight: 600,
+  },
+  roiMeta: { fontSize: 9, fontFamily: "monospace", color: "#5C6570" },
+  roiActiveBadge: {
+    alignSelf: "flex-start",
+    fontSize: 10,
+    color: "#00FF88",
+    border: "1px solid rgba(0,255,136,0.55)",
+    background: "rgba(0,255,136,0.1)",
+    borderRadius: 999,
+    padding: "2px 8px",
+    fontWeight: 600,
+  },
+  roiSuccessToast: {
+    fontSize: 10,
+    color: "#86EFAC",
+    background: "rgba(34,197,94,0.12)",
+    border: "1px solid rgba(34,197,94,0.5)",
+    borderRadius: 5,
+    padding: "5px 8px",
+    lineHeight: 1.3,
+  },
+  analysisOut: {
+    marginTop: 4,
+    padding: 6,
+    borderRadius: 5,
+    background: "rgba(255,255,255,0.04)",
+    border: "1px solid rgba(255,255,255,0.06)",
+  },
+  analysisNumbers: { fontSize: 10, fontFamily: "monospace", color: "#A5F3FC", marginBottom: 4 },
+  analysisText: { fontSize: 10, color: "#C8CDD6", lineHeight: 1.35, wordBreak: "break-word" },
+  analysisTextMuted: { fontSize: 10, color: "#5C6570", fontStyle: "italic" },
 };

@@ -20,12 +20,21 @@ pub fn run() {
             commands::get_resource_path,
             commands::get_profit_diagnostic,
             commands::set_active_asset,
+            commands::set_renko_brick_points,
+            commands::sync_renko_brick_to_distributor,
+            commands::set_ifr_series,
+            commands::sync_ifr_series_to_distributor,
             commands::open_log_folder,
             commands::create_widget_window,
             commands::open_profit_overlay,
             commands::close_profit_overlay,
             commands::set_overlay_positions,
+            commands::open_ocr_roi_picker,
+            commands::close_ocr_roi_picker,
+            commands::submit_ocr_analysis_roi,
+            commands::clear_ocr_analysis_roi,
             commands::agent007_chat_invoke,
+            commands::collect_diagnostics_bundle,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]
@@ -40,6 +49,13 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app_handle, event| {
             if let tauri::RunEvent::Exit = event {
+                commands::log_runtime_event(
+                    app_handle,
+                    "app",
+                    "exit",
+                    "start",
+                    serde_json::json!({}),
+                );
                 // Persistir posição/tamanho dos widgets antes de fechar
                 let handle = app_handle.clone();
                 tauri::async_runtime::block_on(async move {
@@ -62,6 +78,13 @@ pub fn run() {
                         let _ = child.kill();
                     }
                 }
+                commands::log_runtime_event(
+                    app_handle,
+                    "app",
+                    "exit",
+                    "done",
+                    serde_json::json!({}),
+                );
             }
         });
 }

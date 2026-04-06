@@ -12,7 +12,7 @@ Todas as portas abaixo são **localhost** (máquina única). Ao alterar uma port
 | **5555** | ZMQ | Engine PUB → distributor SUB (mercado) | `distributor/config.py` (`ZMQ_ADDRESS`) |
 | **5556** | TCP | Engine listener **SWITCH** (troca de ativo / controle) | `app/src-tauri/src/commands.rs` (`ENGINE_CONTROL_PORT`), `distributor/websocket_server.py` (`ENGINE_CONTROL_PORT`) |
 | **5557** | ZMQ | Sync monitor PUB → distributor SUB | `sync_monitor/config.py` (`ZMQ_PUB_PORT`), `distributor/config.py` (`ZMQ_SYNC_ADDRESS`) |
-| **5558** | HTTP + WebSocket | Serviço OCR do overlay (`profit_ocr_service.py`) | `distributor/profit_ocr_service.py`, `app/src-tauri/resources/profit_ocr_service.py`, `app/src-tauri/src/commands.rs`, `frontend/src/config/ocrPort.ts` |
+| **5558** | HTTP + WebSocket | Serviço OCR do overlay (`profit_ocr_service.py`) | **Fonte:** `distributor/profit_ocr_service.py` → cópia: `scripts/sync-profit-ocr-to-tauri-resources.ps1` → `app/src-tauri/resources/profit_ocr_service.py`; `app/src-tauri/src/commands.rs`, `frontend/src/config/ocrPort.ts` |
 
 ## Agente 007 — chat (OpenRouter)
 

@@ -3,6 +3,7 @@
 import csv
 import logging
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -21,6 +22,10 @@ class StatsLogger:
         self._file_handle: Optional[Any] = None
         self._writer: Optional[csv.DictWriter] = None
         self._date: Optional[str] = None
+        self._flush_every_rows = int(os.environ.get("STATS_FLUSH_EVERY_ROWS", "200"))
+        self._flush_every_ms = int(os.environ.get("STATS_FLUSH_EVERY_MS", "1000"))
+        self._rows_since_flush = 0
+        self._last_flush_ms = int(time.monotonic() * 1000)
 
     def _ensure_file(self) -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -28,6 +33,7 @@ class StatsLogger:
             return
         if self._file_handle is not None:
             try:
+                self._file_handle.flush()
                 self._file_handle.close()
             except Exception:
                 pass
@@ -41,6 +47,8 @@ class StatsLogger:
             self._writer = csv.DictWriter(self._file_handle, fieldnames=CSV_FIELDS, extrasaction="ignore")
             if not exists:
                 self._writer.writeheader()
+                self._rows_since_flush += 1
+            self._last_flush_ms = int(time.monotonic() * 1000)
             self._date = today
         except OSError as e:
             logger.warning("StatsLogger could not open %s: %s", path, e)
@@ -72,6 +80,18 @@ class StatsLogger:
             row["current_delta"] = str(msg.get("current_delta"))
         return row
 
+    def _maybe_flush(self) -> None:
+        if self._file_handle is None:
+            return
+        now_ms = int(time.monotonic() * 1000)
+        if (
+            self._rows_since_flush >= self._flush_every_rows
+            or (now_ms - self._last_flush_ms) >= self._flush_every_ms
+        ):
+            self._file_handle.flush()
+            self._rows_since_flush = 0
+            self._last_flush_ms = now_ms
+
     def log(self, msg: dict[str, Any]) -> None:
         topic = msg.get("topic")
         msg_type = msg.get("type", "")
@@ -79,10 +99,12 @@ class StatsLogger:
             self._ensure_file()
             if self._writer:
                 self._writer.writerow(self._row(msg))
-                self._file_handle.flush()
+                self._rows_since_flush += 1
+                self._maybe_flush()
             return
         if topic == "market" and msg_type in ("trade", "flow_inversion"):
             self._ensure_file()
             if self._writer:
                 self._writer.writerow(self._row(msg))
-                self._file_handle.flush()
+                self._rows_since_flush += 1
+                self._maybe_flush()

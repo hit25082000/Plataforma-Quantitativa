@@ -4,6 +4,7 @@ import { WidgetRoot } from "./components/WidgetRoot";
 import { SettingsPanel } from "./components/Settings/SettingsPanel";
 import { StartupScreen } from "./components/StartupScreen";
 import OverlayEmergencyControlPage from "./pages/OverlayEmergencyControlPage";
+import OcrRoiPickerPage from "./pages/OcrRoiPickerPage";
 import OverlayPage from "./pages/OverlayPage";
 import { useAlerts } from "./hooks/useAlerts";
 import { useTauriStartup } from "./hooks/useTauriStartup";
@@ -53,6 +54,7 @@ function App() {
   const [widgetId, setWidgetId] = useState<string | null>(null);
   const [isOverlayWindow, setIsOverlayWindow] = useState(false);
   const [isOverlayControlWindow, setIsOverlayControlWindow] = useState(false);
+  const [isOcrRoiPickerWindow, setIsOcrRoiPickerWindow] = useState(false);
   const [hasCheckedWindow, setHasCheckedWindow] = useState(false);
 
   useEffect(() => {
@@ -71,6 +73,9 @@ function App() {
       }
       if (label === "profit-overlay-control") {
         setIsOverlayControlWindow(true);
+      }
+      if (label === "ocr-roi-picker") {
+        setIsOcrRoiPickerWindow(true);
       }
       setHasCheckedWindow(true);
     });
@@ -94,6 +99,10 @@ function App() {
 
   if (isTauri() && isOverlayControlWindow) {
     return <OverlayEmergencyControlPage />;
+  }
+
+  if (isTauri() && isOcrRoiPickerWindow) {
+    return <OcrRoiPickerPage />;
   }
 
   return <AppContent />;

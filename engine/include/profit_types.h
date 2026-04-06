@@ -145,6 +145,7 @@ using UnsubscribeOfferBook_t = int32_t (PROFIT_STDCALL *)(const wchar_t* pwcTick
 using SetStateCallback_t     = int32_t (PROFIT_STDCALL *)(StateCallback_t);
 using SetOfferBookCallbackV2_t = int32_t (PROFIT_STDCALL *)(OfferBookV2_t);
 using SetTradeCallbackV2_t    = int32_t (PROFIT_STDCALL *)(TradeCallbackV2_t);
+using SetHistoryTradeCallbackV2_t = int32_t (PROFIT_STDCALL *)(TradeCallbackV2_t);
 using SetTinyBookCallback_t   = int32_t (PROFIT_STDCALL *)(TinyBookCallback_t);
 
 using NewDailyCallback_t = void (PROFIT_STDCALL *)(
@@ -160,6 +161,12 @@ using SetDailyCallback_t = int32_t (PROFIT_STDCALL *)(NewDailyCallback_t);
 
 // TranslateTrade(pTrade, &TConnectorTrade) -> int
 using TranslateTrade_t = int32_t (PROFIT_STDCALL *)(size_t pTrade, TConnectorTrade* pOut);
+using GetHistoryTrades_t = int32_t (PROFIT_STDCALL *)(
+    const wchar_t* pwcTicker,
+    const wchar_t* pwcBolsa,
+    const wchar_t* dtDateStart,
+    const wchar_t* dtDateEnd
+);
 
 // GetAgentNameByID(nID) -> nome da corretora (ou null)
 using GetAgentNameByID_t = const wchar_t* (PROFIT_STDCALL *)(int32_t nID);
@@ -185,5 +192,9 @@ constexpr int32_t CONNECTION_STATE_ACTIVATION  = 3;
 constexpr int32_t LOGIN_CONNECTED      = 0;
 constexpr int32_t MARKET_CONNECTED     = 4;
 constexpr int32_t CONNECTION_ACTIVATE_VALID = 0;
+
+// Trade callback flags (V2)
+constexpr uint32_t TC_IS_EDIT = 1u;
+constexpr uint32_t TC_LAST_PACKET = 2u;
 
 } // namespace profit

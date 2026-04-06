@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type {
   Agent007StateMessage,
   AlertMessage,
+  BrokerSnapshotMessage,
   DailyMessage,
   DomSnapshotMessage,
   FlowInversionMessage,
@@ -11,6 +12,29 @@ import type {
   WallAddMessage,
   WallRemoveMessage,
 } from "../types/messages";
+
+function isUsableRsi(v: unknown): v is number {
+  return typeof v === "number" && Number.isFinite(v);
+}
+
+/** Evita perder IFR quando uma mensagem parcial chega com rsi9/18/30 null ou ausente. */
+function mergeMacdRsiFields(
+  prev: MacdSignalMessage | undefined,
+  msg: MacdSignalMessage,
+): MacdSignalMessage {
+  if (prev == null) return msg;
+  const out: MacdSignalMessage = { ...msg };
+  const keys: (keyof Pick<
+    MacdSignalMessage,
+    "rsi9" | "rsi18" | "rsi30" | "rsi"
+  >)[] = ["rsi9", "rsi18", "rsi30", "rsi"];
+  for (const k of keys) {
+    if (!isUsableRsi(out[k]) && isUsableRsi(prev[k])) {
+      out[k] = prev[k];
+    }
+  }
+  return out;
+}
 
 const MAX_ALERTS = 50;
 const MAX_FLOW_INVERSIONS = 30;
@@ -22,6 +46,20 @@ export const AGGRESSION_STEP = 100;
 export type WsStatus = "connecting" | "connected" | "disconnected";
 
 export type AssetSwitchStatus = "idle" | "switching" | "active" | "error";
+
+/** Série usada para o IFR: Renko 42/16 ou fechamento de candles de 30 min. */
+export type IfrSeriesMode = "42r" | "16r" | "30m";
+
+export function ifrSeriesShortLabel(s: IfrSeriesMode): string {
+  switch (s) {
+    case "30m":
+      return "30 min";
+    case "16r":
+      return "16R";
+    default:
+      return "42R";
+  }
+}
 
 /** Calibração do gráfico na janela secundária do overlay (sincronizada por eventos Tauri). */
 export interface OverlayCalibrationState {
@@ -48,6 +86,10 @@ interface MarketStore {
   /** Ticker selecionado pelo usuário na UI (fonte de verdade para troca de ativo) */
   selectedTicker: string;
   setSelectedTicker: (t: string) => void;
+
+  /** Série do IFR no distributor (Renko ou 30 min) */
+  ifrSeries: IfrSeriesMode;
+  setIfrSeries: (s: IfrSeriesMode) => void;
 
   /** Ticker recebido do stream (para verificação/debug) */
   streamingTicker: string;
@@ -87,6 +129,8 @@ interface MarketStore {
   agentNames: Record<number, string>;
   agentShortNames: Record<number, string>;
   updateTrade: (msg: TradeMessage) => void;
+  updateTradeBatch: (msgs: TradeMessage[]) => void;
+  applyBrokerSnapshot: (msg: BrokerSnapshotMessage) => void;
 
   dailyHigh: number;
   dailyLow: number;
@@ -122,6 +166,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   selectedTicker: "WINFUT · BMF",
   setSelectedTicker: (t) => set({ selectedTicker: t }),
+
+  ifrSeries: "42r",
+  setIfrSeries: (s) => set({ ifrSeries: s }),
 
   streamingTicker: "",
   assetSwitchStatus: "idle" as AssetSwitchStatus,
@@ -208,20 +255,6 @@ export const useMarketStore = create<MarketStore>((set) => ({
   lastDailyTradeDate: null,
   updateTrade: (msg) =>
     set((state) => {
-      const agentBuy = { ...state.agentBuyTotals };
-      const agentSell = { ...state.agentSellTotals };
-      const agentBuyFin = { ...state.agentBuyFinancial };
-      const agentSellFin = { ...state.agentSellFinancial };
-      /** Inteiros por negócio — alinha Vol. Fin. / Vol. Qtd ao Profit (sem drift de float). */
-      const qty = Math.trunc(Number(msg.qty));
-      const fin = Math.round(Number(msg.price) * qty);
-      if (qty !== 0 && Number.isFinite(fin)) {
-        agentBuy[msg.buy_agent] = (agentBuy[msg.buy_agent] ?? 0) + qty;
-        agentSell[msg.sell_agent] = (agentSell[msg.sell_agent] ?? 0) + qty;
-        agentBuyFin[msg.buy_agent] = (agentBuyFin[msg.buy_agent] ?? 0) + fin;
-        agentSellFin[msg.sell_agent] = (agentSellFin[msg.sell_agent] ?? 0) + fin;
-      }
-
       const agentNames = { ...state.agentNames };
       if (msg.buy_agent_name != null)
         agentNames[msg.buy_agent] = msg.buy_agent_name;
@@ -237,13 +270,74 @@ export const useMarketStore = create<MarketStore>((set) => ({
       return {
         lastPrice: msg.price,
         vwap: msg.vwap,
-        agentBuyTotals: agentBuy,
-        agentSellTotals: agentSell,
-        agentBuyFinancial: agentBuyFin,
-        agentSellFinancial: agentSellFin,
         agentNames,
         agentShortNames,
         streamingTicker: msg.ticker,
+      };
+    }),
+  updateTradeBatch: (msgs) =>
+    set((state) => {
+      if (msgs.length === 0) return {};
+      const agentNames = { ...state.agentNames };
+      const agentShortNames = { ...state.agentShortNames };
+
+      let lastPrice = state.lastPrice;
+      let vwap = state.vwap;
+      let streamingTicker = state.streamingTicker;
+
+      for (const msg of msgs) {
+        if (msg.buy_agent_name != null) agentNames[msg.buy_agent] = msg.buy_agent_name;
+        if (msg.sell_agent_name != null) agentNames[msg.sell_agent] = msg.sell_agent_name;
+        if (msg.buy_agent_short_name != null)
+          agentShortNames[msg.buy_agent] = msg.buy_agent_short_name;
+        if (msg.sell_agent_short_name != null)
+          agentShortNames[msg.sell_agent] = msg.sell_agent_short_name;
+        lastPrice = msg.price;
+        vwap = msg.vwap;
+        streamingTicker = msg.ticker;
+      }
+
+      return {
+        lastPrice,
+        vwap,
+        agentNames,
+        agentShortNames,
+        streamingTicker,
+      };
+    }),
+  applyBrokerSnapshot: (msg) =>
+    set(() => {
+      const toNumberRecord = (
+        src: Record<string, number> | undefined,
+      ): Record<number, number> => {
+        const out: Record<number, number> = {};
+        if (!src) return out;
+        for (const [k, v] of Object.entries(src)) {
+          const id = Number(k);
+          if (Number.isFinite(id) && Number.isFinite(v)) out[id] = Number(v);
+        }
+        return out;
+      };
+      const toStringRecord = (
+        src: Record<string, string> | undefined,
+      ): Record<number, string> => {
+        const out: Record<number, string> = {};
+        if (!src) return out;
+        for (const [k, v] of Object.entries(src)) {
+          const id = Number(k);
+          if (Number.isFinite(id) && typeof v === "string" && v.trim()) out[id] = v;
+        }
+        return out;
+      };
+      const td = msg.trade_date?.trim();
+      return {
+        agentBuyTotals: toNumberRecord(msg.buy_qty),
+        agentSellTotals: toNumberRecord(msg.sell_qty),
+        agentBuyFinancial: toNumberRecord(msg.buy_fin),
+        agentSellFinancial: toNumberRecord(msg.sell_fin),
+        agentNames: toStringRecord(msg.agent_name),
+        agentShortNames: toStringRecord(msg.agent_short_name),
+        lastDailyTradeDate: td ? td : null,
       };
     }),
 
@@ -307,19 +401,23 @@ export const useMarketStore = create<MarketStore>((set) => ({
   updateMacd: (msg) =>
     set((state) => {
       const last = state.macdHistory[state.macdHistory.length - 1];
+      const merged =
+        msg.partial && last != null
+          ? mergeMacdRsiFields(last, msg)
+          : msg;
       let nextHistory = state.macdHistory;
       if (msg.partial) {
         nextHistory = last?.partial
-          ? [...state.macdHistory.slice(0, -1), msg]
-          : [...state.macdHistory, msg];
+          ? [...state.macdHistory.slice(0, -1), merged]
+          : [...state.macdHistory, merged];
       } else {
         nextHistory = last?.partial
-          ? [...state.macdHistory.slice(0, -1), msg]
-          : [...state.macdHistory, msg];
+          ? [...state.macdHistory.slice(0, -1), merged]
+          : [...state.macdHistory, merged];
       }
       return {
         macdHistory: nextHistory.slice(-MAX_MACD_HISTORY),
-        macdDirection: msg.direction,
+        macdDirection: merged.direction,
       };
     }),
 

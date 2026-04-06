@@ -19,6 +19,10 @@ export interface TradeMessage {
   buy_agent: number;
   sell_agent: number;
   trade_type: number;
+  trade_number?: number;
+  trade_date?: string;
+  trade_source?: "history" | "realtime";
+  is_edit?: boolean;
   vwap: number;
   net_aggression: number;
   ts: string;
@@ -79,6 +83,19 @@ export interface DailyMessage {
   trade_date?: string;
 }
 
+export interface BrokerSnapshotMessage {
+  topic: "market";
+  type: "broker_snapshot";
+  trade_date?: string | null;
+  buy_qty: Record<string, number>;
+  sell_qty: Record<string, number>;
+  buy_fin: Record<string, number>;
+  sell_fin: Record<string, number>;
+  agent_name: Record<string, string>;
+  agent_short_name: Record<string, string>;
+  ts: string;
+}
+
 export interface SyncMessage {
   topic: "sync";
   in_sync: boolean;
@@ -108,6 +125,10 @@ export interface MacdSignalMessage {
   rsi9?: number;
   rsi18?: number;
   rsi30?: number;
+  /** Tijolo Renko (pontos) usado no cálculo do IFR desta mensagem; ausente em modo 30m */
+  renko_brick_points?: number | null;
+  /** Série do IFR: renko 42r/16r ou candle 30m */
+  ifr_series?: string;
   partial?: boolean;
 }
 
@@ -148,9 +169,24 @@ export interface Agent007StateMessage {
   ts: string;
 }
 
-export type WsMessage =
+export interface OverlayAxisDeltaInterval {
+  i: number;
+  value_delta: number;
+  y_delta: number;
+  value_per_px_segment: number;
+}
+
+export interface OverlayAxisDeltas {
+  delta_first_last_value: number;
+  delta_first_last_y: number;
+  delta_intervals: OverlayAxisDeltaInterval[];
+  labels_count: number;
+}
+
+export type WsSingleMessage =
   | AlertMessage
   | TradeMessage
+  | BrokerSnapshotMessage
   | DomSnapshotMessage
   | WallAddMessage
   | WallRemoveMessage
@@ -159,3 +195,11 @@ export type WsMessage =
   | FlowInversionMessage
   | MacdSignalMessage
   | Agent007StateMessage;
+
+/** Vários payloads em um único frame WS (distributor → UI). */
+export interface WsBatchMessage {
+  topic: "ws_batch";
+  items: WsSingleMessage[];
+}
+
+export type WsMessage = WsSingleMessage | WsBatchMessage;

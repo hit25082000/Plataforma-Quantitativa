@@ -1,9 +1,12 @@
 #include "zmq_publisher.h"
 #include "alert_types.h"
+#include "profit_types.h"
+#include <cstdlib>
 #include <chrono>
 #include <iomanip>
 #include <iostream>
 #include <sstream>
+#include <string>
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 
@@ -19,6 +22,43 @@ std::string timestamp_iso() {
     oss << std::put_time(std::gmtime(&t), "%Y-%m-%dT%H:%M:%S");
     oss << '.' << std::setfill('0') << std::setw(3) << ms.count() << 'Z';
     return oss.str();
+}
+
+int64_t steady_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+int64_t read_env_int64_ms(const char* name, int64_t default_ms) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return default_ms;
+    try {
+        long long x = std::stoll(std::string(v));
+        if (x < 0) return 0;
+        return static_cast<int64_t>(x);
+    } catch (...) {
+        return default_ms;
+    }
+}
+
+template <typename Resolver>
+std::string resolve_with_cache(
+    int32_t agent_id,
+    Resolver resolver,
+    std::unordered_map<int32_t, std::string>& cache,
+    std::mutex& cache_mutex)
+{
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        auto it = cache.find(agent_id);
+        if (it != cache.end()) return it->second;
+    }
+    std::string resolved = resolver(agent_id);
+    {
+        std::lock_guard<std::mutex> lock(cache_mutex);
+        cache.emplace(agent_id, resolved);
+    }
+    return resolved;
 }
 } // namespace
 
@@ -42,7 +82,10 @@ ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
     , agent_ranking_(agent_ranking)
     , agent_name_resolver_(std::move(agent_name_resolver))
     , agent_short_name_resolver_(std::move(agent_short_name_resolver))
-{}
+{
+    dom_snapshot_publish_min_ms_ =
+        read_env_int64_ms("DOM_SNAPSHOT_PUBLISH_MIN_MS", 100);
+}
 
 ZmqPublisher::~ZmqPublisher() {
     stop();
@@ -59,13 +102,25 @@ void ZmqPublisher::stop() {
     if (thread_.joinable()) thread_.join();
 }
 
+void ZmqPublisher::set_ticker(const std::string& t) {
+    ticker_ = t;
+    reconciler_.reset();
+    {
+        std::lock_guard<std::mutex> lock(agent_cache_mutex_);
+        agent_name_cache_.clear();
+        agent_short_name_cache_.clear();
+    }
+}
+
 void ZmqPublisher::run() {
     zmq::context_t ctx(1);
     zmq::socket_t pub(ctx, ZMQ_PUB);
     try {
         pub.bind(address_);
         bound_.store(true);
-        std::cerr << "[ZmqPublisher] Bound to " << address_ << std::endl;
+        std::cerr << "[ZmqPublisher] Bound to " << address_
+                  << " dom_snapshot_publish_min_ms=" << dom_snapshot_publish_min_ms_
+                  << std::endl;
     } catch (const zmq::error_t& e) {
         std::cerr << "[ZmqPublisher] BIND FAILED on " << address_
                   << ": " << e.what() << " (errno " << e.num() << ")"
@@ -73,6 +128,7 @@ void ZmqPublisher::run() {
         return;
     }
 
+    metrics_next_log_ms_ = steady_now_ms() + 5000;
     while (running_.load()) {
         event_bus::Event ev;
         queue_.wait_and_pop(ev);
@@ -87,6 +143,20 @@ void ZmqPublisher::run() {
         std::visit([&](auto&& e) {
             using T = std::decay_t<decltype(e)>;
             if constexpr (std::is_same_v<T, event_bus::TradeEvent>) {
+                trade_events_processed_++;
+                auto rec = reconciler_.apply(e);
+                if (!rec.accepted) {
+                    if (rec.is_duplicate) reconcile_duplicates_ignored_++;
+                    return;
+                }
+                if (e.enqueue_ts_ms > 0) {
+                    int64_t latency_ms = steady_now_ms() - e.enqueue_ts_ms;
+                    if (latency_ms >= 0) {
+                        trade_latency_sum_ms_ += latency_ms;
+                        trade_latency_count_ += 1;
+                        if (latency_ms > max_trade_latency_ms_) max_trade_latency_ms_ = latency_ms;
+                    }
+                }
                 trade_proc_.process(e);
                 if (count < 3) {
                     std::cerr << "[ZmqPublisher] Trade event: ticker=" << e.ticker
@@ -118,17 +188,37 @@ void ZmqPublisher::run() {
                     {"buy_agent", e.buy_agent},
                     {"sell_agent", e.sell_agent},
                     {"trade_type", e.trade_type},
+                    {"trade_number", e.trade_number},
+                    {"trade_date", e.trade_date},
+                    {"trade_source", e.source == event_bus::TradeSource::History ? "history" : "realtime"},
+                    {"is_edit", (e.trade_flags & profit::TC_IS_EDIT) == profit::TC_IS_EDIT},
                     {"vwap", acc.vwap()},
                     {"net_aggression", acc.net_aggression},
                     {"ts", timestamp_iso()}
                 };
                 if (agent_name_resolver_) {
-                    j["buy_agent_name"] = agent_name_resolver_(e.buy_agent);
-                    j["sell_agent_name"] = agent_name_resolver_(e.sell_agent);
+                    j["buy_agent_name"] = resolve_with_cache(
+                        e.buy_agent,
+                        agent_name_resolver_,
+                        agent_name_cache_,
+                        agent_cache_mutex_);
+                    j["sell_agent_name"] = resolve_with_cache(
+                        e.sell_agent,
+                        agent_name_resolver_,
+                        agent_name_cache_,
+                        agent_cache_mutex_);
                 }
                 if (agent_short_name_resolver_) {
-                    j["buy_agent_short_name"] = agent_short_name_resolver_(e.buy_agent);
-                    j["sell_agent_short_name"] = agent_short_name_resolver_(e.sell_agent);
+                    j["buy_agent_short_name"] = resolve_with_cache(
+                        e.buy_agent,
+                        agent_short_name_resolver_,
+                        agent_short_name_cache_,
+                        agent_cache_mutex_);
+                    j["sell_agent_short_name"] = resolve_with_cache(
+                        e.sell_agent,
+                        agent_short_name_resolver_,
+                        agent_short_name_cache_,
+                        agent_cache_mutex_);
                 }
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
@@ -140,6 +230,7 @@ void ZmqPublisher::run() {
                     }
                 }
             } else if constexpr (std::is_same_v<T, event_bus::OfferBookEvent>) {
+                offer_events_processed_++;
                 dom_.process(e);
                 if (count < 3) {
                     std::cerr << "[ZmqPublisher] OfferBook event: ticker=" << e.ticker
@@ -183,22 +274,33 @@ void ZmqPublisher::run() {
                 dom_snapshot::DOMSnapshotEvent snap;
                 if (dom_.get_dom_snapshot(snap)) {
                     if (dispatcher_) dispatcher_->dispatch_dom_snapshot(snap);
-                    nlohmann::json j = {
-                        {"topic", "market"},
-                        {"type", "dom_snapshot"},
-                        {"ticker", snap.ticker},
-                        {"buy", nlohmann::json::array()},
-                        {"sell", nlohmann::json::array()}
-                    };
-                    for (const auto& [p, q, c] : snap.buy) {
-                        j["buy"].push_back({{"price", p}, {"qty", q}, {"count", c}});
+                    int64_t now_ms_dom = steady_now_ms();
+                    const bool allow_dom_zmq =
+                        dom_snapshot_publish_min_ms_ <= 0 ||
+                        (now_ms_dom - last_dom_snapshot_pub_ms_ >=
+                         dom_snapshot_publish_min_ms_);
+                    if (allow_dom_zmq) {
+                        last_dom_snapshot_pub_ms_ = now_ms_dom;
+                        nlohmann::json j = {
+                            {"topic", "market"},
+                            {"type", "dom_snapshot"},
+                            {"ticker", snap.ticker},
+                            {"buy", nlohmann::json::array()},
+                            {"sell", nlohmann::json::array()}
+                        };
+                        for (const auto& [p, q, c] : snap.buy) {
+                            j["buy"].push_back({{"price", p}, {"qty", q}, {"count", c}});
+                        }
+                        for (const auto& [p, q, c] : snap.sell) {
+                            j["sell"].push_back({{"price", p}, {"qty", q}, {"count", c}});
+                        }
+                        zmq::message_t msg(j.dump());
+                        pub.send(msg, zmq::send_flags::none);
+                    } else {
+                        dom_snapshot_throttle_skips_ += 1;
                     }
-                    for (const auto& [p, q, c] : snap.sell) {
-                        j["sell"].push_back({{"price", p}, {"qty", q}, {"count", c}});
-                    }
-                    zmq::message_t msg(j.dump());
-                    pub.send(msg, zmq::send_flags::none);
                 }
+
 
                 if (alert_bus_ && dispatcher_) {
                     rules::Alert alert;
@@ -208,6 +310,7 @@ void ZmqPublisher::run() {
                     }
                 }
             } else if constexpr (std::is_same_v<T, event_bus::DailyEvent>) {
+                daily_events_processed_++;
                 // Despachar para as regras
                 if (dispatcher_) {
                     dispatcher_->dispatch_daily(e);
@@ -230,6 +333,32 @@ void ZmqPublisher::run() {
                 pub.send(msg, zmq::send_flags::none);
             }
         }, ev);
+
+        int64_t now_ms = steady_now_ms();
+        if (now_ms >= metrics_next_log_ms_) {
+            auto qm = queue_.metrics();
+            auto rstats = reconciler_.stats();
+            double avg_trade_latency = trade_latency_count_ > 0
+                ? static_cast<double>(trade_latency_sum_ms_) / static_cast<double>(trade_latency_count_)
+                : 0.0;
+            std::cerr
+                << "[ZmqPublisher] Metrics: q_trade=" << qm.trade_size
+                << " q_normal=" << qm.normal_size
+                << " events(trade/offer/daily)=" << trade_events_processed_
+                << "/" << offer_events_processed_
+                << "/" << daily_events_processed_
+                << " trade_latency_ms(avg/max)=" << avg_trade_latency
+                << "/" << max_trade_latency_ms_
+                << " reconciler_duplicates=" << reconcile_duplicates_ignored_
+                << " history_trades_received=" << rstats.history_trades_received
+                << " realtime_trades_received=" << rstats.realtime_trades_received
+                << " edits_applied=" << rstats.edits_applied
+                << " duplicates_ignored=" << rstats.duplicates_ignored
+                << " reconcile_errors=" << rstats.reconcile_errors
+                << " dom_snapshot_skipped=" << dom_snapshot_throttle_skips_
+                << std::endl;
+            metrics_next_log_ms_ = now_ms + 5000;
+        }
     }
 }
 

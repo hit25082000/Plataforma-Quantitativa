@@ -22,16 +22,20 @@ Plataforma desktop de análise de microestrutura de mercado (B3): processa livro
 Plataforma Quantitativa/
 ├── app/              # Tauri v2 (M5): wrapper desktop, orquestração
 ├── engine/           # C++ (M1+M2): Profit DLL, DOM, T&T, regras, ZMQ PUB
-├── distributor/      # Python (M3): ZMQ SUB → WebSocket
+├── distributor/      # Python (M3): ZMQ SUB → WebSocket; OCR overlay (fonte canónica)
 ├── frontend/         # React+TS (M4): UI tática
 ├── installer-resources/  # Sons e recursos para o bundle
-├── scripts/          # run-dev.ps1, build-installer.ps1
-├── docs/             # PORTS.md (matriz de portas locais)
+├── scripts/          # run-dev.ps1, build-installer.ps1, sync-profit-ocr-to-tauri-resources.ps1
+├── docs/             # PORTS.md + TROUBLESHOOTING_LOGS.md
 ├── .specs/           # Specs do projeto (PROJECT, ROADMAP, STATE)
-├── ProfitDLL.dll     # DLL 32 bits (Nelogica)
-├── ProfitDLL64.dll   # DLL 64 bits (obrigatória para engine 64-bit; ver Manual)
+├── ProfitDLL.dll     # (opcional) DLL 32 bits — colocar na RAIZ para scripts copiarem p/ engine/resources
+├── ProfitDLL64.dll   # DLL 64 bits — na RAIZ (ou só em engine/build/Release após build); obrigatória p/ instalador
 └── Manual - ProfitDLL.pdf
 ```
+
+**DLLs Nelogica:** Os scripts `run-dev.ps1` e `build-installer.ps1` procuram `ProfitDLL64.dll` / `ProfitDLL.dll` na **raiz** do repositório e copiam para `engine/build/...` e `app/src-tauri/resources/`. Pode manter cópias só em `app/src-tauri/resources/` para testes manuais, mas a convenção suportada pelos scripts é **raiz → cópia automática**.
+
+**OCR (`profit_ocr_service.py`):** Editar apenas `distributor/profit_ocr_service.py`. A cópia em `app/src-tauri/resources/` é gerada por `scripts/sync-profit-ocr-to-tauri-resources.ps1` (executado pelo `run-dev.ps1` e pelo `build-installer.ps1`).
 
 ---
 
@@ -66,6 +70,10 @@ Antes e depois do fluxo, o script tenta libertar listeners órfãos nas portas d
 
 Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distributor; **5555** ZMQ mercado; **5556** TCP **SWITCH** do engine (não é OCR); **5557** ZMQ sync; **5558** OCR (ou `PQ_OCR_PORT` / `VITE_PQ_OCR_PORT` no frontend).
 
+### Logs e diagnóstico
+
+Guia de troubleshooting para instalador e app instalado: **[docs/TROUBLESHOOTING_LOGS.md](docs/TROUBLESHOOTING_LOGS.md)**.
+
 ---
 
 ## Como Rodar o Sistema Completo
@@ -84,7 +92,7 @@ Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distribut
    .\engine.exe
    ```
 
-3. **Distributor** (consome ZMQ, serve WebSocket em `ws://localhost:8000/ws`):
+3. **Distributor** (consome ZMQ, serve WebSocket em `ws://127.0.0.1:8000/ws`):
    ```powershell
    cd distributor
    pip install -r requirements.txt
@@ -97,7 +105,7 @@ Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distribut
    npm install
    npm run dev
    ```
-   Abra o endereço indicado pelo Vite (ex.: http://localhost:5173). Configure a URL do WebSocket em `frontend/src/hooks/useWebSocket.ts` se necessário (`ws://localhost:8000/ws`).
+   Abra o endereço indicado pelo Vite (ex.: http://localhost:5173). O proxy Vite aponta para `127.0.0.1:8000` (`frontend/vite.config.ts`); no Tauri o WS é `ws://127.0.0.1:8000/ws` (`useWebSocket.ts`).
 
 **Ordem recomendada:** 1 → 2 → 3 → 4.
 
@@ -123,7 +131,7 @@ Ou manualmente:
 
 1. `cd engine && cmake --build build --config Release`
 2. `cd distributor && pyinstaller distributor.spec`
-3. Copiar `engine.exe`, `ProfitDLL64.dll` (ou `ProfitDLL.dll` para 32-bit), `distributor.exe` para `app/src-tauri/resources/`
+3. Copiar `engine.exe`, `ProfitDLL64.dll` (ou `ProfitDLL.dll` para 32-bit), `distributor.exe` e `distributor/profit_ocr_service.py` (via `scripts/sync-profit-ocr-to-tauri-resources.ps1`) para `app/src-tauri/resources/`
 4. Copiar sons de `installer-resources/sounds/` para `app/src-tauri/resources/sounds/`
 5. `cd app && npm run build`
 

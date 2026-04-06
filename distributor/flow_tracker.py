@@ -10,10 +10,7 @@ WINDOW_MS = 300_000  # 5 min
 
 @dataclass
 class TradeEntry:
-    agent_buy: str
-    agent_sell: str
-    qty: int
-    is_buy_aggression: bool  # net_aggression > 0 means buy aggression
+    contributions: dict[str, int]
     ts_ms: float
 
 
@@ -37,6 +34,7 @@ class FlowTracker:
         self._window_ms = window_ms
         self._trade_log: deque[TradeEntry] = deque()
         self._prev_deltas: dict[str, int] = {}
+        self._current_deltas: dict[str, int] = {name: 0 for name in self._monitored}
 
     def on_trade(self, msg: dict[str, Any]) -> list[dict[str, Any]]:
         """Process trade; return list of flow_inversion messages (if any)."""
@@ -51,32 +49,25 @@ class FlowTracker:
         buy_agent = (msg.get("buy_agent_name") or msg.get("buy_agent_short_name") or "").strip()
         sell_agent = (msg.get("sell_agent_name") or msg.get("sell_agent_short_name") or "").strip()
 
-        self._trade_log.append(
-            TradeEntry(
-                agent_buy=buy_agent,
-                agent_sell=sell_agent,
-                qty=qty,
-                is_buy_aggression=net_aggression > 0,
-                ts_ms=ts_ms,
-            )
-        )
+        trade_contrib: dict[str, int] = {}
+        if net_aggression > 0 and buy_agent in self._current_deltas:
+            trade_contrib[buy_agent] = trade_contrib.get(buy_agent, 0) + qty
+        elif net_aggression < 0 and sell_agent in self._current_deltas:
+            trade_contrib[sell_agent] = trade_contrib.get(sell_agent, 0) - qty
+
+        if trade_contrib:
+            for agent, delta in trade_contrib.items():
+                self._current_deltas[agent] += delta
+        self._trade_log.append(TradeEntry(contributions=trade_contrib, ts_ms=ts_ms))
 
         # Prune old entries
         while self._trade_log and ts_ms - self._trade_log[0].ts_ms > self._window_ms:
-            self._trade_log.popleft()
+            old = self._trade_log.popleft()
+            for agent, delta in old.contributions.items():
+                if agent in self._current_deltas:
+                    self._current_deltas[agent] -= delta
 
-        # Compute deltas per monitored agent (buy aggression - sell aggression)
-        deltas: dict[str, int] = {}
-        for name in self._monitored:
-            delta = 0
-            for e in self._trade_log:
-                if ts_ms - e.ts_ms > self._window_ms:
-                    continue
-                if e.agent_buy == name and e.is_buy_aggression:
-                    delta += e.qty
-                if e.agent_sell == name and not e.is_buy_aggression:
-                    delta -= e.qty
-            deltas[name] = delta
+        deltas = dict(self._current_deltas)
 
         # Detect inversions
         out: list[dict[str, Any]] = []

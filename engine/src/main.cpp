@@ -139,6 +139,21 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    bridge.reset_history_state();
+    int32_t hist_ret = bridge.request_history_today(wticker.c_str(), wbolsa.c_str());
+    if (hist_ret < profit::NL_OK) {
+        std::cerr << "[History] GetHistoryTrades failed: " << hist_ret
+                  << " (continuing with realtime only)" << std::endl;
+    } else {
+        bool hist_ok = bridge.wait_for_history_ready(std::chrono::milliseconds(30000));
+        if (!hist_ok) {
+            std::cerr << "[History] Timeout waiting for historical sync. Continuing in degraded mode."
+                      << std::endl;
+        } else {
+            std::cerr << "[History] Sync complete for " << ticker << std::endl;
+        }
+    }
+
     profit_bridge::write_engine_startup_log(ret_ticker, ret_book);
 
     alert_bus::AlertBus alert_bus;
@@ -209,6 +224,7 @@ int main(int argc, char* argv[]) {
                 dom.reset();
                 trade_proc.reset();
                 agent_ranking.reset();
+                bridge.reset_history_state();
                 dom.clear_pending();
 
                 ticker = new_ticker;
@@ -232,6 +248,12 @@ int main(int argc, char* argv[]) {
                         std::cerr << "[Engine] Subscribe failed: ticker=" << ret_t << " book=" << ret_b << std::endl;
                         asset_ctrl.complete_switch("ERR: subscribe failed");
                     } else {
+                        int32_t ret_h = bridge.request_history_today(wticker.c_str(), wbolsa.c_str());
+                        if (ret_h < profit::NL_OK) {
+                            std::cerr << "[Engine] History request failed: " << ret_h << std::endl;
+                        } else if (!bridge.wait_for_history_ready(std::chrono::milliseconds(30000))) {
+                            std::cerr << "[Engine] History sync timeout after switch" << std::endl;
+                        }
                         std::cerr << "[Engine] Subscribed to " << ticker << " " << bolsa << std::endl;
                         asset_ctrl.complete_switch("OK");
                     }

@@ -4,7 +4,7 @@ import { TopBrokersTable } from "./AggressionPanel/TopBrokersTable";
 import { UBSLine } from "./AggressionPanel/UBSLine";
 import { FlowAndSecagemPanel } from "./FlowAndSecagemPanel/FlowAndSecagemPanel";
 import { MacdChart } from "./MacdChart/MacdChart";
-import { useMarketStore } from "../store/marketStore";
+import { ifrSeriesShortLabel, useMarketStore } from "../store/marketStore";
 import { formatPrice } from "../utils/formatters";
 
 const WIDGET_TITLES: Record<string, string> = {
@@ -20,12 +20,31 @@ const WIDGET_TITLES: Record<string, string> = {
   vwap: "VWAP",
 };
 
+function getIfrPeriodFromWidgetId(widgetId: string): "9" | "18" | "30" | null {
+  switch (widgetId) {
+    case "ifr-9":
+      return "9";
+    case "ifr-18":
+      return "18";
+    case "ifr-30":
+    case "ifr-30min":
+      return "30";
+    default:
+      return null;
+  }
+}
+
 interface WidgetRootProps {
   widgetId: string;
 }
 
 export function WidgetRoot({ widgetId }: WidgetRootProps) {
-  const title = WIDGET_TITLES[widgetId] ?? widgetId;
+  const selectedTicker = useMarketStore((s) => s.selectedTicker);
+  const ifrSeries = useMarketStore((s) => s.ifrSeries);
+  const ifrPeriod = getIfrPeriodFromWidgetId(widgetId);
+  const title = ifrPeriod
+    ? `IFR ${selectedTicker} (${ifrSeriesShortLabel(ifrSeries)}, IFR ${ifrPeriod})`
+    : (WIDGET_TITLES[widgetId] ?? widgetId);
   const vwap = useMarketStore((s) => s.vwap);
 
   const content = (() => {

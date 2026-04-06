@@ -7,12 +7,16 @@
 #include "event_dispatcher.h"
 #include "trade_stream.h"
 #include "agent_ranking.h"
+#include "trade_reconciler.h"
 #include <zmq.hpp>
 #include <atomic>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <chrono>
 
 namespace zmq_publisher {
 
@@ -32,7 +36,7 @@ public:
 
     void start();
     void stop();
-    void set_ticker(const std::string& t) { ticker_ = t; }
+    void set_ticker(const std::string& t);
 
     bool is_bound() const { return bound_.load(); }
 
@@ -48,13 +52,30 @@ private:
     alert_bus::AlertBus*            alert_bus_ = nullptr;
     event_dispatcher::EventDispatcher* dispatcher_ = nullptr;
     AgentRanking*                   agent_ranking_ = nullptr;
+    TradeReconciler                 reconciler_;
     std::function<std::string(int32_t)> agent_name_resolver_;
     std::function<std::string(int32_t)> agent_short_name_resolver_;
+    std::unordered_map<int32_t, std::string> agent_name_cache_;
+    std::unordered_map<int32_t, std::string> agent_short_name_cache_;
+    std::mutex agent_cache_mutex_;
 
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<bool> bound_{false};
     std::atomic<int>  msg_count_{0};
+    int64_t metrics_next_log_ms_{0};
+    int64_t trade_latency_sum_ms_{0};
+    int64_t trade_latency_count_{0};
+    int64_t max_trade_latency_ms_{0};
+    int64_t trade_events_processed_{0};
+    int64_t offer_events_processed_{0};
+    int64_t daily_events_processed_{0};
+    int64_t reconcile_duplicates_ignored_{0};
+
+    /** Mínimo intervalo entre publicações dom_snapshot no ZMQ (dispatch_dom_snapshot a cada tick); 0 = sem limite. */
+    int64_t dom_snapshot_publish_min_ms_{100};
+    int64_t last_dom_snapshot_pub_ms_{0};
+    int64_t dom_snapshot_throttle_skips_{0};
 };
 
 } // namespace zmq_publisher

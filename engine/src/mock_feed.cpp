@@ -153,6 +153,9 @@ void MockFeed::run() {
         tev.trade_type = is_buy
             ? profit::TRADE_TYPE_BUY_AGGRESSION
             : profit::TRADE_TYPE_SELL_AGGRESSION;
+        tev.trade_date = session_trade_date;
+        tev.trade_number = static_cast<uint32_t>(tick_count + 1);
+        tev.source = event_bus::TradeSource::Realtime;
         queue_.push(tev);
 
         daily_volume += qty;

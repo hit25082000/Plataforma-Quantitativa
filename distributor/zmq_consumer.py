@@ -1,6 +1,7 @@
 """ZMQ SUB consumer running in a dedicated thread."""
 
 import asyncio
+import json
 import logging
 import threading
 from typing import Optional
@@ -15,12 +16,48 @@ RCVTIMEO_MS = 100  # evita bloquear shutdown
 class ZmqConsumer:
     """Consumes messages from ZMQ PUB socket and pushes to asyncio.Queue."""
 
-    def __init__(self, address: str, queue: asyncio.Queue[str]) -> None:
+    def __init__(
+        self,
+        address: str,
+        queue: asyncio.Queue[str],
+        dom_soft_limit_pct: int = 70,
+    ) -> None:
         self._address = address
         self._queue = queue
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._dropped_count = 0
+        self._rescued_trades = 0
+        self._evicted_dom = 0
+        safe_pct = max(1, min(int(dom_soft_limit_pct), 99))
+        maxsize = max(int(getattr(queue, "maxsize", 0)), 0)
+        self._dom_soft_limit = int(maxsize * safe_pct / 100) if maxsize > 0 else 0
+
+    @staticmethod
+    def _message_type(raw: str) -> str:
+        """Parse once; used on hot path and during queue eviction."""
+        try:
+            msg = json.loads(raw)
+            if isinstance(msg, dict):
+                return str(msg.get("type", ""))
+        except json.JSONDecodeError:
+            return ""
+        return ""
+
+    def _evict_one_dom_snapshot(self) -> bool:
+        # Accessing the internal deque keeps this operation O(n) and avoids
+        # dequeue/requeue storms during overload.
+        q = self._queue._queue  # type: ignore[attr-defined]
+        for idx, item in enumerate(q):
+            # Cheap filter: skip full JSON parse for frames that cannot be dom_snapshot.
+            if "dom_snapshot" not in item:
+                continue
+            if self._message_type(item) == "dom_snapshot":
+                del q[idx]
+                self._evicted_dom += 1
+                return True
+        return False
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         """Start the consumer thread (daemon). Pass the main thread's event loop so call_soon_threadsafe works."""
@@ -40,12 +77,56 @@ class ZmqConsumer:
         """Return True if the consumer thread is running."""
         return self._thread is not None and self._thread.is_alive()
 
+    def metrics(self) -> dict[str, int]:
+        """Best-effort counters for queue pressure diagnostics."""
+        return {
+            "dropped_dom": self._dropped_count,
+            "rescued_trade_like": self._rescued_trades,
+            "evicted_dom": self._evicted_dom,
+        }
+
     def _put_msg(self, raw: str) -> None:
-        """Put message in queue, discard with warning if full."""
+        """Put message in queue with trade-preserving drop policy."""
+        msg_type = self._message_type(raw)
+        is_dom = msg_type == "dom_snapshot"
+        is_trade_like = msg_type in ("trade", "flow_inversion")
+
+        # Prevent queue growth into runaway latency: drop low-priority DOM early.
+        if is_dom and self._dom_soft_limit > 0:
+            if self._queue.qsize() >= self._dom_soft_limit:
+                self._dropped_count += 1
+                if self._dropped_count % 100 == 0:
+                    logger.warning(
+                        "Market queue pressure: preemptively dropped %s dom_snapshot messages (soft_limit=%s)",
+                        self._dropped_count,
+                        self._dom_soft_limit,
+                    )
+                return
         try:
             self._queue.put_nowait(raw)
         except asyncio.QueueFull:
-            logger.warning("Market queue full, discarding message")
+            if is_dom:
+                self._dropped_count += 1
+                if self._dropped_count % 100 == 0:
+                    logger.warning(
+                        "Market queue full: dropped %s dom_snapshot messages",
+                        self._dropped_count,
+                    )
+                return
+            if is_trade_like and self._evict_one_dom_snapshot():
+                try:
+                    self._queue.put_nowait(raw)
+                    self._rescued_trades += 1
+                    if self._rescued_trades % 50 == 0:
+                        logger.warning(
+                            "Queue pressure: rescued %s trade-like messages by evicting dom_snapshot (%s evictions)",
+                            self._rescued_trades,
+                            self._evicted_dom,
+                        )
+                    return
+                except asyncio.QueueFull:
+                    pass
+            logger.warning("Market queue full, discarding non-dom message")
 
     def _run(self) -> None:
         """Loop in dedicated thread: receive from ZMQ, push to queue."""
