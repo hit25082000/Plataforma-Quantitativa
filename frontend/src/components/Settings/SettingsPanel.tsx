@@ -48,6 +48,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     engine_log_path: string;
     engine_stderr_path?: string;
     app_data_dir?: string;
+    logs_dir?: string;
     offer_book_count: number;
     trade_count: number;
     daily_count: number;
@@ -63,6 +64,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       engine_log_path: string;
       engine_stderr_path?: string;
       app_data_dir?: string;
+      logs_dir?: string;
       offer_book_count: number;
       trade_count: number;
       daily_count: number;
@@ -250,6 +252,11 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 {diagnostic.app_data_dir != null && (
                   <p className="text-text/50 truncate text-sm" title={diagnostic.app_data_dir}>
                     Pasta de logs: {diagnostic.app_data_dir}
+                  </p>
+                )}
+                {diagnostic.logs_dir != null && (
+                  <p className="text-text/50 truncate text-sm" title={diagnostic.logs_dir}>
+                    Logs runtime: {diagnostic.logs_dir}
                   </p>
                 )}
                 <div className="flex flex-wrap gap-2 mt-1">

@@ -17,6 +17,15 @@ function isUsableRsi(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+function macdMessageHasAnyRsi(m: MacdSignalMessage): boolean {
+  return (
+    isUsableRsi(m.rsi9) ||
+    isUsableRsi(m.rsi18) ||
+    isUsableRsi(m.rsi30) ||
+    isUsableRsi(m.rsi)
+  );
+}
+
 /** Evita perder IFR quando uma mensagem parcial chega com rsi9/18/30 null ou ausente. */
 function mergeMacdRsiFields(
   prev: MacdSignalMessage | undefined,
@@ -401,10 +410,11 @@ export const useMarketStore = create<MarketStore>((set) => ({
   updateMacd: (msg) =>
     set((state) => {
       const last = state.macdHistory[state.macdHistory.length - 1];
-      const merged =
-        msg.partial && last != null
-          ? mergeMacdRsiFields(last, msg)
-          : msg;
+      const mergeFromLast =
+        last != null &&
+        (msg.partial === true ||
+          (last.partial === true && !macdMessageHasAnyRsi(msg)));
+      const merged = mergeFromLast ? mergeMacdRsiFields(last, msg) : msg;
       let nextHistory = state.macdHistory;
       if (msg.partial) {
         nextHistory = last?.partial

@@ -134,8 +134,6 @@ export function getTopAgentsByDirectVolQty(
 ): { topBuyers: AgentDirectVolQtyRow[]; topSellers: AgentDirectVolQtyRow[] } {
   const rows: AgentDirectVolQtyRow[] = collectAgentIds(buyTotals, sellTotals).map(
     (agentId) => {
-      const buyQty = Number(buyTotals[agentId] ?? 0);
-      const sellQty = Number(sellTotals[agentId] ?? 0);
       const buyFin = Number(buyFinancial[agentId] ?? 0);
       const sellFin = Number(sellFinancial[agentId] ?? 0);
 
@@ -233,23 +231,25 @@ export function topBuyerByVolFin(
   buyFinancial: Record<number, number>,
   sellFinancial: Record<number, number>,
 ): number | null {
-  let bestId: number | null = null;
-  let bestFin = 0;
-  for (const id of collectAgentIdsFromFourMaps(
+  const ids = collectAgentIdsFromFourMaps(
     buyTotals,
     sellTotals,
     buyFinancial,
     sellFinancial,
-  )) {
+  ).sort((a, b) => a - b);
+  const rows: { id: number; volFin: number }[] = [];
+  for (const id of ids) {
     const buyFin = Number(buyFinancial[id] ?? 0);
     const sellFin = Number(sellFinancial[id] ?? 0);
     const volFin = buyFin - sellFin;
-    if (volFin > bestFin) {
-      bestFin = volFin;
-      bestId = id;
-    }
+    if (volFin > 0) rows.push({ id, volFin });
   }
-  return bestFin > 0 ? bestId : null;
+  if (rows.length === 0) return null;
+  rows.sort((a, b) => {
+    if (b.volFin !== a.volFin) return b.volFin - a.volFin;
+    return a.id - b.id;
+  });
+  return rows[0].id;
 }
 
 /** Líder por saldo financeiro líquido vendedor (volFin < 0 mínimo). */
@@ -259,23 +259,25 @@ export function topSellerByVolFin(
   buyFinancial: Record<number, number>,
   sellFinancial: Record<number, number>,
 ): number | null {
-  let bestId: number | null = null;
-  let bestFin = 0;
-  for (const id of collectAgentIdsFromFourMaps(
+  const ids = collectAgentIdsFromFourMaps(
     buyTotals,
     sellTotals,
     buyFinancial,
     sellFinancial,
-  )) {
+  ).sort((a, b) => a - b);
+  const rows: { id: number; volFin: number }[] = [];
+  for (const id of ids) {
     const buyFin = Number(buyFinancial[id] ?? 0);
     const sellFin = Number(sellFinancial[id] ?? 0);
     const volFin = buyFin - sellFin;
-    if (volFin < bestFin) {
-      bestFin = volFin;
-      bestId = id;
-    }
+    if (volFin < 0) rows.push({ id, volFin });
   }
-  return bestFin < 0 ? bestId : null;
+  if (rows.length === 0) return null;
+  rows.sort((a, b) => {
+    if (a.volFin !== b.volFin) return a.volFin - b.volFin;
+    return a.id - b.id;
+  });
+  return rows[0].id;
 }
 
 /** Preço médio do saldo líquido (Vol. Fin. / Vol. Qtd), como na coluna Média do Profit. */

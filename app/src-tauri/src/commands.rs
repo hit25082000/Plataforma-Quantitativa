@@ -6,6 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -156,11 +157,27 @@ const ENGINE_CONTROL_PORT: u16 = 5556;
 
 /// Porta HTTP do OCR. Env `PQ_OCR_PORT` (alinhar Python + frontend). Ver docs/PORTS.md
 fn ocr_port() -> u16 {
+    static OCR_RUNTIME_PORT: OnceLock<AtomicU16> = OnceLock::new();
+    OCR_RUNTIME_PORT
+        .get_or_init(|| AtomicU16::new(configured_ocr_port()))
+        .load(Ordering::Relaxed)
+}
+
+fn configured_ocr_port() -> u16 {
     std::env::var("PQ_OCR_PORT")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(5558)
 }
+
+fn set_runtime_ocr_port(port: u16) {
+    static OCR_RUNTIME_PORT: OnceLock<AtomicU16> = OnceLock::new();
+    OCR_RUNTIME_PORT
+        .get_or_init(|| AtomicU16::new(configured_ocr_port()))
+        .store(port, Ordering::Relaxed);
+}
+
+const OCR_FALLBACK_PORT_STEPS: u16 = 12;
 
 fn ocr_status_url() -> String {
     format!("http://127.0.0.1:{}/status", ocr_port())
@@ -386,11 +403,42 @@ fn diagnostics_session_id() -> &'static str {
     })
 }
 
+fn overlay_open_lock() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+#[tauri::command]
+pub async fn get_ocr_runtime_port() -> Result<u16, String> {
+    Ok(ocr_port())
+}
+
 fn app_logs_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dirs = all_logs_dirs(app)?;
+    dirs.into_iter()
+        .next()
+        .ok_or_else(|| "Não foi possível resolver pasta de logs".to_string())
+}
+
+fn all_logs_dirs(app: &tauri::AppHandle) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let p = PathBuf::from(local)
+                .join("Plataforma Quantitativa")
+                .join("logs");
+            std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
+            out.push(p);
+        }
+    }
     let app_data = app.path().app_data_dir().map_err(|e| format!("{e}"))?;
-    let logs = app_data.join("logs");
-    std::fs::create_dir_all(&logs).map_err(|e| e.to_string())?;
-    Ok(logs)
+    let app_logs = app_data.join("logs");
+    std::fs::create_dir_all(&app_logs).map_err(|e| e.to_string())?;
+    if !out.iter().any(|p| p == &app_logs) {
+        out.push(app_logs);
+    }
+    Ok(out)
 }
 
 fn append_runtime_bootstrap_log(
@@ -400,10 +448,9 @@ fn append_runtime_bootstrap_log(
     status: &str,
     details: serde_json::Value,
 ) {
-    let Ok(logs) = app_logs_dir(app) else {
+    let Ok(log_dirs) = all_logs_dirs(app) else {
         return;
     };
-    let path = logs.join("runtime-bootstrap.log");
     let payload = json!({
         "ts_ms": unix_ts_ms(),
         "session_id": diagnostics_session_id(),
@@ -412,8 +459,11 @@ fn append_runtime_bootstrap_log(
         "status": status,
         "details": details
     });
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = writeln!(f, "{}", payload);
+    for logs in log_dirs {
+        let path = logs.join("runtime-bootstrap.log");
+        if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{}", payload);
+        }
     }
 }
 
@@ -513,19 +563,46 @@ async fn ocr_port_occupied_without_healthcheck() -> bool {
     true
 }
 
+#[cfg(target_os = "windows")]
+fn kill_stale_ocr_processes() {
+    let mut c = Command::new("taskkill");
+    c.args(["/F", "/IM", "profit_ocr_service.exe", "/T"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    command_no_console(&mut c);
+    let _ = c.status();
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_stale_ocr_processes() {}
+
 /// Garante processo Python do OCR (porta 5558) ao abrir o overlay — evita espera longa no retry do WebSocket.
 async fn ensure_profit_ocr_running(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    let base_ocr_port = configured_ocr_port();
+    set_runtime_ocr_port(base_ocr_port);
     append_runtime_bootstrap_log(
         &app,
         "ocr",
         "ensure_running",
         "attempt",
-        json!({"port": ocr_port()}),
+        json!({"port": ocr_port(), "base_port": base_ocr_port}),
     );
     let t0 = std::time::Instant::now();
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "preflight",
+        "attempt",
+        json!({
+            "port": ocr_port(),
+            "startup_timeout_ms": ocr_startup_timeout_ms(),
+            "startup_attempts": ocr_startup_attempts(),
+            "http_health_timeout_ms": OCR_HTTP_HEALTH_TIMEOUT_MS,
+        }),
+    );
     if profit_ocr_http_reachable().await {
         if !profit_ocr_has_analysis_roi_endpoint().await {
             let err = ocr_incompatible_analysis_roi_message();
@@ -597,16 +674,89 @@ async fn ensure_profit_ocr_running(
         append_runtime_bootstrap_log(&app, "ocr", "ensure_running", "error", json!({"reason": err.clone()}));
         return Err(err);
     }
-    if ocr_port_occupied_without_healthcheck().await {
-        let err = ocr_port_in_use_message();
-        append_runtime_bootstrap_log(&app, "ocr", "ensure_running", "error", json!({"reason": err.clone()}));
+    let mut selected_port: Option<u16> = None;
+    for step in 0..=OCR_FALLBACK_PORT_STEPS {
+        let candidate = base_ocr_port.saturating_add(step);
+        set_runtime_ocr_port(candidate);
+        if !ocr_port_occupied_without_healthcheck().await {
+            selected_port = Some(candidate);
+            break;
+        }
+        if step == 0 {
+            append_runtime_bootstrap_log(
+                &app,
+                "ocr",
+                "port_conflict_recovery",
+                "attempt",
+                json!({"strategy": "taskkill_profit_ocr_service", "candidate_port": candidate}),
+            );
+            kill_stale_ocr_processes();
+            tokio::time::sleep(Duration::from_millis(850)).await;
+            if !ocr_port_occupied_without_healthcheck().await {
+                append_runtime_bootstrap_log(
+                    &app,
+                    "ocr",
+                    "port_conflict_recovery",
+                    "ok",
+                    json!({"reason": "porta liberada após limpeza de OCR órfão", "candidate_port": candidate}),
+                );
+                selected_port = Some(candidate);
+                break;
+            }
+        }
+        append_runtime_bootstrap_log(
+            &app,
+            "ocr",
+            "port_probe",
+            "busy",
+            json!({"candidate_port": candidate, "step": step}),
+        );
+    }
+    let Some(chosen_port) = selected_port else {
+        set_runtime_ocr_port(base_ocr_port);
+        let err = format!(
+            "OCR sem porta livre no intervalo {}..{}. Feche processos que usem essas portas ou defina PQ_OCR_PORT.",
+            base_ocr_port,
+            base_ocr_port.saturating_add(OCR_FALLBACK_PORT_STEPS)
+        );
+        append_runtime_bootstrap_log(
+            &app,
+            "ocr",
+            "ensure_running",
+            "error",
+            json!({"reason": err.clone(), "recovery_attempted": true}),
+        );
         return Err(err);
+    };
+    if chosen_port != base_ocr_port {
+        append_runtime_bootstrap_log(
+            &app,
+            "ocr",
+            "port_fallback",
+            "ok",
+            json!({"base_port": base_ocr_port, "selected_port": chosen_port}),
+        );
     }
 
     let resources = get_resources_dir(&app)?;
     let res_sub = resources.join("resources");
     let ocr_exe = res_sub.join("profit_ocr_service.exe");
     let script = res_sub.join("profit_ocr_service.py");
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "preflight",
+        "ok",
+        json!({
+            "resources_dir": resources.to_string_lossy().to_string(),
+            "resources_subdir": res_sub.to_string_lossy().to_string(),
+            "ocr_exe_path": ocr_exe.to_string_lossy().to_string(),
+            "ocr_script_path": script.to_string_lossy().to_string(),
+            "ocr_exe_exists": ocr_exe.exists(),
+            "ocr_script_exists": script.exists(),
+            "tesseract_detected": true,
+        }),
+    );
     if !ocr_exe.exists() && !script.exists() {
         let err = format!(
             "OCR não encontrado em {} (esperado: profit_ocr_service.exe ou profit_ocr_service.py)",
@@ -619,6 +769,17 @@ async fn ensure_profit_ocr_running(
     let logs_dir = app_logs_dir(&app).ok();
     let stderr_path = logs_dir.as_ref().map(|d| d.join("profit_ocr_stderr.log"));
     let stdout_path = logs_dir.as_ref().map(|d| d.join("ocr_stdout.log"));
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "log_paths",
+        "ok",
+        json!({
+            "logs_dir": logs_dir.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "stderr_path": stderr_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+            "stdout_path": stdout_path.as_ref().map(|p| p.to_string_lossy().to_string()),
+        }),
+    );
 
     let open_std_file = |p: &Option<PathBuf>| -> Stdio {
         if let Some(path) = p {
@@ -631,13 +792,26 @@ async fn ensure_profit_ocr_running(
         }
     };
 
-    let ocr_port_env = ocr_port().to_string();
+    let ocr_port_env = chosen_port.to_string();
     let ocr_cfg = read_config(app.clone()).await.unwrap_or_default();
     let overlay_toolbar_h_env = overlay_env_u32(ocr_cfg.overlay_toolbar_h_px);
     let overlay_axis_bottom_crop_env = overlay_env_u32(ocr_cfg.overlay_axis_bottom_crop_px);
     // Em desenvolvimento, prioriza o script canónico quando disponível para evitar
     // divergência com um .exe antigo deixado em resources/.
     let prefer_script_in_dev = cfg!(debug_assertions) && script.exists();
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "launch_mode",
+        "attempt",
+        json!({
+            "prefer_script_in_dev": prefer_script_in_dev,
+            "will_use_exe": ocr_exe.exists() && !prefer_script_in_dev,
+            "pq_ocr_port": ocr_port_env,
+            "env_overlay_toolbar_h": overlay_toolbar_h_env,
+            "env_overlay_axis_bottom_crop_px": overlay_axis_bottom_crop_env,
+        }),
+    );
     let child = if ocr_exe.exists() && !prefer_script_in_dev {
         let stderr_io = open_std_file(&stderr_path);
         let stdout_io = open_std_file(&stdout_path);
@@ -654,12 +828,26 @@ async fn ensure_profit_ocr_running(
             exe_cmd.env("PQ_OVERLAY_AXIS_BOTTOM_CROP_PX", v);
         }
         command_no_console(&mut exe_cmd);
-        exe_cmd.spawn().map_err(|e| {
-            format!(
-                "Falha ao iniciar OCR empacotado em {}: {e}",
-                ocr_exe.to_string_lossy()
-            )
-        })?
+        match exe_cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                append_runtime_bootstrap_log(
+                    &app,
+                    "ocr",
+                    "spawn",
+                    "error",
+                    json!({
+                        "mode": "exe",
+                        "path": ocr_exe.to_string_lossy().to_string(),
+                        "reason": e.to_string(),
+                    }),
+                );
+                return Err(format!(
+                    "Falha ao iniciar OCR empacotado em {}: {e}",
+                    ocr_exe.to_string_lossy()
+                ));
+            }
+        }
     } else {
         let script_str = script.to_string_lossy().to_string();
         let stderr_io = open_std_file(&stderr_path);
@@ -700,6 +888,18 @@ async fn ensure_profit_ocr_running(
                 match alt.spawn() {
                     Ok(c2) => c2,
                     Err(e_py2) => {
+                        append_runtime_bootstrap_log(
+                            &app,
+                            "ocr",
+                            "spawn",
+                            "error",
+                            json!({
+                                "mode": "python_script",
+                                "script": script_str,
+                                "py_error": e_py.to_string(),
+                                "python_error": e_py2.to_string(),
+                            }),
+                        );
                         let python_missing = e_py2.kind() == std::io::ErrorKind::NotFound;
                         if py_missing && python_missing {
                             return Err("OCR sem executável empacotado e Python não encontrado no sistema (comandos 'py' e 'python'). Reinstale o app com profit_ocr_service.exe ou instale Python 3.".to_string());
@@ -712,6 +912,16 @@ async fn ensure_profit_ocr_running(
     };
 
     let mut child = child;
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "spawn",
+        "ok",
+        json!({
+            "pid": child.id(),
+            "elapsed_ms": t0.elapsed().as_millis(),
+        }),
+    );
     for _ in 0..ocr_startup_attempts() {
         if profit_ocr_http_reachable().await {
             let mut ocr_guard = processes.profit_ocr.lock().map_err(|e| e.to_string())?;
@@ -732,7 +942,17 @@ async fn ensure_profit_ocr_running(
         if let Ok(Some(status)) = child.try_wait() {
             let base = format!("OCR encerrou durante startup (status: {status}).");
             let err = ocr_startup_failure_message(&stderr_path, &base);
-            append_runtime_bootstrap_log(&app, "ocr", "ensure_running", "error", json!({"reason": err.clone()}));
+            append_runtime_bootstrap_log(
+                &app,
+                "ocr",
+                "ensure_running",
+                "error",
+                json!({
+                    "reason": err.clone(),
+                    "child_exit_status": status.code(),
+                    "elapsed_ms": t0.elapsed().as_millis(),
+                }),
+            );
             return Err(err);
         }
         tokio::time::sleep(Duration::from_millis(OCR_POLL_INTERVAL_MS)).await;
@@ -757,6 +977,7 @@ pub async fn open_profit_overlay(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    let _open_guard = overlay_open_lock().lock().await;
     append_runtime_bootstrap_log(&app, "overlay", "open_profit_overlay", "attempt", json!({}));
     let t0 = std::time::Instant::now();
 
@@ -1581,6 +1802,8 @@ pub struct ProfitDiagnostic {
     pub engine_stderr_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_data_dir: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logs_dir: Option<String>,
     pub offer_book_count: u32,
     pub trade_count: u32,
     pub daily_count: u32,
@@ -1598,6 +1821,9 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
         && config.profit_user.as_ref().map(|s| !s.trim().is_empty()).unwrap_or(false)
         && config.profit_password.as_ref().map(|s| !s.is_empty()).unwrap_or(false);
 
+    let logs_dir = app_logs_dir(&app)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
     let (engine_log_path, engine_stderr_path, app_data_dir) = match app.path().app_data_dir() {
         Ok(dir) => {
             let _ = std::fs::create_dir_all(&dir);
@@ -1681,6 +1907,7 @@ pub async fn get_profit_diagnostic(app: tauri::AppHandle) -> Result<ProfitDiagno
         engine_log_path: engine_log_path.clone(),
         engine_stderr_path,
         app_data_dir,
+        logs_dir,
         offer_book_count,
         trade_count,
         daily_count,

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { useMarketStore } from "../store/marketStore";
+import { applyMarketConfigToStore } from "../utils/hydrateMarketFromConfig";
 import { isTauri } from "../utils/tauri";
 
 export type StartupStatus =
@@ -102,19 +102,7 @@ export function useTauriStartup() {
 
         const ticker = (cfg.selected_ticker ?? "WINFUT").trim();
         const exchange = (cfg.selected_exchange ?? "BMF").trim();
-        if (ticker && exchange) {
-          useMarketStore
-            .getState()
-            .setSelectedTicker(`${ticker} · ${exchange}`);
-        }
-
-        const ifrKey = (cfg.ifr_series ?? "").trim().toLowerCase();
-        let ifrMode: "42r" | "16r" | "30m" = "42r";
-        if (ifrKey === "30m" || ifrKey === "30min") ifrMode = "30m";
-        else if (ifrKey === "16r") ifrMode = "16r";
-        else if (ifrKey === "42r") ifrMode = "42r";
-        else if (cfg.renko_brick_points === 16) ifrMode = "16r";
-        useMarketStore.getState().setIfrSeries(ifrMode);
+        const ifrMode = applyMarketConfigToStore(cfg);
 
         const keyOk = (cfg.profit_activation_key ?? "").trim().length > 0;
         const userOk = (cfg.profit_user ?? "").trim().length > 0;

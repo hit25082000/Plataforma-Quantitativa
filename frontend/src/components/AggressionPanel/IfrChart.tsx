@@ -29,7 +29,7 @@ function rsiFromMacdMsg(
   m: MacdSignalMessage,
   field: "rsi9" | "rsi18" | "rsi30",
 ): number | null {
-  const direct = m[field];
+  const direct: unknown = m[field];
   if (usableRsi(direct)) return direct;
   if (field === "rsi9" && usableRsi(m.rsi)) return m.rsi;
   if (typeof direct === "string") {

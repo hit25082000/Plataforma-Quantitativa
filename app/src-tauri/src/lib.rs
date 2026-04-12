@@ -35,6 +35,7 @@ pub fn run() {
             commands::clear_ocr_analysis_roi,
             commands::agent007_chat_invoke,
             commands::collect_diagnostics_bundle,
+            commands::get_ocr_runtime_port,
         ])
         .setup(|app| {
             #[cfg(debug_assertions)]

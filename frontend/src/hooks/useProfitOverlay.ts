@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { OCR_WS_URL } from "../config/ocrPort";
+import { OCR_WS_URL, ocrWsUrlFromPort } from "../config/ocrPort";
 import { useMarketStore } from "../store/marketStore";
 import {
   computeAgentAggressorVwap,
@@ -17,6 +17,7 @@ import {
 const OVERLAY_CHART_PRICE_STEP = 1;
 
 const STORAGE_SELECTED_METRICS = "pq-overlay-selected-metrics";
+const OPEN_OVERLAY_TIMEOUT_MS = 190_000;
 
 export type OverlayMetricId = "ubs" | "best_bid" | "best_ask";
 
@@ -188,6 +189,20 @@ export function useProfitOverlay() {
   const openStartMsRef = useRef<number | null>(null);
   const wsOpenLoggedRef = useRef(false);
   const firstOverlayLoggedRef = useRef(false);
+  /** Evita alternar líder comprador/vendedor a cada tick quando o saldo fin. está quase empatado. */
+  const stableBuyerLeaderRef = useRef<number | null>(null);
+  const stableSellerLeaderRef = useRef<number | null>(null);
+  const autoPushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const pendingAutoPushRef = useRef<OverlayTarget[] | null>(null);
+  /** Só altera preço enviado ao OCR após 2 ticks iguais — corta oscilação 100↔101↔100. */
+  const overlayMetricSlotRef = useRef<
+    Partial<
+      Record<
+        OverlayMetricId,
+        { pending: number; streak: number; committed: number | null }
+      >
+    >
+  >({});
 
   const vwap = useMarketStore((s) => s.vwap);
   const agentBuyTotals = useMarketStore((s) => s.agentBuyTotals);
@@ -196,9 +211,6 @@ export function useProfitOverlay() {
   const agentSellFinancial = useMarketStore((s) => s.agentSellFinancial);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
   const agentNames = useMarketStore((s) => s.agentNames);
-  const domBuy = useMarketStore((s) => s.domBuy);
-  const domSell = useMarketStore((s) => s.domSell);
-
   useEffect(() => {
     targetsRef.current = state.targets;
   }, [state.targets]);
@@ -251,6 +263,89 @@ export function useProfitOverlay() {
   );
 
   const buildMetricTargets = useCallback((): OverlayTarget[] => {
+    const saldoFin = (agentId: number) =>
+      Number(agentBuyFinancial[agentId] ?? 0) -
+      Number(agentSellFinancial[agentId] ?? 0);
+
+    const pickStableBuyer = (raw: number | null): number | null => {
+      if (raw == null) {
+        stableBuyerLeaderRef.current = null;
+        return null;
+      }
+      const rFin = saldoFin(raw);
+      if (!(rFin > 0)) {
+        stableBuyerLeaderRef.current = null;
+        return null;
+      }
+      const prev = stableBuyerLeaderRef.current;
+      if (prev == null || prev === raw) {
+        stableBuyerLeaderRef.current = raw;
+        return raw;
+      }
+      const pFin = saldoFin(prev);
+      const margin = Math.max(1, Math.abs(pFin) * 0.0025);
+      if (rFin >= pFin + margin) {
+        stableBuyerLeaderRef.current = raw;
+        return raw;
+      }
+      return prev;
+    };
+
+    const pickStableSeller = (raw: number | null): number | null => {
+      if (raw == null) {
+        stableSellerLeaderRef.current = null;
+        return null;
+      }
+      const rFin = saldoFin(raw);
+      if (!(rFin < 0)) {
+        stableSellerLeaderRef.current = null;
+        return null;
+      }
+      const prev = stableSellerLeaderRef.current;
+      if (prev == null || prev === raw) {
+        stableSellerLeaderRef.current = raw;
+        return raw;
+      }
+      const pFin = saldoFin(prev);
+      const margin = Math.max(1, Math.abs(pFin) * 0.0025);
+      if (rFin <= pFin - margin) {
+        stableSellerLeaderRef.current = raw;
+        return raw;
+      }
+      return prev;
+    };
+
+    const commitOverlayMetricPrice = (mid: OverlayMetricId, v: number): number => {
+      const cur = overlayMetricSlotRef.current[mid];
+      if (cur == null || cur.committed == null) {
+        overlayMetricSlotRef.current[mid] = { pending: v, streak: 1, committed: v };
+        return v;
+      }
+      if (v === cur.committed) {
+        overlayMetricSlotRef.current[mid] = { pending: v, streak: 1, committed: v };
+        return v;
+      }
+      if (v !== cur.pending) {
+        overlayMetricSlotRef.current[mid] = {
+          pending: v,
+          streak: 1,
+          committed: cur.committed,
+        };
+        return cur.committed;
+      }
+      const streak = cur.streak + 1;
+      if (streak >= 2) {
+        overlayMetricSlotRef.current[mid] = { pending: v, streak: 2, committed: v };
+        return v;
+      }
+      overlayMetricSlotRef.current[mid] = {
+        pending: v,
+        streak,
+        committed: cur.committed,
+      };
+      return cur.committed;
+    };
+
     const out: OverlayTarget[] = [];
     const avgPrice = vwap;
     const ubsId = findUbsAgentId(agentShortNames, agentNames);
@@ -277,15 +372,16 @@ export function useProfitOverlay() {
       let label = OVERLAY_METRIC_LABELS[id];
       if (id === "ubs") {
         if (ubsPriceForChart != null && Number.isFinite(ubsPriceForChart)) {
-          raw = normalizePosition(ubsPriceForChart);
+          raw = commitOverlayMetricPrice("ubs", normalizePosition(ubsPriceForChart));
         }
       } else if (id === "best_bid") {
-        const leaderId = topBuyerByVolFin(
+        const rawLeader = topBuyerByVolFin(
           agentBuyTotals,
           agentSellTotals,
           agentBuyFinancial,
           agentSellFinancial,
         );
+        const leaderId = pickStableBuyer(rawLeader);
         const p =
           leaderId == null
             ? null
@@ -296,7 +392,10 @@ export function useProfitOverlay() {
                 agentBuyFinancial,
                 agentSellFinancial,
               );
-        raw = p != null ? normalizePosition(p) : null;
+        raw =
+          p != null
+            ? commitOverlayMetricPrice("best_bid", normalizePosition(p))
+            : null;
         const leader = formatBrokerName(
           leaderId,
           agentShortNames,
@@ -304,12 +403,13 @@ export function useProfitOverlay() {
         );
         if (leader) label = `${OVERLAY_METRIC_LABELS.best_bid} (${leader})`;
       } else if (id === "best_ask") {
-        const leaderId = topSellerByVolFin(
+        const rawLeader = topSellerByVolFin(
           agentBuyTotals,
           agentSellTotals,
           agentBuyFinancial,
           agentSellFinancial,
         );
+        const leaderId = pickStableSeller(rawLeader);
         const p =
           leaderId == null
             ? null
@@ -320,7 +420,10 @@ export function useProfitOverlay() {
                 agentBuyFinancial,
                 agentSellFinancial,
               );
-        raw = p != null ? normalizePosition(p) : null;
+        raw =
+          p != null
+            ? commitOverlayMetricPrice("best_ask", normalizePosition(p))
+            : null;
         const leader = formatBrokerName(
           leaderId,
           agentShortNames,
@@ -343,12 +446,16 @@ export function useProfitOverlay() {
     agentSellFinancial,
     agentSellTotals,
     agentShortNames,
-    domBuy,
-    domSell,
     normalizePosition,
     selectedMetricIds,
     vwap,
   ]);
+
+  useEffect(() => {
+    stableBuyerLeaderRef.current = null;
+    stableSellerLeaderRef.current = null;
+    overlayMetricSlotRef.current = {};
+  }, [selectedMetricIds]);
 
   const mergeTargets = useCallback(
     (metrics: OverlayTarget[], manuals: OverlayTarget[]): OverlayTarget[] => [
@@ -366,78 +473,96 @@ export function useProfitOverlay() {
         status: prev.status === "ok" ? prev.status : "connecting",
       }));
     }
-    const ws = new WebSocket(OCR_WS_URL);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      wsRetryAttemptRef.current = 0;
-      wsTotalRetryRef.current = 0;
-      if (!wsOpenLoggedRef.current && openStartMsRef.current != null) {
-        const ms = Math.round(performance.now() - openStartMsRef.current);
-        console.info(`[overlay-latency] ws_open elapsed_ms=${ms}`);
-        wsOpenLoggedRef.current = true;
-      }
-      setState((prev) => {
-        const valid = prev.targets.filter(
-          (t) => Number.isFinite(t.value) && t.value > 0,
-        );
-        const payload = valid.map(({ value, label }) => ({ value, label }));
-        ws.send(JSON.stringify({ type: "set_positions", targets: payload }));
-        return { ...prev, status: "connecting" };
-      });
-    };
-
-    ws.onmessage = (ev) => {
+    let cancelled = false;
+    const openWs = async () => {
+      let wsUrl = OCR_WS_URL;
       try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === "overlay_update") {
-          if (
-            msg.data?.status === "ok" &&
-            !firstOverlayLoggedRef.current &&
-            openStartMsRef.current != null
-          ) {
-            const ms = Math.round(performance.now() - openStartMsRef.current);
-            console.info(`[overlay-latency] first_overlay_ok elapsed_ms=${ms}`);
-            firstOverlayLoggedRef.current = true;
-          }
-          setState((prev) => ({
-            ...prev,
-            status: msg.data.status,
-            lines: msg.data.lines ?? [],
-            y_min: msg.data.y_min ?? null,
-            y_max: msg.data.y_max ?? null,
-            axis_deltas: msg.data.axis_deltas ?? null,
-            axis_diagnostics: msg.data.axis_diagnostics ?? null,
-            analysisRoi: (msg.data.analysis_roi as OcrAnalysisRoi | null | undefined) ?? null,
-            analysisSample:
-              (msg.data.analysis_sample as OcrAnalysisSample | null | undefined) ?? null,
-          }));
+        const runtimePort = await invoke<number>("get_ocr_runtime_port");
+        if (Number.isFinite(runtimePort) && runtimePort > 0) {
+          wsUrl = ocrWsUrlFromPort(runtimePort);
         }
       } catch {
-        // ignore parse errors
+        // fallback para porta estática
       }
-    };
+      if (cancelled) return;
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
 
-    ws.onclose = () => {
-      const delays = [
-        250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
-      ];
-      const i = Math.min(wsRetryAttemptRef.current++, delays.length - 1);
-      wsTotalRetryRef.current += 1;
-      const ms = delays[i] ?? 4500;
-      if (activeRef.current) {
-        setState((prev) => ({
-          ...prev,
-          status:
-            wsTotalRetryRef.current > 32
-              ? "ocr_unreachable_retrying"
-              : "warming_up",
-        }));
-      }
-      clearTimeout(retryTimer.current);
-      retryTimer.current = setTimeout(connectWs, ms);
+      ws.onopen = () => {
+        wsRetryAttemptRef.current = 0;
+        wsTotalRetryRef.current = 0;
+        if (!wsOpenLoggedRef.current && openStartMsRef.current != null) {
+          const ms = Math.round(performance.now() - openStartMsRef.current);
+          console.info(`[overlay-latency] ws_open elapsed_ms=${ms}`);
+          wsOpenLoggedRef.current = true;
+        }
+        setState((prev) => {
+          const valid = prev.targets.filter(
+            (t) => Number.isFinite(t.value) && t.value > 0,
+          );
+          const payload = valid.map(({ value, label }) => ({ value, label }));
+          ws.send(JSON.stringify({ type: "set_positions", targets: payload }));
+          return { ...prev, status: "connecting" };
+        });
+      };
+
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "overlay_update") {
+            if (
+              msg.data?.status === "ok" &&
+              !firstOverlayLoggedRef.current &&
+              openStartMsRef.current != null
+            ) {
+              const ms = Math.round(performance.now() - openStartMsRef.current);
+              console.info(`[overlay-latency] first_overlay_ok elapsed_ms=${ms}`);
+              firstOverlayLoggedRef.current = true;
+            }
+            setState((prev) => ({
+              ...prev,
+              status: msg.data.status,
+              lines: msg.data.lines ?? [],
+              y_min: msg.data.y_min ?? null,
+              y_max: msg.data.y_max ?? null,
+              axis_deltas: msg.data.axis_deltas ?? null,
+              axis_diagnostics: msg.data.axis_diagnostics ?? null,
+              analysisRoi:
+                (msg.data.analysis_roi as OcrAnalysisRoi | null | undefined) ?? null,
+              analysisSample:
+                (msg.data.analysis_sample as OcrAnalysisSample | null | undefined) ?? null,
+            }));
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
+
+      ws.onclose = () => {
+        const delays = [
+          250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
+        ];
+        const i = Math.min(wsRetryAttemptRef.current++, delays.length - 1);
+        wsTotalRetryRef.current += 1;
+        const ms = delays[i] ?? 4500;
+        if (activeRef.current) {
+          setState((prev) => ({
+            ...prev,
+            status:
+              wsTotalRetryRef.current > 32
+                ? "ocr_unreachable_retrying"
+                : "warming_up",
+          }));
+        }
+        clearTimeout(retryTimer.current);
+        retryTimer.current = setTimeout(connectWs, ms);
+      };
+      ws.onerror = () => ws.close();
     };
-    ws.onerror = () => ws.close();
+    void openWs();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -460,6 +585,18 @@ export function useProfitOverlay() {
     }
     invoke("set_overlay_positions", { targets: payload }).catch(() => {});
   }, []);
+
+  /** Agrupa atualizações do stream (ticks) num único set_positions para o OCR. */
+  const scheduleAutoPushTargets = useCallback((targets: OverlayTarget[]) => {
+    pendingAutoPushRef.current = targets;
+    clearTimeout(autoPushTimerRef.current);
+    autoPushTimerRef.current = setTimeout(() => {
+      const t = pendingAutoPushRef.current;
+      pendingAutoPushRef.current = null;
+      if (!t || !activeRef.current) return;
+      pushTargets(t);
+    }, 90);
+  }, [pushTargets]);
 
   const setSelectedMetricIds = useCallback((ids: OverlayMetricId[]) => {
     const allowed = new Set(OVERLAY_METRIC_ORDER);
@@ -494,11 +631,31 @@ export function useProfitOverlay() {
         status: "warming_up",
         activating: true,
       }));
-      await invoke("open_profit_overlay");
+      await new Promise<void>((resolve, reject) => {
+        const timer = window.setTimeout(() => {
+          reject(
+            new Error(
+              "Tempo limite ao iniciar Overlay/OCR. Abra Configurações > Abrir pasta de logs e verifique runtime-bootstrap.log/profit_ocr_stderr.log.",
+            ),
+          );
+        }, OPEN_OVERLAY_TIMEOUT_MS);
+        invoke("open_profit_overlay")
+          .then(() => {
+            window.clearTimeout(timer);
+            resolve();
+          })
+          .catch((err) => {
+            window.clearTimeout(timer);
+            reject(err);
+          });
+      });
       if (openStartMsRef.current != null) {
         const ms = Math.round(performance.now() - openStartMsRef.current);
         console.info(`[overlay-latency] open_profit_overlay_resolved elapsed_ms=${ms}`);
       }
+      stableBuyerLeaderRef.current = null;
+      stableSellerLeaderRef.current = null;
+      overlayMetricSlotRef.current = {};
       connectWs();
       autoDynamicDefaultsRef.current = true;
       const metrics = buildMetricTargets();
@@ -535,6 +692,11 @@ export function useProfitOverlay() {
   const closeOverlay = useCallback(async () => {
     try {
       await invoke("close_profit_overlay");
+      clearTimeout(autoPushTimerRef.current);
+      pendingAutoPushRef.current = null;
+      stableBuyerLeaderRef.current = null;
+      stableSellerLeaderRef.current = null;
+      overlayMetricSlotRef.current = {};
       wsRef.current?.close();
       openStartMsRef.current = null;
       wsOpenLoggedRef.current = false;
@@ -630,17 +792,15 @@ export function useProfitOverlay() {
       const metrics = buildMetricTargets();
       const next = mergeTargets(metrics, manuals);
       if (targetsEqual(next, prev.targets)) return prev;
-      pushTargets(next);
+      scheduleAutoPushTargets(next);
       return { ...prev, targets: next };
     });
   }, [
     buildMetricTargets,
     mergeTargets,
-    pushTargets,
+    scheduleAutoPushTargets,
     state.active,
     vwap,
-    domBuy,
-    domSell,
     agentBuyFinancial,
     agentBuyTotals,
     agentNames,

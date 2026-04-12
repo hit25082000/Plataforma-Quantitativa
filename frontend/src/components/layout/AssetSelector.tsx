@@ -1,5 +1,10 @@
+import { emit } from "@tauri-apps/api/event";
 import { useState, useRef, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  PQ_SELECTED_ASSET_EVENT,
+  type PqSelectedAssetPayload,
+} from "../../constants/pqTauriEvents";
 import { useMarketStore } from "../../store/marketStore";
 import { isTauri } from "../../utils/tauri";
 import { fetchWarmMacdSnapshot } from "../../utils/warmMacd";
@@ -99,6 +104,24 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
         if (result.success) {
           clearMarketData();
           void fetchWarmMacdSnapshot();
+          try {
+            await invoke("write_config", {
+              config: {
+                selected_ticker: ticker.symbol,
+                selected_exchange: ticker.exchange,
+              },
+            });
+          } catch (e) {
+            console.warn("Persistir ativo no config.json:", e);
+          }
+          try {
+            await emit<PqSelectedAssetPayload>(PQ_SELECTED_ASSET_EVENT, {
+              ticker: ticker.symbol,
+              exchange: ticker.exchange,
+            });
+          } catch {
+            // sem listeners (ex.: só janela principal)
+          }
         }
         setAssetSwitchStatus(result.success ? "active" : "error", result.message);
         if (!result.success) console.warn("Troca de ativo:", result.message);

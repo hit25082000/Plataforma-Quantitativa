@@ -1,4 +1,4 @@
-"""Candle aggregation and MACD (30 min) from trades."""
+"""Candle aggregation and MACD (30 min) + IFR intrabar a partir de trades."""
 
 from dataclasses import dataclass, field
 import csv
@@ -9,14 +9,14 @@ import time
 from typing import Any, Optional
 
 PERIOD_MIN = 30
+# Limite de frequência de macd_signal parcial por ticker (evita saturar o WebSocket).
+MIN_PARTIAL_MACD_INTERVAL_MS = 100.0
 # Alinhado ao Renko do Profit (ex.: WINFUT 42R) e ao engine rule5 (R5_RENKO_SIZE = 42).
 DEFAULT_RENKO_BRICK_POINTS = 42.0
 # Série do IFR/RSI em macd_signal: Renko (42r/16r) ou candles de 30 min (30m).
 IFR_SERIES_42R = "42r"
 IFR_SERIES_16R = "16r"
 IFR_SERIES_30M = "30m"
-DEBUG_LOG_PATH = Path(__file__).resolve().parents[1] / "debug-407c7f.log"
-DEBUG_SESSION_ID = "407c7f"
 
 
 @dataclass
@@ -34,7 +34,6 @@ class TickerState:
     current_bucket: Optional[int] = None
     current: Optional[Candle] = None
     closes: list[float] = field(default_factory=list)
-    bootstrap_emitted_bucket: Optional[int] = None
     # Renko (fechamentos de tijolo) — série usada para IFR/RSI, como no Profit em gráfico R.
     renko_ref: Optional[float] = None
     renko_initialized: bool = False
@@ -148,23 +147,6 @@ def _parse_ts(ts: Any) -> float:
     return 0.0
 
 
-def _debug_log(run_id: str, hypothesis_id: str, location: str, message: str, data: dict[str, Any]) -> None:
-    try:
-        payload = {
-            "sessionId": DEBUG_SESSION_ID,
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with DEBUG_LOG_PATH.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=True) + "\n")
-    except Exception:
-        pass
-
-
 class CandleMacd:
     def __init__(
         self,
@@ -175,6 +157,7 @@ class CandleMacd:
         self._ifr_series = IFR_SERIES_42R
         self._renko_brick_points = float(renko_brick_points)
         self._states: dict[str, TickerState] = {}
+        self._last_partial_emit_ms: dict[str, float] = {}
 
     def set_ifr_series(self, series: str) -> None:
         """Define série do IFR: 42r, 16r ou 30m (fechamentos de candle de PERIOD_MIN)."""
@@ -218,6 +201,25 @@ class CandleMacd:
         if self._ifr_series == IFR_SERIES_30M:
             return macd_closes
         return state.renko_closes
+
+    def _rsi_closes_intrabar(
+        self, state: TickerState, macd_c: list[float], last_price: float
+    ) -> list[float]:
+        """RSI em tempo quase real: 30m usa candle em formação; Renko usa tijolos + último preço."""
+        if self._ifr_series == IFR_SERIES_30M:
+            return macd_c
+        if not state.renko_closes:
+            return [last_price]
+        return [*state.renko_closes, last_price]
+
+    def _throttle_partial_emit(self, ticker: str) -> bool:
+        """True se pode emitir outro macd_signal parcial agora."""
+        now_ms = time.monotonic() * 1000.0
+        last = self._last_partial_emit_ms.get(ticker, 0.0)
+        if now_ms - last < MIN_PARTIAL_MACD_INTERVAL_MS:
+            return False
+        self._last_partial_emit_ms[ticker] = now_ms
+        return True
 
     def _can_emit_macd_signal(self, state: TickerState) -> bool:
         """9 fechamentos de 30m (MACD + IFR 30m) ou tijolos Renko suficientes para RSI[9] (10+ fechamentos)."""
@@ -375,7 +377,10 @@ class CandleMacd:
         else:
             return None
         rsi_c = self._rsi_closes(state, macd_c)
-        return self._build_signal(ts, close, macd_c, rsi_c, partial=True)
+        # Fechamentos já consolidados (closes / renko_closes) — não é candle em formação.
+        # partial=False evita no frontend substituir este snapshot pelo primeiro macd parcial ao vivo
+        # e perder RSI até o próximo fechamento.
+        return self._build_signal(ts, close, macd_c, rsi_c, partial=False)
 
     def _load_state(self, ticker: str, state: TickerState) -> None:
         path = self._state_path(ticker)
@@ -420,13 +425,6 @@ class CandleMacd:
             stats_closes = self._bootstrap_closes_from_stats(ticker, 200)
             if len(stats_closes) > len(state.closes):
                 state.closes = stats_closes
-            _debug_log(
-                "post-fix",
-                "H5",
-                "distributor/candle_macd.py:_load_state",
-                "bootstrap_from_stats",
-                {"ticker": ticker, "state_closes_after_bootstrap": len(state.closes)},
-            )
         if self._ifr_series != IFR_SERIES_30M:
             br_closes, br_ref, br_init = self._bootstrap_renko_from_stats(ticker)
             if len(br_closes) > len(state.renko_closes):
@@ -492,32 +490,18 @@ class CandleMacd:
         return out
 
     def on_trade(self, msg: dict[str, Any]) -> Optional[dict[str, Any]]:
-        """Process trade; return macd_signal message on new bucket close."""
+        """Process trade; return macd_signal em fechamento de bucket e parciais intrabar (throttle)."""
         if msg.get("topic") != "market" or msg.get("type") != "trade":
             return None
 
         ts_str = msg.get("ts") or ""
         ts_ms = _parse_ts(ts_str)
         if ts_ms <= 0:
-            _debug_log(
-                "pre-fix",
-                "H1",
-                "distributor/candle_macd.py:on_trade",
-                "trade_discarded_invalid_ts",
-                {"ts": ts_str, "ticker": msg.get("ticker"), "type": type(ts_str).__name__},
-            )
             return None
         price = float(msg.get("price") or 0)
         qty = int(msg.get("qty") or 0)
         ticker = str(msg.get("ticker") or "").strip().upper()
         if not ticker:
-            _debug_log(
-                "pre-fix",
-                "H4",
-                "distributor/candle_macd.py:on_trade",
-                "trade_discarded_missing_ticker",
-                {"ts": ts_str},
-            )
             return None
         bucket = _bucket_ts(ts_ms, self._period_min)
 
@@ -526,13 +510,6 @@ class CandleMacd:
             state = TickerState()
             self._load_state(ticker, state)
             self._states[ticker] = state
-            _debug_log(
-                "pre-fix",
-                "H4",
-                "distributor/candle_macd.py:on_trade",
-                "ticker_state_initialized",
-                {"ticker": ticker, "loaded_closes": len(state.closes)},
-            )
 
         self._apply_renko_trade(state, price)
 
@@ -540,20 +517,17 @@ class CandleMacd:
             state.current_bucket = bucket
             state.current = Candle(o=price, h=price, l=price, c=price, v=qty)
             if self._can_emit_macd_signal(state) and state.current is not None:
-                state.bootstrap_emitted_bucket = bucket
-                _debug_log(
-                    "pre-fix",
-                    "H1",
-                    "distributor/candle_macd.py:on_trade",
-                    "emitting_partial_macd_signal",
-                    {"ticker": ticker, "bucket": bucket, "closes": len(state.closes)},
-                )
+                if not self._throttle_partial_emit(ticker):
+                    return None
                 macd_c = state.closes + [state.current.c]
+                rsi_c = self._rsi_closes_intrabar(
+                    state, macd_c, state.current.c
+                )
                 return self._build_signal(
                     ts_str,
                     state.current.c,
                     macd_c,
-                    self._rsi_closes(state, macd_c),
+                    rsi_c,
                     partial=True,
                 )
             return None
@@ -566,23 +540,18 @@ class CandleMacd:
                 state.current.v += qty
             if (
                 state.current is not None
-                and state.bootstrap_emitted_bucket != bucket
                 and self._can_emit_macd_signal(state)
+                and self._throttle_partial_emit(ticker)
             ):
-                state.bootstrap_emitted_bucket = bucket
-                _debug_log(
-                    "pre-fix",
-                    "H1",
-                    "distributor/candle_macd.py:on_trade",
-                    "emitting_partial_macd_signal_same_bucket",
-                    {"ticker": ticker, "bucket": bucket, "closes": len(state.closes)},
-                )
                 macd_c = state.closes + [state.current.c]
+                rsi_c = self._rsi_closes_intrabar(
+                    state, macd_c, state.current.c
+                )
                 return self._build_signal(
                     ts_str,
                     state.current.c,
                     macd_c,
-                    self._rsi_closes(state, macd_c),
+                    rsi_c,
                     partial=True,
                 )
             return None
@@ -598,13 +567,6 @@ class CandleMacd:
                 state.closes = state.closes[-max_candles:]
             self._save_state(ticker, state)
             if self._can_emit_macd_signal(state):
-                _debug_log(
-                    "pre-fix",
-                    "H1",
-                    "distributor/candle_macd.py:on_trade",
-                    "emitting_closed_bucket_signal",
-                    {"ticker": ticker, "bucket": state.current_bucket, "closes": len(state.closes)},
-                )
                 result_msg = self._build_signal(
                     ts_str,
                     state.current.c,
@@ -612,16 +574,7 @@ class CandleMacd:
                     self._rsi_closes(state, state.closes),
                     partial=False,
                 )
-            else:
-                _debug_log(
-                    "pre-fix",
-                    "H1",
-                    "distributor/candle_macd.py:on_trade",
-                    "not_enough_closes_for_signal",
-                    {"ticker": ticker, "closes": len(state.closes)},
-                )
 
         state.current_bucket = bucket
         state.current = Candle(o=price, h=price, l=price, c=price, v=qty)
-        state.bootstrap_emitted_bucket = None
         return result_msg

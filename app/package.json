@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "setup": "powershell -NoProfile -ExecutionPolicy Bypass -File ../setup-dev.ps1",
     "dev": "powershell -NoProfile -ExecutionPolicy Bypass -File ../scripts/run-dev.ps1",
     "dev:tauri": "npm run build:frontend && npx tauri dev",
     "build": "npm run build:frontend && npx tauri build",

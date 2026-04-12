@@ -1,5 +1,10 @@
+import { emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { distributorApiBase } from "../../config/distributorApi";
+import {
+  PQ_IFR_SERIES_EVENT,
+  type PqIfrSeriesPayload,
+} from "../../constants/pqTauriEvents";
 import { useMarketStore, type IfrSeriesMode } from "../../store/marketStore";
 import { isTauri } from "../../utils/tauri";
 import { fetchWarmMacdSnapshot } from "../../utils/warmMacd";
@@ -39,6 +44,11 @@ export function RenkoBrickSelector() {
         await invoke<{ success: boolean; message: string }>("set_ifr_series", {
           series: mode,
         });
+        try {
+          await emit<PqIfrSeriesPayload>(PQ_IFR_SERIES_EVENT, { series: mode });
+        } catch {
+          // sem listeners
+        }
       } catch (e) {
         console.warn("IFR série: falha ao persistir/sincronizar", e);
       }

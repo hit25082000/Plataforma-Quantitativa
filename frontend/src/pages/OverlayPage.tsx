@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { OCR_WS_URL } from "../config/ocrPort";
+import { OCR_WS_URL, ocrWsUrlFromPort } from "../config/ocrPort";
 import {
   type OcrAxisDeltas,
   overlayStatusColor,
@@ -138,44 +138,55 @@ export default function OverlayPage() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
     setData((prev) => ({ ...prev, status: "connecting" }));
     if (wsStartRef.current == null) wsStartRef.current = performance.now();
-
-    const ws = new WebSocket(OCR_WS_URL);
-    wsRef.current = ws;
-    ws.onopen = () => {
-      wsRetryRef.current = 0;
-      if (!wsOpenLoggedRef.current && wsStartRef.current != null) {
-        const ms = Math.round(performance.now() - wsStartRef.current);
-        console.info(`[overlay-latency] overlay_page_ws_open elapsed_ms=${ms}`);
-        wsOpenLoggedRef.current = true;
-      }
-      setData((prev) => ({ ...prev, status: "connecting" }));
-    };
-
-    ws.onmessage = (ev) => {
+    const openWs = async () => {
+      let wsUrl = OCR_WS_URL;
       try {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === "overlay_update") {
-          setData(msg.data);
+        const runtimePort = await invoke<number>("get_ocr_runtime_port");
+        if (Number.isFinite(runtimePort) && runtimePort > 0) {
+          wsUrl = ocrWsUrlFromPort(runtimePort);
         }
       } catch {
-        // ignore parse errors
+        // fallback para porta estática
       }
-    };
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+      ws.onopen = () => {
+        wsRetryRef.current = 0;
+        if (!wsOpenLoggedRef.current && wsStartRef.current != null) {
+          const ms = Math.round(performance.now() - wsStartRef.current);
+          console.info(`[overlay-latency] overlay_page_ws_open elapsed_ms=${ms}`);
+          wsOpenLoggedRef.current = true;
+        }
+        setData((prev) => ({ ...prev, status: "connecting" }));
+      };
 
-    ws.onclose = () => {
-      const delays = [
-        250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
-      ];
-      const i = Math.min(wsRetryRef.current++, delays.length - 1);
-      const ms = delays[i] ?? 4500;
-      setData((prev) => ({
-        ...prev,
-        status: wsRetryRef.current > 32 ? "ocr_unreachable_retrying" : "warming_up",
-      }));
-      retryTimer.current = setTimeout(connect, ms);
-    };
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.type === "overlay_update") {
+            setData(msg.data);
+          }
+        } catch {
+          // ignore parse errors
+        }
+      };
 
-    ws.onerror = () => ws.close();
+      ws.onclose = () => {
+        const delays = [
+          250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
+        ];
+        const i = Math.min(wsRetryRef.current++, delays.length - 1);
+        const ms = delays[i] ?? 4500;
+        setData((prev) => ({
+          ...prev,
+          status: wsRetryRef.current > 32 ? "ocr_unreachable_retrying" : "warming_up",
+        }));
+        retryTimer.current = setTimeout(connect, ms);
+      };
+
+      ws.onerror = () => ws.close();
+    };
+    void openWs();
   }, []);
 
   useEffect(() => {

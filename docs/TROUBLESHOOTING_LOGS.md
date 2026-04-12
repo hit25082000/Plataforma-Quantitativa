@@ -17,6 +17,8 @@ Guia prático para diagnosticar problemas do instalador e do app instalado em ou
   - `%LOCALAPPDATA%\Plataforma Quantitativa\logs\profit_ocr_stderr.log`
   - `%LOCALAPPDATA%\Plataforma Quantitativa\profit_engine.log`
 
+> Nota: em algumas versões, parte dos logs também pode aparecer na pasta de dados da aplicação do Tauri (`app_data_dir`). A tela de **Configurações > Diagnóstico** mostra o caminho efetivo de `Logs runtime`.
+
 ## Leitura rápida (5 minutos)
 
 1. Abra `runtime-bootstrap.log` e confirme a sequência:

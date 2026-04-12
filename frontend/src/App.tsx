@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useState } from "react";
 import { AppLayout } from "./components/layout/AppLayout";
 import { WidgetRoot } from "./components/WidgetRoot";
@@ -9,7 +11,19 @@ import OverlayPage from "./pages/OverlayPage";
 import { useAlerts } from "./hooks/useAlerts";
 import { useTauriStartup } from "./hooks/useTauriStartup";
 import { useWebSocket } from "./hooks/useWebSocket";
+import {
+  PQ_IFR_SERIES_EVENT,
+  PQ_SELECTED_ASSET_EVENT,
+  type PqIfrSeriesPayload,
+  type PqSelectedAssetPayload,
+} from "./constants/pqTauriEvents";
+import { useMarketStore } from "./store/marketStore";
+import {
+  applyMarketConfigToStore,
+  readConfigAndHydrateMarketStore,
+} from "./utils/hydrateMarketFromConfig";
 import { isTauri } from "./utils/tauri";
+import { fetchWarmMacdSnapshot } from "./utils/warmMacd";
 
 function AppContent() {
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -41,7 +55,61 @@ function AppContent() {
 }
 
 function WidgetWindow({ widgetId }: { widgetId: string }) {
-  useWebSocket(true);
+  const [marketHydrated, setMarketHydrated] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const ifrMode = await readConfigAndHydrateMarketStore();
+        try {
+          await invoke("sync_ifr_series_to_distributor", { series: ifrMode });
+        } catch {
+          // distributor pode estar indisponível
+        }
+      } catch {
+        // config ilegível: mantém defaults do store
+      } finally {
+        if (!cancelled) setMarketHydrated(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<PqSelectedAssetPayload>(PQ_SELECTED_ASSET_EVENT, (ev) => {
+      const { ticker, exchange } = ev.payload;
+      applyMarketConfigToStore({
+        selected_ticker: ticker,
+        selected_exchange: exchange,
+      });
+      void fetchWarmMacdSnapshot();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    void listen<PqIfrSeriesPayload>(PQ_IFR_SERIES_EVENT, (ev) => {
+      const s = ev.payload.series;
+      if (s !== "42r" && s !== "16r" && s !== "30m") return;
+      useMarketStore.getState().setIfrSeries(s);
+      void invoke("sync_ifr_series_to_distributor", { series: s }).catch(
+        () => {},
+      );
+      void fetchWarmMacdSnapshot();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      unlisten?.();
+    };
+  }, []);
+  useWebSocket(marketHydrated);
   useAlerts();
   return (
     <div className="h-screen flex flex-col">

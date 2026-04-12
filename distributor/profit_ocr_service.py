@@ -94,7 +94,11 @@ def configure_tesseract_cmd() -> None:
 # Porta dedicada: 5557 é usada pelo sync_monitor (ZMQ PUB); evitar conflito TCP.
 # Sobrescrever com PQ_OCR_PORT (alinhar Tauri + frontend: docs/PORTS.md).
 OCR_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
-REFRESH_MS = 400
+try:
+    REFRESH_MS = int(os.environ.get("PQ_OCR_REFRESH_MS", "280"))
+except ValueError:
+    REFRESH_MS = 280
+REFRESH_MS = max(120, min(800, REFRESH_MS))
 WINDOW_SCAN_INTERVAL_MS = 1200
 Y_AXIS_FRAC = 0.14
 TOOLBAR_H = int(os.environ.get("PQ_OVERLAY_TOOLBAR_H", "90"))
@@ -108,15 +112,20 @@ try:
     AXIS_WARMUP_SECS = float(os.environ.get("PQ_OCR_AXIS_WARMUP_SECS", "30"))
 except ValueError:
     AXIS_WARMUP_SECS = 30.0
-# Suavização das linhas do overlay (0 = desligado; 0.35–0.55 típico).
+# Suavização das linhas do overlay (0 = desligado; ~0.7 = mais responsivo).
 try:
-    LINE_Y_SMOOTH_ALPHA = float(os.environ.get("PQ_OVERLAY_LINE_SMOOTH_ALPHA", "0.45"))
+    LINE_Y_SMOOTH_ALPHA = float(os.environ.get("PQ_OVERLAY_LINE_SMOOTH_ALPHA", "0.72"))
 except ValueError:
-    LINE_Y_SMOOTH_ALPHA = 0.45
+    LINE_Y_SMOOTH_ALPHA = 0.72
+# Salto em px entre Y medido e EMA: ignora EMA e “cola” ao valor atual (eixo a convergir).
 try:
-    AXIS_BLEND_BETA = float(os.environ.get("PQ_OCR_AXIS_BLEND_BETA", "0.30"))
+    LINE_Y_SNAP_PX = float(os.environ.get("PQ_OVERLAY_LINE_Y_SNAP_PX", "22"))
 except ValueError:
-    AXIS_BLEND_BETA = 0.30
+    LINE_Y_SNAP_PX = 22.0
+try:
+    AXIS_BLEND_BETA = float(os.environ.get("PQ_OCR_AXIS_BLEND_BETA", "0.52"))
+except ValueError:
+    AXIS_BLEND_BETA = 0.52
 AXIS_BLEND_BETA = min(1.0, max(0.01, AXIS_BLEND_BETA))
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
 
@@ -681,7 +690,7 @@ def extract_analysis_sample(rect: Dict[str, Any]) -> Dict[str, Any]:
 def apply_line_y_smoothing(
     lines: List[Dict[str, Any]], targets: List[Dict[str, Any]]
 ) -> None:
-    """EMA em y_screen para reduzir jitter; não altera chart_left/right."""
+    """EMA em y_screen para reduzir jitter; salta EMA se o Y novo divergir muito (eixo OCR a estabilizar)."""
     if LINE_Y_SMOOTH_ALPHA <= 0 or not lines:
         return
     tk = tuple(
@@ -693,10 +702,15 @@ def apply_line_y_smoothing(
         state["_smooth_key"] = tk
     ema: Dict[int, float] = state.setdefault("_line_y_smooth", {})
     alpha = min(1.0, max(0.01, LINE_Y_SMOOTH_ALPHA))
+    chart = state.get("chart_rect") if isinstance(state.get("chart_rect"), dict) else {}
+    ch = float(chart.get("height") or 0)
+    snap_px = max(float(LINE_Y_SNAP_PX), (ch * 0.025) if ch > 0 else float(LINE_Y_SNAP_PX))
     for idx, ln in enumerate(lines):
         y = float(ln["y_screen"])
         prev = ema.get(idx)
         if prev is None:
+            ema[idx] = y
+        elif abs(y - prev) >= snap_px:
             ema[idx] = y
         else:
             ema[idx] = alpha * y + (1.0 - alpha) * prev
@@ -733,20 +747,35 @@ async def ocr_loop():
                         state["lines"] = []
                     else:
                         vals = [lb["value"] for lb in labels]
-                        state["y_min"] = min(vals)
-                        state["y_max"] = max(vals)
+                        v_axis_min = min(vals)
+                        v_axis_max = max(vals)
+                        state["y_min"] = v_axis_min
+                        state["y_max"] = v_axis_max
                         state["status"] = "ok"
                         if not first_ok_logged:
                             first_ok_logged = True
                             elapsed_ms = int((time.monotonic() - service_started_at) * 1000)
                             print(f"[overlay-latency] ocr_first_ok elapsed_ms={elapsed_ms}")
                         lines = []
+                        chart_top = float(chart["top"])
+                        chart_bottom = float(chart["top"] + chart["height"])
                         for idx, t in enumerate(state["targets"]):
                             pos = float(t["value"])
                             y_screen = value_to_y_hybrid(pos, labels, axis)
-                            chart_top = chart["top"]
-                            chart_bottom = chart["top"] + chart["height"]
-                            clamped_y = max(chart_top, min(y_screen, chart_bottom))
+                            # Preço fora do intervalo visível no eixo OCR: não usar y híbrido
+                            # (oscila com blend_axis_with_hysteresis) + clamp geométrico — fixa na borda
+                            # estável. Eixo Profit: y cresce para baixo, valor decresce (topo = maior preço).
+                            if pos > v_axis_max:
+                                clamped_y = int(round(chart_top))
+                                oob = True
+                            elif pos < v_axis_min:
+                                clamped_y = int(round(chart_bottom))
+                                oob = True
+                            else:
+                                clamped_y = int(
+                                    round(max(chart_top, min(float(y_screen), chart_bottom)))
+                                )
+                                oob = float(y_screen) != float(clamped_y)
                             lbl = str(t.get("label") or "")
                             lines.append(
                                 {
@@ -756,7 +785,7 @@ async def ocr_loop():
                                     "chart_left": window["left"],
                                     "chart_right": window["right"],
                                     "label": lbl,
-                                    "out_of_bounds": y_screen != clamped_y,
+                                    "out_of_bounds": oob,
                                 }
                             )
                         apply_line_y_smoothing(lines, state["targets"])
