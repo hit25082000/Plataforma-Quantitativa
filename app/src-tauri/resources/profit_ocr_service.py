@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import time
+from collections import OrderedDict
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
@@ -26,7 +27,7 @@ try:
     import pytesseract
     import uvicorn
     import win32gui
-    from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from PIL import Image, ImageEnhance
     from pydantic import BaseModel
@@ -235,11 +236,53 @@ def _iso_utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _axis_status_value() -> str:
+    axis_status = str(state.get("axis_status") or "").strip().upper()
+    if axis_status:
+        return axis_status
+    manager_status = str(getattr(axis_manager, "status", "") or "").strip().upper()
+    return manager_status or "CALIBRATING"
+
+
+def _axis_source_value() -> str:
+    axis_source = str(state.get("axis_source") or "").strip().lower()
+    if axis_source in {"ocr", "manual", "last_stable", "none"}:
+        return axis_source
+    return "none"
+
+
+def _reset_axis_quality_metrics() -> None:
+    state["axis_confidence"] = 0.0
+    state["axis_residual_px"] = 0.0
+    state["axis_max_error_px"] = 0.0
+
+
+def _set_axis_quality_metrics(candidate: Optional[dict[str, Any]]) -> None:
+    if not isinstance(candidate, dict):
+        _reset_axis_quality_metrics()
+        return
+    state["axis_confidence"] = float(candidate.get("confidence") or 0.0)
+    state["axis_residual_px"] = float(candidate.get("residual_px") or 0.0)
+    state["axis_max_error_px"] = float(candidate.get("max_error_px") or 0.0)
+
+
 def _append_trace_line(record: dict[str, Any]) -> None:
     if not OCR_TRACE_PATH:
         return
     try:
-        AUDIT_TRAIL.append(record)
+        enriched = dict(record or {})
+        if not enriched.get("session_id"):
+            enriched["session_id"] = TRACE_SESSION_ID
+        if not isinstance(enriched.get("render_indicators"), dict):
+            lines = state.get("lines") or []
+            visible_lines = [ln for ln in lines if str(ln.get("status") or "").lower() == "visible"]
+            out_of_bounds_count = sum(1 for ln in lines if bool(ln.get("out_of_bounds")))
+            enriched["render_indicators"] = {
+                "line_count_total": len(lines),
+                "line_count_visible": len(visible_lines),
+                "line_count_out_of_bounds": out_of_bounds_count,
+            }
+        AUDIT_TRAIL.append(enriched)
     except Exception:
         pass
 
@@ -280,8 +323,8 @@ def _build_frame_debug(
         "axis_diagnostics": diagnostics,
         "axis_fit": axis_fit,
         "axis": axis,
-        "axis_status": axis_manager.status,
-        "axis_source": state.get("axis_source"),
+        "axis_status": _axis_status_value(),
+        "axis_source": _axis_source_value(),
         "bad_frames": axis_manager.bad_frames,
         "pending_count": axis_manager.pending_count,
         "line_count": len(lines),
@@ -304,8 +347,8 @@ def _api_ok(endpoint: str, **data: Any) -> dict[str, Any]:
         "meta": {
             "ts": _iso_utc_now(),
             "status": str(state.get("status") or ""),
-            "axis_status": str(state.get("axis_status") or ""),
-            "axis_source": str(state.get("axis_source") or ""),
+            "axis_status": _axis_status_value(),
+            "axis_source": _axis_source_value(),
             "frame_seq": int(state.get("frame_seq") or 0),
             "last_update": float(state.get("last_update") or 0.0),
         },
@@ -325,8 +368,8 @@ def _api_error(endpoint: str, code: str, message: str, **details: Any) -> dict[s
         "meta": {
             "ts": _iso_utc_now(),
             "status": str(state.get("status") or ""),
-            "axis_status": str(state.get("axis_status") or ""),
-            "axis_source": str(state.get("axis_source") or ""),
+            "axis_status": _axis_status_value(),
+            "axis_source": _axis_source_value(),
             "bad_frames": int(state.get("axis_bad_frames") or 0),
             "pending_count": int(state.get("axis_pending_count") or 0),
             "frame_seq": int(state.get("frame_seq") or 0),
@@ -335,15 +378,19 @@ def _api_error(endpoint: str, code: str, message: str, **details: Any) -> dict[s
 
 
 def _normalize_targets(targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: "OrderedDict[tuple[float, str], None]" = OrderedDict()
+    for target in targets:
+        try:
+            value = float(target.get("value", 0.0))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if not math.isfinite(value):
+            continue
+        label = str(target.get("label") or "").strip()
+        deduped[(value, label)] = None
     normalized: List[Dict[str, Any]] = []
-    for idx, target in enumerate(targets):
-        normalized.append(
-            {
-                "id": idx,
-                "value": float(target.get("value", 0.0)),
-                "label": str(target.get("label") or ""),
-            }
-        )
+    for idx, (value, label) in enumerate(deduped.keys()):
+        normalized.append({"id": idx, "value": value, "label": label})
     return normalized
 
 
@@ -354,10 +401,15 @@ def _build_overlay_update_data() -> dict[str, Any]:
         and len(state.get("axis_labels") or []) >= 2
     )
     targets = _normalize_targets(state.get("targets") or [])
+    if len(targets) > MAX_RENDER_LINES:
+        targets = targets[:MAX_RENDER_LINES]
     chart_rect = state.get("chart_rect")
+    lines_items = state.get("lines") or []
+    if len(lines_items) > MAX_RENDER_LINES:
+        lines_items = lines_items[:MAX_RENDER_LINES]
     line_block = {
-        "items": state.get("lines") or [],
-        "count": len(state.get("lines") or []),
+        "items": lines_items,
+        "count": len(lines_items),
         "target_count": len(targets),
         "visual_limits": {
             "chart_top": chart_rect.get("top") if isinstance(chart_rect, dict) else None,
@@ -368,6 +420,9 @@ def _build_overlay_update_data() -> dict[str, Any]:
             ),
             "y_min": state.get("y_min"),
             "y_max": state.get("y_max"),
+            "max_targets_per_frame": MAX_RENDER_LINES,
+            "max_lines_per_frame": MAX_RENDER_LINES,
+            "max_axis_labels": MAX_AXIS_LABELS,
         },
     }
     histogram_block = {
@@ -375,29 +430,34 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "axis_diagnostics": state.get("axis_diagnostics"),
     }
     status_block = {
-        "state": state.get("status"),
+        "state": str(state.get("status") or ""),
         "axis_locked": axis_locked,
         "analysis_roi": state.get("analysis_roi"),
         "analysis_sample": state.get("analysis_sample"),
         "timestamp": state.get("last_update"),
     }
+    axis_labels = state.get("axis_labels") if isinstance(state.get("axis_labels"), list) else []
+    pending_count = int(state.get("axis_pending_count") or 0)
+    axis_source = _axis_source_value()
     axis_block = {
         "axis": state.get("axis"),
         "regression": state.get("axis"),
-        "axis_labels": state.get("axis_labels"),
-        "ocr_labels": state.get("axis_labels"),
-        "labels_count": len(state.get("axis_labels") or []),
-        "axis_status": state.get("axis_status"),
-        "axis_source": state.get("axis_source"),
+        "axis_labels": axis_labels,
+        "ocr_labels": axis_labels,
+        "labels_count": len(axis_labels),
+        "axis_status": _axis_status_value(),
+        "axis_source": axis_source,
+        "source": axis_source,
         "confidence": float(state.get("axis_confidence") or (1.0 if axis_locked else 0.0)),
         "residual_px": float(state.get("axis_residual_px") or 0.0),
         "max_error_px": float(state.get("axis_max_error_px") or 0.0),
         "bad_frames": int(state.get("axis_bad_frames") or 0),
-        "pending_count": int(state.get("axis_pending_count") or 0),
+        "pending_count": pending_count,
+        "pending_frames": pending_count,
         "pending_candidate": state.get("axis_pending_candidate"),
     }
     debug_visual = {
-        "ocr_labels": state.get("axis_labels"),
+        "ocr_labels": axis_labels,
         "regression": state.get("axis"),
         "analysis_roi": state.get("analysis_roi"),
         "chart_bounds": {
@@ -440,19 +500,30 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "analysis_roi": status_block["analysis_roi"],
         "analysis_sample": status_block["analysis_sample"],
         "ts": status_block["timestamp"],
+        "blocks": structured_block,
         # Contrato estruturado (novo)
         "structured": structured_block,
         # Compatibilidade com contratos anteriores
         "overlay_target": targets,
         "axis_status": axis_block["axis_status"],
         "axis_source": axis_block["axis_source"],
+        "source": axis_block["source"],
         "confidence": axis_block["confidence"],
         "residual_px": axis_block["residual_px"],
         "max_error_px": axis_block["max_error_px"],
         "bad_frames": axis_block["bad_frames"],
         "pending_count": axis_block["pending_count"],
+        "pending_frames": axis_block["pending_frames"],
         "pending_candidate": axis_block["pending_candidate"],
     }
+
+
+def _sync_axis_runtime_state(*, source: str) -> None:
+    state["axis_status"] = str(axis_manager.status or "CALIBRATING").upper()
+    state["axis_source"] = source if source in {"ocr", "manual", "last_stable", "none"} else "none"
+    state["axis_bad_frames"] = axis_manager.bad_frames
+    state["axis_pending_count"] = axis_manager.pending_count
+    state["axis_pending_candidate"] = axis_manager.pending_candidate
 
 
 def _should_publish_overlay_update(payload_data: dict[str, Any]) -> bool:
@@ -535,6 +606,18 @@ class ManualAxisPoint(BaseModel):
 
 class ManualAxisBody(BaseModel):
     points: List[ManualAxisPoint]
+
+
+class OcrOverlayConfigUpdateBody(BaseModel):
+    refresh_ms: Optional[int] = None
+    ws_publish_min_ms: Optional[int] = None
+    axis_max_bad_frames: Optional[int] = None
+    line_y_smooth_alpha: Optional[float] = None
+    line_y_snap_px: Optional[float] = None
+    line_y_deadband_px: Optional[float] = None
+    axis_blend_beta: Optional[float] = None
+    axis_warmup_secs: Optional[float] = None
+    min_conf: Optional[int] = None
 
 
 def _targets_from_ws_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1002,6 +1085,9 @@ def build_axis_candidate(labels: List[Dict[str, float]], diagnostics: Optional[D
         "confidence": float(fit.get("confidence", 0.0)),
         "labels_count": len(labels),
         "inliers_count": int(fit.get("inliers_count", 0)),
+        "tick_size": 5.0 if OCR_SYMBOL == "WINFUT" else (0.5 if OCR_SYMBOL == "WDOFUT" else 0.0),
+        "rejected_dedupe_or_tick": int((diagnostics or {}).get("rejected_dedupe_or_tick", 0) or 0),
+        "rejected_monotonic": int((diagnostics or {}).get("rejected_monotonic", 0) or 0),
         "tick_valid": bool((diagnostics or {}).get("rejected_dedupe_or_tick", 0) == 0),
         "monotonic_valid": bool((diagnostics or {}).get("rejected_monotonic", 0) == 0),
         "value_min": min(vals) if vals else None,
@@ -1025,9 +1111,14 @@ def axis_delta_px(candidate: Dict[str, Any], last_stable: Dict[str, float]) -> f
 def is_candidate_valid(candidate: Dict[str, Any]) -> bool:
     if int(candidate.get("labels_count") or 0) < 2:
         return False
-    if not bool(candidate.get("tick_valid", True)):
+    tick_size = float(candidate.get("tick_size") or 0.0)
+    tick_is_applicable = tick_size > 0.0
+    tick_valid = bool(candidate.get("tick_valid", True))
+    if tick_is_applicable and not tick_valid:
         return False
-    if not bool(candidate.get("monotonic_valid", True)):
+    monotonic_is_applicable = int(candidate.get("labels_count") or 0) >= 3
+    monotonic_valid = bool(candidate.get("monotonic_valid", True))
+    if monotonic_is_applicable and not monotonic_valid:
         return False
     if float(candidate.get("confidence") or 0.0) < AXIS_MIN_CONFIDENCE:
         return False
@@ -1036,6 +1127,24 @@ def is_candidate_valid(candidate: Dict[str, Any]) -> bool:
     if float(candidate.get("max_error_px") or 0.0) > AXIS_MAX_ERROR_PX:
         return False
     return True
+
+
+def _build_status_light_data() -> dict[str, Any]:
+    return {
+        "status": str(state.get("status") or ""),
+        "axis_status": _axis_status_value(),
+        "axis_source": _axis_source_value(),
+        "bad_frames": int(state.get("axis_bad_frames") or 0),
+        "pending_count": int(state.get("axis_pending_count") or 0),
+        "confidence": float(state.get("axis_confidence") or 0.0),
+        "residual_px": float(state.get("axis_residual_px") or 0.0),
+        "max_error_px": float(state.get("axis_max_error_px") or 0.0),
+        "frame_seq": int(state.get("frame_seq") or 0),
+        "lines_count": len(state.get("lines") or []),
+        "targets_count": len(state.get("targets") or []),
+        "last_update": float(state.get("last_update") or 0.0),
+        "uptime_sec": round(time.monotonic() - service_started_at, 3),
+    }
 
 
 def compute_axis_deltas(labels: List[Dict[str, float]]) -> Optional[Dict[str, Any]]:
@@ -1469,6 +1578,8 @@ async def ocr_loop():
                         state["lines"] = []
                         state["axis_labels"] = None
                         state["axis"] = None
+                        _sync_axis_runtime_state(source="none")
+                        _reset_axis_quality_metrics()
                     else:
                         state["axis_labels"] = [
                             {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
@@ -1479,14 +1590,8 @@ async def ocr_loop():
                             "intercept": float(axis["intercept"]),
                             "value_per_px": float(axis.get("value_per_px", abs(float(axis["slope"])))),
                         }
-                        state["axis_status"] = axis_manager.status
-                        state["axis_source"] = "ocr"
-                        state["axis_bad_frames"] = axis_manager.bad_frames
-                        state["axis_pending_count"] = axis_manager.pending_count
-                        state["axis_pending_candidate"] = axis_manager.pending_candidate
-                        state["axis_confidence"] = float((axis_candidate or {}).get("confidence") or 0.0)
-                        state["axis_residual_px"] = float((axis_candidate or {}).get("residual_px") or 0.0)
-                        state["axis_max_error_px"] = float((axis_candidate or {}).get("max_error_px") or 0.0)
+                        _sync_axis_runtime_state(source="ocr")
+                        _set_axis_quality_metrics(axis_candidate)
                         vals = [lb["value"] for lb in labels]
                         v_axis_min = min(vals)
                         v_axis_max = max(vals)
@@ -1502,16 +1607,16 @@ async def ocr_loop():
                 else:
                     state["axis_deltas"] = None
                     if axis_manager.last_stable_axis is None:
+                        axis_manager.feed(None)
                         state["axis_labels"] = None
                         state["axis"] = None
+                        _sync_axis_runtime_state(source="none")
+                        _reset_axis_quality_metrics()
                     else:
                         axis = axis_manager.feed(None)
                         state["axis"] = axis
-                        state["axis_status"] = axis_manager.status
-                        state["axis_source"] = "last_stable"
-                        state["axis_bad_frames"] = axis_manager.bad_frames
-                        state["axis_pending_count"] = axis_manager.pending_count
-                        state["axis_pending_candidate"] = axis_manager.pending_candidate
+                        _sync_axis_runtime_state(source="last_stable")
+                        _reset_axis_quality_metrics()
                     elapsed_svc = time.monotonic() - service_started_at
                     if len(labels) == 0 and elapsed_svc < AXIS_WARMUP_SECS:
                         state["status"] = "ocr_axis_warming"
@@ -1525,6 +1630,9 @@ async def ocr_loop():
             state["lines"] = []
             state["axis_labels"] = None
             state["axis"] = None
+            axis_manager.feed(None)
+            _sync_axis_runtime_state(source="none")
+            _reset_axis_quality_metrics()
             frame_debug["error"] = str(exc)
             frame_ctx["status"] = state["status"]
 
@@ -1769,6 +1877,36 @@ async def manual_calibration_api(body: ManualAxisBody):
     return await manual_calibration(body)
 
 
+@app.post("/manual_unlock")
+async def manual_unlock_axis():
+    state.pop("_axis_ema", None)
+    state.pop("_axis_jump_count", None)
+    state.pop("_line_y_smooth", None)
+    state.pop("_smooth_key", None)
+    axis_manager.clear_manual_axis()
+    axis_manager.unfreeze()
+    state["axis_status"] = axis_manager.status
+    state["axis_source"] = "none"
+    state["axis_bad_frames"] = axis_manager.bad_frames
+    state["axis_pending_count"] = axis_manager.pending_count
+    state["axis_pending_candidate"] = axis_manager.pending_candidate
+    state["axis_confidence"] = 0.0
+    state["axis_residual_px"] = 0.0
+    state["axis_max_error_px"] = 0.0
+    return _api_ok(
+        "manual_unlock",
+        message="manual_axis_unlocked",
+        axis_status=axis_manager.status,
+        axis_source=state.get("axis_source"),
+        bad_frames=state.get("axis_bad_frames"),
+    )
+
+
+@app.post("/api/ocr-overlay/manual-unlock")
+async def manual_unlock_axis_api():
+    return await manual_unlock_axis()
+
+
 @app.get("/debug")
 async def get_debug():
     try:
@@ -1791,7 +1929,7 @@ async def get_debug():
             axis_diagnostics=state.get("axis_diagnostics"),
             analysis_roi=state.get("analysis_roi"),
             analysis_sample=state.get("analysis_sample"),
-            debug_visual=overlay_update.get("debug_visual"),
+            debug_visual=(overlay_update.get("structured") or {}).get("debug_visual"),
             overlay_update=overlay_update,
         )
     except Exception as exc:
@@ -1812,35 +1950,7 @@ async def get_debug_api():
 @app.get("/status")
 async def get_status():
     try:
-        overlay_update = _build_overlay_update_data()
-        return _api_ok(
-            "status",
-            status=state["status"],
-            targets=state["targets"],
-            positions=state["positions"],
-            lines=state["lines"],
-            y_min=state["y_min"],
-            y_max=state["y_max"],
-            chart_rect=state.get("chart_rect"),
-            axis_labels=state.get("axis_labels"),
-            axis=state.get("axis"),
-            axis_deltas=state.get("axis_deltas"),
-            axis_diagnostics=state.get("axis_diagnostics"),
-            axis_status=state.get("axis_status"),
-            axis_source=state.get("axis_source"),
-            bad_frames=state.get("axis_bad_frames"),
-            pending_count=state.get("axis_pending_count"),
-            pending_candidate=state.get("axis_pending_candidate"),
-            confidence=state.get("axis_confidence"),
-            residual_px=state.get("axis_residual_px"),
-            max_error_px=state.get("axis_max_error_px"),
-            dpi_scale=state["dpi_scale"],
-            last_update=state["last_update"],
-            analysis_roi=state.get("analysis_roi"),
-            analysis_sample=state.get("analysis_sample"),
-            debug_visual=overlay_update.get("debug_visual"),
-            overlay_update=overlay_update,
-        )
+        return _api_ok("status", **_build_status_light_data())
     except Exception as exc:
         return _api_error(
             "status",
@@ -1871,6 +1981,72 @@ async def get_config():
         axis_warmup_secs=AXIS_WARMUP_SECS,
         min_conf=MIN_CONF,
     )
+
+
+@app.post("/config")
+async def update_config(body: OcrOverlayConfigUpdateBody):
+    global REFRESH_MS, WS_PUBLISH_MIN_MS, AXIS_MAX_BAD_FRAMES, LINE_Y_SMOOTH_ALPHA
+    global LINE_Y_SNAP_PX, LINE_Y_DEADBAND_PX, AXIS_BLEND_BETA, AXIS_WARMUP_SECS, MIN_CONF
+
+    payload = body.model_dump(exclude_none=True)
+    if not payload:
+        raise HTTPException(
+            status_code=400,
+            detail=_api_error(
+                "config",
+                "config_payload_empty",
+                "config_payload_must_include_at_least_one_field",
+            ),
+        )
+
+    updates: dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "refresh_ms":
+            REFRESH_MS = max(120, min(800, int(value)))
+            updates[key] = REFRESH_MS
+        elif key == "ws_publish_min_ms":
+            WS_PUBLISH_MIN_MS = max(100, min(2000, int(value)))
+            updates[key] = WS_PUBLISH_MIN_MS
+        elif key == "axis_max_bad_frames":
+            AXIS_MAX_BAD_FRAMES = max(1, min(120, int(value)))
+            updates[key] = AXIS_MAX_BAD_FRAMES
+        elif key == "line_y_smooth_alpha":
+            LINE_Y_SMOOTH_ALPHA = max(0.0, min(1.0, float(value)))
+            updates[key] = LINE_Y_SMOOTH_ALPHA
+        elif key == "line_y_snap_px":
+            LINE_Y_SNAP_PX = max(1.0, min(200.0, float(value)))
+            updates[key] = LINE_Y_SNAP_PX
+        elif key == "line_y_deadband_px":
+            LINE_Y_DEADBAND_PX = max(0.0, min(20.0, float(value)))
+            updates[key] = LINE_Y_DEADBAND_PX
+        elif key == "axis_blend_beta":
+            AXIS_BLEND_BETA = max(0.01, min(1.0, float(value)))
+            updates[key] = AXIS_BLEND_BETA
+        elif key == "axis_warmup_secs":
+            AXIS_WARMUP_SECS = max(0.0, min(120.0, float(value)))
+            updates[key] = AXIS_WARMUP_SECS
+        elif key == "min_conf":
+            MIN_CONF = max(0, min(100, int(value)))
+            updates[key] = MIN_CONF
+
+    return _api_ok(
+        "config",
+        updated=updates,
+        refresh_ms=REFRESH_MS,
+        ws_publish_min_ms=WS_PUBLISH_MIN_MS,
+        axis_max_bad_frames=AXIS_MAX_BAD_FRAMES,
+        line_y_smooth_alpha=LINE_Y_SMOOTH_ALPHA,
+        line_y_snap_px=LINE_Y_SNAP_PX,
+        line_y_deadband_px=LINE_Y_DEADBAND_PX,
+        axis_blend_beta=AXIS_BLEND_BETA,
+        axis_warmup_secs=AXIS_WARMUP_SECS,
+        min_conf=MIN_CONF,
+    )
+
+
+@app.post("/api/ocr-overlay/config")
+async def update_config_api(body: OcrOverlayConfigUpdateBody):
+    return await update_config(body)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,149 @@
+{
+  "runner": "run_final_verification_pack.py",
+  "generated_at_iso": "2026-04-30T19:57:49Z",
+  "mode": "full",
+  "field_report": "",
+  "strict": false,
+  "continue_on_failure": true,
+  "interrupted_on_required_failure": false,
+  "required_ok": true,
+  "overall_ok": true,
+  "required_failed_count": 0,
+  "strict_failed_count": 0,
+  "skipped_required_count": 0,
+  "skipped_optional_count": 0,
+  "steps": [
+    {
+      "id": "step_01_backend_tests",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "-m",
+        "unittest",
+        "distributor.tests.test_message_router_ui_aggregator",
+        "distributor.tests.test_ocr_overlay_audit",
+        "distributor.tests.test_profit_ocr_service",
+        "distributor.tests.test_vp_overlay_consolidator",
+        "distributor.tests.test_websocket_vp_overlay_endpoints",
+        "distributor.tests.test_run_overlay_ws_stress_regression",
+        "distributor.tests.test_run_ovr_stab_qa_evidence",
+        "distributor.tests.test_verify_ovr_stab_g8_readiness"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 3.981,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_01_backend_tests.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_01_backend_tests.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_02_frontend_tests",
+      "command": [
+        "C:\\Program Files\\nodejs\\npm.CMD",
+        "--prefix",
+        "frontend",
+        "run",
+        "test",
+        "--",
+        "OverlayPage",
+        "useProfitOverlay",
+        "overlayUpdateCompat",
+        "overlayRenderDiff"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 6.352,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_02_frontend_tests.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_02_frontend_tests.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_03_tauri_tests",
+      "command": [
+        "C:\\Users\\luiz.domingues\\.cargo\\bin\\cargo.EXE",
+        "test",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 13.298,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_03_tauri_tests.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_03_tauri_tests.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_04_tauri_check",
+      "command": [
+        "C:\\Users\\luiz.domingues\\.cargo\\bin\\cargo.EXE",
+        "check",
+        "--manifest-path",
+        "app/src-tauri/Cargo.toml"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 4.546,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_04_tauri_check.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_04_tauri_check.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_05_stress",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "scripts/run_overlay_ws_stress_regression.py",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\stress"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 3.65,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_05_stress.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_05_stress.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_06_qa_evidence",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "scripts/run_ovr_stab_qa_evidence.py",
+        "--mode",
+        "local",
+        "--strict",
+        "--cen05-stress-manifest",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\stress\\summary.manifest.json",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\qa"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 7.027,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_06_qa_evidence.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_06_qa_evidence.stderr.log",
+      "required": true,
+      "executed": true
+    },
+    {
+      "id": "step_07_readiness",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "scripts/verify_ovr_stab_g8_readiness.py",
+        "--qa-manifest",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\qa\\summary.manifest.json",
+        "--stress-manifest",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\stress\\summary.manifest.json"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 0.133,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_07_readiness.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-155710\\step_07_readiness.stderr.log",
+      "required": false,
+      "executed": true
+    }
+  ]
+}

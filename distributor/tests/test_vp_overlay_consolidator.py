@@ -12,6 +12,10 @@ from vp_overlay_consolidator import VpOverlayConsolidator, build_vp_overlay_payl
 
 
 class TestVpOverlayConsolidator(unittest.TestCase):
+    def test_minimum_publish_interval_is_100ms_when_enabled(self) -> None:
+        c = VpOverlayConsolidator(publish_interval_ms=25)
+        self.assertEqual(c._publish_interval_ms, 100)  # noqa: SLF001
+
     def test_build_payload_shape(self) -> None:
         vp = {
             "topic": "market",

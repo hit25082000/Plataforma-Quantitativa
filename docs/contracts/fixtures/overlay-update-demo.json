@@ -63,11 +63,13 @@
       "labels_count": 3,
       "axis_status": "STABLE",
       "axis_source": "ocr",
+      "source": "ocr",
       "confidence": 0.93,
       "residual_px": 0.8,
       "max_error_px": 1.7,
       "bad_frames": 0,
       "pending_count": 0,
+      "pending_frames": 0,
       "pending_candidate": null
     },
     "lines": {
@@ -89,7 +91,102 @@
         "chart_top": 60,
         "chart_bottom": 720,
         "y_min": 99800,
-        "y_max": 101200
+        "y_max": 101200,
+        "max_targets_per_frame": 64,
+        "max_lines_per_frame": 64,
+        "max_axis_labels": 18
+      }
+    },
+    "histogram": {
+      "axis_deltas": {
+        "delta_first_last_value": -1000,
+        "delta_first_last_y": 416,
+        "delta_intervals": [
+          { "i": 0, "value_delta": -500, "y_delta": 208, "value_per_px_segment": 2.4038 }
+        ],
+        "labels_count": 3
+      },
+      "axis_diagnostics": {
+        "raw_labels": 5,
+        "kept_labels": 3,
+        "rejected": 2
+      }
+    },
+    "debug_visual": {
+      "ocr_labels": [
+        { "value": 101000, "y_screen": 120 },
+        { "value": 100500, "y_screen": 328 },
+        { "value": 100000, "y_screen": 536 }
+      ],
+      "regression": { "slope": -2.4, "intercept": 340.0, "value_per_px": 2.4 },
+      "analysis_roi": { "left": 32, "top": 48, "width": 420, "height": 300 },
+      "chart_bounds": {
+        "left": 80,
+        "top": 60,
+        "right": 1180,
+        "bottom": 720,
+        "width": 1100,
+        "height": 660
+      }
+    },
+    "overlay_target": [{ "id": 0, "value": 100500, "label": "POC 100500" }]
+  },
+  "blocks": {
+    "status": {
+      "state": "ok",
+      "axis_locked": true,
+      "analysis_roi": { "left": 32, "top": 48, "width": 420, "height": 300 },
+      "analysis_sample": { "text": "WINFUT", "numbers": [101000, 100500], "ts": 1714233600.0 },
+      "timestamp": 1714233600.0
+    },
+    "axis": {
+      "axis": { "slope": -2.4, "intercept": 340.0, "value_per_px": 2.4 },
+      "regression": { "slope": -2.4, "intercept": 340.0, "value_per_px": 2.4 },
+      "axis_labels": [
+        { "value": 101000, "y_screen": 120 },
+        { "value": 100500, "y_screen": 328 },
+        { "value": 100000, "y_screen": 536 }
+      ],
+      "ocr_labels": [
+        { "value": 101000, "y_screen": 120 },
+        { "value": 100500, "y_screen": 328 },
+        { "value": 100000, "y_screen": 536 }
+      ],
+      "labels_count": 3,
+      "axis_status": "STABLE",
+      "axis_source": "ocr",
+      "source": "ocr",
+      "confidence": 0.93,
+      "residual_px": 0.8,
+      "max_error_px": 1.7,
+      "bad_frames": 0,
+      "pending_count": 0,
+      "pending_frames": 0,
+      "pending_candidate": null
+    },
+    "lines": {
+      "items": [
+        {
+          "value": 100500,
+          "y_screen": 328,
+          "color": "#ff8c00",
+          "chart_left": 80,
+          "chart_right": 1180,
+          "label": "POC 100500",
+          "status": "visible",
+          "out_of_bounds": false
+        }
+      ],
+      "count": 1,
+      "target_count": 1,
+      "visual_limits": {
+        "chart_top": 60,
+        "chart_bottom": 720,
+        "y_min": 99800,
+        "y_max": 101200,
+        "max_targets_per_frame": 64,
+        "max_lines_per_frame": 64,
+        "max_axis_labels": 18
       }
     },
     "histogram": {
@@ -129,10 +226,12 @@
   "overlay_target": [{ "id": 0, "value": 100500, "label": "POC 100500" }],
   "axis_status": "STABLE",
   "axis_source": "ocr",
+  "source": "ocr",
   "confidence": 0.93,
   "residual_px": 0.8,
   "max_error_px": 1.7,
   "bad_frames": 0,
   "pending_count": 0,
+  "pending_frames": 0,
   "pending_candidate": null
 }

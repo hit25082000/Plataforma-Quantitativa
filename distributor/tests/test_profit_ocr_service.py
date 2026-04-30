@@ -35,6 +35,8 @@ class TestProfitOcrService(unittest.TestCase):
     def test_build_frame_debug_contains_core_fields(self) -> None:
         profit_ocr_service.axis_manager.status = "STABLE"
         profit_ocr_service.axis_manager.bad_frames = 2
+        profit_ocr_service.state["axis_status"] = "STABLE"
+        profit_ocr_service.state["axis_source"] = "ocr"
         out = profit_ocr_service._build_frame_debug(
             seq=7,
             window={"left": 1, "top": 2},
@@ -71,7 +73,10 @@ class TestProfitOcrService(unittest.TestCase):
                 rows = [json.loads(line) for line in fh if line.strip()]
 
         self.assertEqual(rows[0]["event"], "session_start")
-        self.assertEqual(rows[1], {"seq": 1, "status": "ok"})
+        self.assertEqual(rows[1]["seq"], 1)
+        self.assertEqual(rows[1]["status"], "ok")
+        self.assertIn("session_id", rows[1])
+        self.assertIn("render_indicators", rows[1])
 
     def test_debug_endpoint_returns_last_frame(self) -> None:
         profit_ocr_service.state["status"] = "ok"
@@ -89,10 +94,15 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(data["last_frame"]["seq"], 3)
         self.assertEqual(data["axis"]["intercept"], 120.0)
         self.assertIn("debug_visual", data)
+        self.assertIsInstance(data["debug_visual"], dict)
 
     def test_overlay_update_data_contract_blocks(self) -> None:
         profit_ocr_service.state["status"] = "ok"
-        profit_ocr_service.state["targets"] = [{"value": 100.0, "label": "POC"}]
+        profit_ocr_service.state["targets"] = [
+            {"value": 100.0, "label": "POC"},
+            {"value": 100.0, "label": "POC"},
+            {"value": 101.0, "label": "VAH"},
+        ]
         profit_ocr_service.state["lines"] = [{"value": 100.0, "y_screen": 200}]
         profit_ocr_service.state["axis_status"] = "STABLE"
         profit_ocr_service.state["axis_source"] = "ocr"
@@ -104,12 +114,17 @@ class TestProfitOcrService(unittest.TestCase):
         data = profit_ocr_service._build_overlay_update_data()
 
         self.assertIn("status", data)
+        self.assertIn("blocks", data)
         self.assertIn("structured", data)
         self.assertIn("status", data["structured"])
         self.assertIn("axis", data["structured"])
         self.assertIn("lines", data["structured"])
         self.assertIn("histogram", data["structured"])
         self.assertIn("debug_visual", data["structured"])
+        self.assertIn("status", data["blocks"])
+        self.assertIn("axis", data["blocks"])
+        self.assertIn("lines", data["blocks"])
+        self.assertIn("histogram", data["blocks"])
         self.assertIn("lines", data)
         self.assertEqual(data["status"], "ok")
         self.assertIsInstance(data["lines"], list)
@@ -117,13 +132,21 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(data["y_max"], 101.0)
         self.assertEqual(data["axis_status"], "STABLE")
         self.assertEqual(data["axis_source"], "ocr")
+        self.assertEqual(data["source"], "ocr")
         self.assertEqual(data["bad_frames"], 2)
+        self.assertEqual(data["pending_frames"], data["pending_count"])
         self.assertIn("ocr_labels", data["structured"]["axis"])
         self.assertIn("regression", data["structured"]["axis"])
         self.assertIn("labels_count", data["structured"]["axis"])
+        self.assertIn("source", data["structured"]["axis"])
+        self.assertIn("pending_frames", data["structured"]["axis"])
         self.assertIn("confidence", data)
         self.assertIn("residual_px", data)
         self.assertIsInstance(data["overlay_target"], list)
+        self.assertEqual(len(data["overlay_target"]), 2)
+        self.assertIn("max_targets_per_frame", data["structured"]["lines"]["visual_limits"])
+        self.assertIn("max_lines_per_frame", data["structured"]["lines"]["visual_limits"])
+        self.assertIn("max_axis_labels", data["structured"]["lines"]["visual_limits"])
         # Espelhos entre formato legado e bloco estruturado.
         self.assertEqual(data["status"], data["structured"]["status"]["state"])
         self.assertEqual(data["lines"], data["structured"]["lines"]["items"])
@@ -131,6 +154,7 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(data["axis_diagnostics"], data["structured"]["histogram"]["axis_diagnostics"])
         self.assertEqual(data["analysis_roi"], data["structured"]["status"]["analysis_roi"])
         self.assertEqual(data["analysis_sample"], data["structured"]["status"]["analysis_sample"])
+        self.assertEqual(data["blocks"], data["structured"])
 
     def test_overlay_update_fixture_matches_contract_shape(self) -> None:
         schema = _load_json(OVERLAY_UPDATE_SCHEMA_PATH)
@@ -144,6 +168,7 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsInstance(fixture["lines"], list)
         self.assertGreaterEqual(len(fixture["lines"]), 1)
         self.assertIn("structured", fixture)
+        self.assertIn("blocks", fixture)
         self.assertIn("status", fixture["structured"])
         self.assertIn("axis", fixture["structured"])
         self.assertIn("lines", fixture["structured"])
@@ -169,6 +194,9 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsInstance(fixture["structured"]["lines"]["items"], list)
         self.assertGreaterEqual(len(fixture["structured"]["lines"]["items"]), 1)
         self.assertIn("visual_limits", fixture["structured"]["lines"])
+        self.assertIn("max_targets_per_frame", fixture["structured"]["lines"]["visual_limits"])
+        self.assertIn("max_lines_per_frame", fixture["structured"]["lines"]["visual_limits"])
+        self.assertIn("max_axis_labels", fixture["structured"]["lines"]["visual_limits"])
 
         self.assertIn("axis_deltas", fixture["structured"]["histogram"])
         self.assertIn("axis_diagnostics", fixture["structured"]["histogram"])
@@ -189,11 +217,14 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(fixture["ts"], fixture["structured"]["status"]["timestamp"])
         self.assertEqual(fixture["axis_status"], fixture["structured"]["axis"]["axis_status"])
         self.assertEqual(fixture["axis_source"], fixture["structured"]["axis"]["axis_source"])
+        self.assertEqual(fixture["source"], fixture["structured"]["axis"]["source"])
         self.assertEqual(fixture["confidence"], fixture["structured"]["axis"]["confidence"])
         self.assertEqual(fixture["residual_px"], fixture["structured"]["axis"]["residual_px"])
         self.assertEqual(fixture["max_error_px"], fixture["structured"]["axis"]["max_error_px"])
         self.assertEqual(fixture["bad_frames"], fixture["structured"]["axis"]["bad_frames"])
         self.assertEqual(fixture["pending_count"], fixture["structured"]["axis"]["pending_count"])
+        self.assertEqual(fixture["pending_frames"], fixture["structured"]["axis"]["pending_frames"])
+        self.assertEqual(fixture["blocks"], fixture["structured"])
 
     def test_overlay_update_schema_defines_frozen_axis_and_line_contracts(self) -> None:
         schema = _load_json(OVERLAY_UPDATE_SCHEMA_PATH)
@@ -245,6 +276,26 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(axis_status, fixture["axis_status"])
         self.assertEqual(axis_source, fixture["axis_source"])
         self.assertEqual(bad_frames, fixture["bad_frames"])
+
+    def test_overlay_update_runtime_payload_keeps_contract_aliases(self) -> None:
+        profit_ocr_service.state["status"] = "ok"
+        profit_ocr_service.state["targets"] = [{"value": 100.0, "label": "POC"}]
+        profit_ocr_service.state["lines"] = [{"value": 100.0, "y_screen": 200}]
+        profit_ocr_service.state["axis_status"] = "STABLE"
+        profit_ocr_service.state["axis_source"] = "ocr"
+        profit_ocr_service.state["axis_bad_frames"] = 1
+        profit_ocr_service.state["axis_pending_count"] = 3
+        profit_ocr_service.state["axis_labels"] = None
+
+        payload = profit_ocr_service._build_overlay_update_data()
+        axis = payload["structured"]["axis"]
+
+        self.assertEqual(payload["source"], payload["axis_source"])
+        self.assertEqual(payload["pending_frames"], payload["pending_count"])
+        self.assertEqual(axis["source"], axis["axis_source"])
+        self.assertEqual(axis["pending_frames"], axis["pending_count"])
+        self.assertIsInstance(axis["axis_labels"], list)
+        self.assertIsInstance(axis["ocr_labels"], list)
 
     def test_overlay_update_fixture_supports_legacy_fields_consumption(self) -> None:
         fixture = _load_json(OVERLAY_UPDATE_FIXTURE_PATH)
@@ -307,6 +358,26 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(out["endpoint"], "manual_calibration")
         self.assertEqual(profit_ocr_service.axis_manager.status, "MANUAL_LOCKED")
         self.assertEqual(profit_ocr_service.state["axis_source"], "manual")
+
+    def test_manual_unlock_alias_restores_automatic_axis_mode(self) -> None:
+        body = profit_ocr_service.ManualAxisBody(
+            points=[
+                profit_ocr_service.ManualAxisPoint(value=100.0, y_screen=200.0),
+                profit_ocr_service.ManualAxisPoint(value=120.0, y_screen=100.0),
+            ]
+        )
+        asyncio.run(profit_ocr_service.manual_calibration_api(body))
+
+        out = asyncio.run(profit_ocr_service.manual_unlock_axis_api())
+
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["endpoint"], "manual_unlock")
+        self.assertEqual(profit_ocr_service.axis_manager.manual_locked, False)
+        self.assertIn(
+            profit_ocr_service.axis_manager.status,
+            {"RECALIBRATING", "CALIBRATING"},
+        )
+        self.assertEqual(profit_ocr_service.state["axis_source"], "none")
 
     def test_config_endpoint_standard_response(self) -> None:
         out = asyncio.run(profit_ocr_service.get_config())
@@ -476,6 +547,80 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsNotNone(mgr.feed(big_jump))
         self.assertEqual(mgr.status, "STABLE")
 
+    def test_is_candidate_valid_rejects_tick_when_applicable(self) -> None:
+        candidate = {
+            "labels_count": 4,
+            "tick_size": 5.0,
+            "tick_valid": False,
+            "monotonic_valid": True,
+            "confidence": 0.99,
+            "residual_px": 0.1,
+            "max_error_px": 0.3,
+        }
+        self.assertFalse(profit_ocr_service.is_candidate_valid(candidate))
+
+    def test_is_candidate_valid_allows_tick_when_not_applicable(self) -> None:
+        candidate = {
+            "labels_count": 4,
+            "tick_size": 0.0,
+            "tick_valid": False,
+            "monotonic_valid": True,
+            "confidence": 0.99,
+            "residual_px": 0.1,
+            "max_error_px": 0.3,
+        }
+        self.assertTrue(profit_ocr_service.is_candidate_valid(candidate))
+
+    def test_is_candidate_valid_applies_monotonic_only_with_3_plus_labels(self) -> None:
+        low_labels_candidate = {
+            "labels_count": 2,
+            "tick_size": 5.0,
+            "tick_valid": True,
+            "monotonic_valid": False,
+            "confidence": 0.99,
+            "residual_px": 0.1,
+            "max_error_px": 0.3,
+        }
+        self.assertTrue(profit_ocr_service.is_candidate_valid(low_labels_candidate))
+
+        many_labels_candidate = dict(low_labels_candidate)
+        many_labels_candidate["labels_count"] = 4
+        self.assertFalse(profit_ocr_service.is_candidate_valid(many_labels_candidate))
+
+    def test_is_candidate_valid_accepts_threshold_boundaries(self) -> None:
+        candidate = {
+            "labels_count": 3,
+            "tick_size": 5.0,
+            "tick_valid": True,
+            "monotonic_valid": True,
+            "confidence": profit_ocr_service.AXIS_MIN_CONFIDENCE,
+            "residual_px": profit_ocr_service.AXIS_MAX_RESIDUAL_PX,
+            "max_error_px": profit_ocr_service.AXIS_MAX_ERROR_PX,
+        }
+        self.assertTrue(profit_ocr_service.is_candidate_valid(candidate))
+
+    def test_is_candidate_valid_rejects_threshold_overflow(self) -> None:
+        base = {
+            "labels_count": 3,
+            "tick_size": 5.0,
+            "tick_valid": True,
+            "monotonic_valid": True,
+            "confidence": 0.95,
+            "residual_px": 0.1,
+            "max_error_px": 0.2,
+        }
+        low_confidence = dict(base)
+        low_confidence["confidence"] = profit_ocr_service.AXIS_MIN_CONFIDENCE - 1e-9
+        self.assertFalse(profit_ocr_service.is_candidate_valid(low_confidence))
+
+        high_residual = dict(base)
+        high_residual["residual_px"] = profit_ocr_service.AXIS_MAX_RESIDUAL_PX + 1e-9
+        self.assertFalse(profit_ocr_service.is_candidate_valid(high_residual))
+
+        high_max_error = dict(base)
+        high_max_error["max_error_px"] = profit_ocr_service.AXIS_MAX_ERROR_PX + 1e-9
+        self.assertFalse(profit_ocr_service.is_candidate_valid(high_max_error))
+
     def test_apply_line_y_smoothing_deadband_and_ema(self) -> None:
         old_alpha = profit_ocr_service.LINE_Y_SMOOTH_ALPHA
         old_deadband = profit_ocr_service.LINE_Y_DEADBAND_PX
@@ -587,6 +732,99 @@ class TestProfitOcrService(unittest.TestCase):
         }
         self.assertFalse(profit_ocr_service._should_skip_render(frame))
         self.assertTrue(profit_ocr_service._should_skip_render(frame))
+
+    def test_status_endpoint_is_lightweight_for_polling(self) -> None:
+        profit_ocr_service.state["status"] = "ok"
+        profit_ocr_service.state["axis_status"] = "STABLE"
+        profit_ocr_service.state["axis_source"] = "ocr"
+        profit_ocr_service.state["axis_bad_frames"] = 1
+        profit_ocr_service.state["axis_pending_count"] = 0
+        profit_ocr_service.state["axis_confidence"] = 0.9
+        profit_ocr_service.state["axis_residual_px"] = 0.2
+        profit_ocr_service.state["axis_max_error_px"] = 1.1
+        profit_ocr_service.state["frame_seq"] = 42
+        profit_ocr_service.state["lines"] = [{"value": 100.0, "y_screen": 120}]
+        profit_ocr_service.state["targets"] = [{"value": 100.0, "label": "POC"}]
+        profit_ocr_service.state["last_update"] = 123.0
+
+        body = asyncio.run(profit_ocr_service.get_status())
+        data = body["data"]
+
+        self.assertEqual(data["status"], "ok")
+        self.assertEqual(data["axis_status"], "STABLE")
+        self.assertEqual(data["lines_count"], 1)
+        self.assertEqual(data["targets_count"], 1)
+        self.assertIn("uptime_sec", data)
+        self.assertNotIn("overlay_update", data)
+        self.assertNotIn("lines", data)
+
+    def test_status_endpoint_remains_light_even_with_heavy_state(self) -> None:
+        profit_ocr_service.state["status"] = "ok"
+        profit_ocr_service.state["axis_status"] = "STABLE"
+        profit_ocr_service.state["axis_source"] = "ocr"
+        profit_ocr_service.state["axis_labels"] = [{"value": 1.0, "y_screen": 2.0}] * 50
+        profit_ocr_service.state["axis_pending_candidate"] = {"confidence": 0.8}
+        profit_ocr_service.state["analysis_sample"] = {"blob": "x" * 5000}
+        profit_ocr_service.state["last_frame"] = {"payload": "x" * 5000}
+
+        body = asyncio.run(profit_ocr_service.get_status())
+        data = body["data"]
+
+        self.assertNotIn("axis_labels", data)
+        self.assertNotIn("axis_pending_candidate", data)
+        self.assertNotIn("analysis_sample", data)
+        self.assertNotIn("last_frame", data)
+
+    def test_status_endpoint_normalizes_axis_contract_fields(self) -> None:
+        profit_ocr_service.state["status"] = None
+        profit_ocr_service.state["axis_status"] = None
+        profit_ocr_service.state["axis_source"] = "unexpected"
+        profit_ocr_service.axis_manager.status = "SUSPECT"
+
+        body = asyncio.run(profit_ocr_service.get_status())
+        data = body["data"]
+
+        self.assertEqual(data["status"], "")
+        self.assertEqual(data["axis_status"], "SUSPECT")
+        self.assertEqual(data["axis_source"], "none")
+
+    def test_reset_axis_quality_metrics_zeros_all_values(self) -> None:
+        profit_ocr_service.state["axis_confidence"] = 0.9
+        profit_ocr_service.state["axis_residual_px"] = 1.7
+        profit_ocr_service.state["axis_max_error_px"] = 3.2
+
+        profit_ocr_service._reset_axis_quality_metrics()
+
+        self.assertEqual(profit_ocr_service.state["axis_confidence"], 0.0)
+        self.assertEqual(profit_ocr_service.state["axis_residual_px"], 0.0)
+        self.assertEqual(profit_ocr_service.state["axis_max_error_px"], 0.0)
+
+    def test_append_trace_line_injects_render_indicators_from_state(self) -> None:
+        old_lines = profit_ocr_service.state.get("lines")
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = os.path.join(tmp, "ocr_overlay_trace.jsonl")
+                os.environ["PQ_OCR_TRACE_PATH"] = path
+                profit_ocr_service.OCR_TRACE_PATH = path
+                profit_ocr_service.AUDIT_TRAIL.trace_path = path
+                profit_ocr_service.AUDIT_TRAIL._session_header_written = False
+                profit_ocr_service.state["lines"] = [
+                    {"status": "visible", "out_of_bounds": False},
+                    {"status": "hidden", "out_of_bounds": True},
+                ]
+                profit_ocr_service._append_trace_line({"seq": 10})
+
+                with open(path, "r", encoding="utf-8") as fh:
+                    rows = [json.loads(line) for line in fh if line.strip()]
+
+            frame = rows[1]
+            self.assertEqual(frame["session_id"], profit_ocr_service.TRACE_SESSION_ID)
+            indicators = frame["render_indicators"]
+            self.assertEqual(indicators["line_count_total"], 2)
+            self.assertEqual(indicators["line_count_visible"], 1)
+            self.assertEqual(indicators["line_count_out_of_bounds"], 1)
+        finally:
+            profit_ocr_service.state["lines"] = old_lines
 
 
 if __name__ == "__main__":

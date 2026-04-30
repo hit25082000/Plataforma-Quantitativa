@@ -1,0 +1,86 @@
+{
+  "runner": "run_ovr_stab_field_bundle.py",
+  "generated_at_iso": "2026-04-30T18:56:58Z",
+  "steps": [
+    {
+      "id": "step_03_readiness",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "scripts/verify_ovr_stab_g8_readiness.py",
+        "--qa-manifest",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-final-pass\\summary.manifest.json",
+        "--stress-manifest",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-ws-stress-regression-final-pass\\summary.manifest.json"
+      ],
+      "exit_code": 0,
+      "ok": true,
+      "elapsed_s": 0.093,
+      "stdout_log": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\step_03_readiness.stdout.log",
+      "stderr_log": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\step_03_readiness.stderr.log"
+    }
+  ],
+  "qa": {
+    "dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-final-pass",
+    "manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-final-pass\\summary.manifest.json",
+    "required": false,
+    "ok": true,
+    "artifacts_ok": true,
+    "artifacts_check": {
+      "ok": true,
+      "missing": [],
+      "checked_count": 5
+    }
+  },
+  "stress": {
+    "dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-ws-stress-regression-final-pass",
+    "manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-ws-stress-regression-final-pass\\summary.manifest.json",
+    "required": false,
+    "ok": true,
+    "artifacts_ok": true,
+    "artifacts_check": {
+      "ok": true,
+      "missing": [],
+      "checked_count": 3
+    }
+  },
+  "readiness": {
+    "dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-g8-readiness-20260430-145658",
+    "manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-g8-readiness-20260430-145658\\summary.manifest.json",
+    "ok": false
+  },
+  "cen03_incident_packages_check": {
+    "ok": true,
+    "checked_incidents": 0,
+    "errors": [
+      "field_report_not_provided"
+    ]
+  },
+  "manual_gaps": [
+    "CEN-02: campo pendente/nao aprovado",
+    "CEN-03: campo pendente/nao aprovado",
+    "CEN-04: campo pendente/nao aprovado",
+    "CEN-05: campo pendente/nao aprovado"
+  ],
+  "artifacts": {
+    "summary_md": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\summary.md",
+    "summary_manifest": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\summary.manifest.json",
+    "field_execution_checklist": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\field_execution.checklist.md",
+    "cen04_drift_worksheet": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\cen04_drift_worksheet.md",
+    "cen02_operator_template": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\cen02.operator.template.md",
+    "cen02_minimum_checks": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\cen02.minimum_checks.json",
+    "commands_ready_md": "distributor\\logs\\ovr-stab-field-bundle-cen04-worksheet-check\\commands.ready.md"
+  },
+  "bundle_artifacts_ok": true,
+  "bundle_artifacts_check": {
+    "ok": true,
+    "missing": [],
+    "checked_count": 7
+  },
+  "bundle_runner_logs_ok": true,
+  "bundle_runner_logs_check": {
+    "ok": true,
+    "missing": [],
+    "checked_count": 2
+  },
+  "strict_ok": false
+}

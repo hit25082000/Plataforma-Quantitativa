@@ -14,6 +14,7 @@ import {
   topSellerByVolFin,
 } from "../utils/agentVolume";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
+import { hasMeaningfulLineDiff } from "../utils/overlayRenderDiff";
 
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
@@ -583,17 +584,27 @@ export function useProfitOverlay() {
               console.info(`[overlay-latency] first_overlay_ok elapsed_ms=${ms}`);
               firstOverlayLoggedRef.current = true;
             }
-            setState((prev) => ({
-              ...prev,
-              status: parsed.status,
-              lines: parsed.lines,
-              y_min: parsed.yMin,
-              y_max: parsed.yMax,
-              axis_deltas: parsed.axisDeltas,
-              axis_diagnostics: parsed.axisDiagnostics,
-              analysisRoi: (parsed.analysisRoi as OcrAnalysisRoi | null | undefined) ?? null,
-              analysisSample: (parsed.analysisSample as OcrAnalysisSample | null | undefined) ?? null,
-            }));
+            setState((prev) => {
+              const shouldUpdateLines = hasMeaningfulLineDiff(prev.lines, parsed.lines);
+              const hasMetaDiff =
+                prev.status !== parsed.status ||
+                prev.y_min !== parsed.yMin ||
+                prev.y_max !== parsed.yMax ||
+                prev.axis_deltas !== parsed.axisDeltas ||
+                prev.axis_diagnostics !== parsed.axisDiagnostics;
+              if (!shouldUpdateLines && !hasMetaDiff) return prev;
+              return {
+                ...prev,
+                status: parsed.status,
+                lines: shouldUpdateLines ? parsed.lines : prev.lines,
+                y_min: parsed.yMin,
+                y_max: parsed.yMax,
+                axis_deltas: parsed.axisDeltas,
+                axis_diagnostics: parsed.axisDiagnostics,
+                analysisRoi: (parsed.analysisRoi as OcrAnalysisRoi | null | undefined) ?? null,
+                analysisSample: (parsed.analysisSample as OcrAnalysisSample | null | undefined) ?? null,
+              };
+            });
           }
         } catch {
           // ignore parse errors

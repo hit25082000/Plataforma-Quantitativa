@@ -43,6 +43,7 @@ pub fn run() {
             commands::freeze_profit_ocr,
             commands::unfreeze_profit_ocr,
             commands::manual_calibrate_profit_ocr,
+            commands::unlock_manual_profit_ocr,
         ])
         .setup(|app| {
             shared_memory_ipc::start_reader(app.handle().clone());

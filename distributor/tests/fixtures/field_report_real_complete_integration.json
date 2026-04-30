@@ -1,0 +1,168 @@
+{
+  "scenarios": {
+    "CEN-01": {
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen01/screenshot"
+    },
+    "CEN-02": {
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen02/report",
+      "transition_evidence": [
+        {
+          "transition_state": "SUSPECT",
+          "observed": true,
+          "screenshot_ref": "artifact://cen02/suspect.png",
+          "trace_ref": "artifact://cen02/suspect.jsonl",
+          "status_endpoint_ref": "artifact://cen02/suspect.status.json",
+          "expected_vs_observed": "SUSPECT confirmado em zoom-in",
+          "trigger_action": "zoom-in",
+          "observed_at_utc": "2026-04-30T14:10:00Z"
+        },
+        {
+          "transition_state": "FROZEN",
+          "observed": true,
+          "screenshot_ref": "artifact://cen02/frozen.png",
+          "trace_ref": "artifact://cen02/frozen.jsonl",
+          "status_endpoint_ref": "artifact://cen02/frozen.status.json",
+          "expected_vs_observed": "FROZEN confirmado durante ruido",
+          "freeze_duration_ms": "2800",
+          "observed_at_utc": "2026-04-30T14:10:05Z"
+        },
+        {
+          "transition_state": "RECALIBRATING",
+          "observed": true,
+          "screenshot_ref": "artifact://cen02/recalibrating.png",
+          "trace_ref": "artifact://cen02/recalibrating.jsonl",
+          "status_endpoint_ref": "artifact://cen02/recalibrating.status.json",
+          "expected_vs_observed": "RECALIBRATING com retorno STABLE",
+          "stable_return_ref": "artifact://cen02/stable-return.png",
+          "observed_at_utc": "2026-04-30T14:10:09Z"
+        }
+      ]
+    },
+    "CEN-03": {
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen03/incident-package",
+      "incident_packages": [
+        {
+          "incident_id": "CEN-03-INC-READY-001",
+          "expected_vs_observed_by_channel": {
+            "hud": {
+              "expected": "axis_status=FROZEN",
+              "observed": "axis_status=FROZEN",
+              "evidence_ref": "artifact://cen03/hud.png"
+            },
+            "status_endpoint": {
+              "expected": "bad_frames increase during degradation",
+              "observed": "bad_frames=4 and recovery to STABLE",
+              "evidence_ref": "artifact://cen03/status.json"
+            },
+            "trace_jsonl": {
+              "expected": "transition to STABLE after recovery",
+              "observed": "transition to STABLE logged after recovery",
+              "evidence_ref": "artifact://cen03/trace.jsonl"
+            }
+          },
+          "observed_state_transitions": [
+            "STABLE->FROZEN|RECALIBRATING",
+            "FROZEN|RECALIBRATING->STABLE"
+          ],
+          "evidence_ref": [
+            "artifact://cen03/a.png",
+            "artifact://cen03/b.jsonl",
+            "artifact://cen03/c.log"
+          ]
+        }
+      ]
+    },
+    "CEN-04": {
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen04/worksheet",
+      "monitor_dpi_matrix": [
+        {
+          "monitor_id": "monitor-1",
+          "dpi_percent": 100,
+          "transition": "baseline-open",
+          "bounds_ok": true,
+          "overlay_ok": true,
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/m1.png"
+        },
+        {
+          "monitor_id": "monitor-2",
+          "dpi_percent": 125,
+          "transition": "move-to-monitor",
+          "bounds_ok": true,
+          "overlay_ok": true,
+          "drift_px": 1.1,
+          "evidence_ref": "artifact://cen04/m2.png"
+        },
+        {
+          "monitor_id": "monitor-3",
+          "dpi_percent": 150,
+          "transition": "move-to-monitor",
+          "bounds_ok": true,
+          "overlay_ok": true,
+          "drift_px": 1.2,
+          "evidence_ref": "artifact://cen04/m3.png"
+        }
+      ],
+      "drift_steps": [
+        {
+          "step_id": "open_window_on_baseline_monitor",
+          "monitor_id": "monitor-1",
+          "dpi_percent": 100,
+          "axis_status_before": "STABLE",
+          "axis_status_after": "STABLE",
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/s1"
+        },
+        {
+          "step_id": "move_window_to_next_monitor",
+          "monitor_id": "monitor-2",
+          "dpi_percent": 125,
+          "axis_status_before": "STABLE",
+          "axis_status_after": "RECALIBRATING",
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/s2"
+        },
+        {
+          "step_id": "minimize_window_on_target_monitor",
+          "monitor_id": "monitor-2",
+          "dpi_percent": 125,
+          "axis_status_before": "RECALIBRATING",
+          "axis_status_after": "FROZEN",
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/s3"
+        },
+        {
+          "step_id": "restore_window_on_target_monitor",
+          "monitor_id": "monitor-2",
+          "dpi_percent": 125,
+          "axis_status_before": "FROZEN",
+          "axis_status_after": "RECALIBRATING",
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/s4"
+        },
+        {
+          "step_id": "move_window_back_to_baseline_monitor",
+          "monitor_id": "monitor-3",
+          "dpi_percent": 150,
+          "axis_status_before": "RECALIBRATING",
+          "axis_status_after": "STABLE",
+          "drift_px": 1.0,
+          "evidence_ref": "artifact://cen04/s5"
+        }
+      ]
+    },
+    "CEN-05": {
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen05/stress"
+    }
+  }
+}

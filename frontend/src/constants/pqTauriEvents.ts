@@ -22,7 +22,7 @@ export const PQ_OCR_RECALIBRATING_EVENT = "pq:ocr-recalibrating";
 /** Evento canônico para status de OCR overlay (recalibrate/freeze/status). */
 export const PQ_OCR_OVERLAY_STATUS_EVENT = "pq:ocr-overlay-status";
 
-export type PqOcrOverlayAction = "recalibrate" | "freeze";
+export type PqOcrOverlayAction = "recalibrate" | "freeze" | "manual";
 export type PqOcrOverlayStatus = "start" | "ok" | "error" | "released";
 
 export type PqOcrOverlayStatusPayload = {

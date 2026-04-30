@@ -1,0 +1,141 @@
+{
+  "runner": "verify_cen05_preflight.py",
+  "generated_at_iso": "2026-04-30T19:28:24Z",
+  "preflight_ok": false,
+  "preopen_status_code": "PREOPEN_BLOCKED",
+  "checks": [
+    {
+      "check_id": "artifacts",
+      "status": "PASS",
+      "preopen_status_code": "OK",
+      "details": "artefatos presentes em C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-ws-stress-regression-final-pass",
+      "missing": [],
+      "next_step": "nenhum"
+    },
+    {
+      "check_id": "thresholds",
+      "status": "PASS",
+      "preopen_status_code": "OK",
+      "details": "stress gate aprovado (overall_ok=true e gate.ok=true)",
+      "failures": [],
+      "next_step": "nenhum"
+    },
+    {
+      "check_id": "commands",
+      "status": "FAIL",
+      "preopen_status_code": "COMMANDS_FILE_MISSING",
+      "details": "commands.ready.md ausente",
+      "missing_snippets": [
+        "run_overlay_ws_stress_regression.py",
+        "run_ovr_stab_qa_evidence.py",
+        "verify_ovr_stab_g8_readiness.py"
+      ],
+      "next_step": "gerar bundle de campo: python scripts/run_ovr_stab_field_bundle.py --strict"
+    },
+    {
+      "check_id": "bundle",
+      "status": "FAIL",
+      "preopen_status_code": "BUNDLE_MANIFEST_MISSING",
+      "details": "bundle summary.manifest.json ausente",
+      "next_step": "executar: python scripts/run_ovr_stab_field_bundle.py --strict"
+    },
+    {
+      "check_id": "readiness",
+      "status": "FAIL",
+      "preopen_status_code": "READINESS_G8_OR_CEN05_FAILED",
+      "details": "readiness nao aprovado para G8/CEN-05 (C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-g8-readiness-20260430-152824\\summary.manifest.json)",
+      "next_step": "reexecutar verify_ovr_stab_g8_readiness.py com evidencias de campo atualizadas"
+    },
+    {
+      "check_id": "environment",
+      "status": "FAIL",
+      "preopen_status_code": "ENVIRONMENT_NOT_READY",
+      "details": "vars ausentes: PROFIT_DLL_USER, PROFIT_DLL_PASSWORD, PQ_PROFIT_DLL_PATH",
+      "missing_env": [
+        "PROFIT_DLL_USER",
+        "PROFIT_DLL_PASSWORD",
+        "PQ_PROFIT_DLL_PATH"
+      ],
+      "next_step": "configurar variaveis de ambiente da sessao real e executar em host Windows"
+    },
+    {
+      "check_id": "freshness",
+      "status": "FAIL",
+      "preopen_status_code": "FRESHNESS_WINDOW_EXCEEDED",
+      "details": "artefatos fora da janela de pre-abertura (21600s)",
+      "stale": [
+        "commands_file:missing",
+        "bundle_manifest:missing"
+      ],
+      "next_step": "regerar bundle/readiness/stress imediatamente antes da abertura"
+    }
+  ],
+  "operational_messages": [
+    "PREOPEN-BLOCK: CEN-05 bloqueado ate correcoes obrigatorias.",
+    "COMMANDS: gerar bundle de campo: python scripts/run_ovr_stab_field_bundle.py --strict",
+    "BUNDLE: executar: python scripts/run_ovr_stab_field_bundle.py --strict",
+    "READINESS: reexecutar verify_ovr_stab_g8_readiness.py com evidencias de campo atualizadas",
+    "ENVIRONMENT: configurar variaveis de ambiente da sessao real e executar em host Windows",
+    "FRESHNESS: regerar bundle/readiness/stress imediatamente antes da abertura"
+  ],
+  "next_actions": [
+    {
+      "priority": 1,
+      "check_id": "commands",
+      "status_code": "COMMANDS_FILE_MISSING",
+      "action": "gerar bundle de campo: python scripts/run_ovr_stab_field_bundle.py --strict",
+      "command": "python scripts/run_ovr_stab_field_bundle.py --strict",
+      "exit_criteria": "commands com status PASS no proximo verify_cen05_preflight."
+    },
+    {
+      "priority": 2,
+      "check_id": "bundle",
+      "status_code": "BUNDLE_MANIFEST_MISSING",
+      "action": "executar: python scripts/run_ovr_stab_field_bundle.py --strict",
+      "command": "python scripts/run_ovr_stab_field_bundle.py --strict",
+      "exit_criteria": "bundle com status PASS no proximo verify_cen05_preflight."
+    },
+    {
+      "priority": 3,
+      "check_id": "readiness",
+      "status_code": "READINESS_G8_OR_CEN05_FAILED",
+      "action": "reexecutar verify_ovr_stab_g8_readiness.py com evidencias de campo atualizadas",
+      "command": "python scripts/verify_ovr_stab_g8_readiness.py --strict",
+      "exit_criteria": "readiness com status PASS no proximo verify_cen05_preflight."
+    },
+    {
+      "priority": 4,
+      "check_id": "environment",
+      "status_code": "ENVIRONMENT_NOT_READY",
+      "action": "configurar variaveis de ambiente da sessao real e executar em host Windows",
+      "command": "set PROFIT_DLL_USER=... && set PROFIT_DLL_PASSWORD=... && set PQ_PROFIT_DLL_PATH=...",
+      "exit_criteria": "environment com status PASS no proximo verify_cen05_preflight."
+    },
+    {
+      "priority": 5,
+      "check_id": "freshness",
+      "status_code": "FRESHNESS_WINDOW_EXCEEDED",
+      "action": "regerar bundle/readiness/stress imediatamente antes da abertura",
+      "command": "python scripts/run_overlay_ws_stress_regression.py && python scripts/run_ovr_stab_field_bundle.py --strict && python scripts/verify_ovr_stab_g8_readiness.py --strict",
+      "exit_criteria": "freshness com status PASS no proximo verify_cen05_preflight."
+    },
+    {
+      "priority": 6,
+      "check_id": "final_recheck",
+      "status_code": "PREOPEN_BLOCKED",
+      "action": "Reexecutar preflight estrito apos correcoes.",
+      "command": "python scripts/verify_cen05_preflight.py --strict",
+      "exit_criteria": "preflight_ok=true e preopen_status_code=PREOPEN_GO."
+    }
+  ],
+  "inputs": {
+    "stress_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-ws-stress-regression-final-pass\\summary.manifest.json",
+    "commands_file": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-field-bundle-cen03-semantic-check\\commands.ready.md",
+    "bundle_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-field-bundle-cen03-semantic-check\\summary.manifest.json",
+    "readiness_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-g8-readiness-20260430-152824\\summary.manifest.json"
+  },
+  "artifacts": {
+    "summary_md": "distributor\\logs\\ovr-stab-field-bundle-cen03-semantic-check\\preopen\\summary.md",
+    "summary_manifest": "distributor\\logs\\ovr-stab-field-bundle-cen03-semantic-check\\preopen\\summary.manifest.json"
+  }
+}

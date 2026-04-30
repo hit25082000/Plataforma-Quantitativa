@@ -205,19 +205,53 @@ export interface VpOverlayMessage {
   demo?: boolean;
 }
 
+export interface OverlayDebugVisualAxisLabel {
+  value: number;
+  y_screen: number;
+}
+
+export interface OverlayDebugVisualRegression {
+  slope?: number;
+  intercept?: number;
+  value_per_px?: number;
+}
+
+export interface OverlayDebugVisualRect {
+  left?: number;
+  top?: number;
+  width?: number;
+  height?: number;
+}
+
+export interface OverlayDebugVisualPayload {
+  ocr_labels?: OverlayDebugVisualAxisLabel[];
+  regression?: OverlayDebugVisualRegression;
+  analysis_roi?: OverlayDebugVisualRect;
+  chart_bounds?: OverlayDebugVisualRect;
+}
+
+export interface VpOverlayHealthDebug {
+  data_status?: string;
+  axis_stale_ms?: number;
+  last_trade_age_ms?: number;
+  last_overlay_publish_age_ms?: number;
+  last_overlay_publish_age_sec?: number;
+  overlay_age_state?: "fresh" | "stale" | "missing";
+  ocr_confidence?: number;
+  axis_status?: string;
+  axis_source?: string;
+  bad_frames?: number;
+  pending_frames?: number;
+  labels_count?: number;
+  residual_px?: number;
+  max_error_px?: number;
+  slope?: number;
+  intercept?: number;
+  value_per_px?: number;
+}
+
 export interface VpOverlayDebugMessage extends VpOverlayMessage {
-  health: VpOverlayMessage["health"] & {
-    data_status?: string;
-    axis_stale_ms?: number;
-    last_trade_age_ms?: number;
-    last_overlay_publish_age_ms?: number;
-    last_overlay_publish_age_sec?: number;
-    overlay_age_state?: "fresh" | "stale" | "missing";
-    ocr_confidence?: number;
-    axis_status?: string;
-    axis_source?: string;
-    bad_frames?: number;
-  };
+  health: VpOverlayMessage["health"] & VpOverlayHealthDebug;
 }
 
 export interface BrokerSnapshotMessage {

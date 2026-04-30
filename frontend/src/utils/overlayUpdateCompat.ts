@@ -20,6 +20,7 @@ export interface OverlayUpdateCompatPayload {
   lines: OverlayCompatLine[];
   yMin: number | null;
   yMax: number | null;
+  confidence: number | null;
   axisDeltas: OcrAxisDeltas | null;
   axisDiagnostics: Record<string, unknown> | null;
   analysisRoi: Record<string, unknown> | null;
@@ -27,6 +28,13 @@ export interface OverlayUpdateCompatPayload {
   axisStatus: string | null;
   axisSource: string | null;
   badFrames: number | null;
+  pendingFrames: number | null;
+  labelsCount: number | null;
+  residualPx: number | null;
+  maxErrorPx: number | null;
+  slope: number | null;
+  intercept: number | null;
+  valuePerPx: number | null;
   debugVisual: Record<string, unknown> | null;
 }
 
@@ -94,14 +102,31 @@ function asAxisDeltas(value: unknown): OcrAxisDeltas | null {
 export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompatPayload | null {
   const envelope = asRecord(message);
   if (!envelope) return null;
-  if (envelope.type !== "overlay_update") return null;
+  const envelopeType = asStringOrNull(envelope.type);
+  const hasCompatTopLevelFields =
+    "status" in envelope ||
+    "lines" in envelope ||
+    "structured" in envelope ||
+    "blocks" in envelope ||
+    "axis_status" in envelope;
+  if (envelopeType != null && envelopeType !== "overlay_update") return null;
+  if (envelopeType == null && !hasCompatTopLevelFields) return null;
 
-  const data = asRecord(envelope.data) ?? asRecord(envelope.payload) ?? {};
-  const structured = asRecord(data.structured);
+  const data =
+    asRecord(envelope.data) ??
+    asRecord(envelope.payload) ??
+    (envelopeType == null ? envelope : {});
+  const blocks = asRecord(data.blocks);
+  const structured = asRecord(data.structured) ?? blocks;
   const statusBlock = asRecord(data.status) ?? asRecord(structured?.status);
-  const linesBlock = asRecord(data.lines) ?? asRecord(structured?.lines);
-  const histogramBlock = asRecord(data.histogram) ?? asRecord(structured?.histogram);
-  const axisBlock = asRecord(data.axis) ?? asRecord(structured?.axis);
+  const linesBlock =
+    asRecord(data.lines) ?? asRecord(structured?.lines) ?? asRecord(blocks?.lines);
+  const histogramBlock =
+    asRecord(data.histogram) ??
+    asRecord(structured?.histogram) ??
+    asRecord(blocks?.histogram);
+  const axisBlock =
+    asRecord(data.axis) ?? asRecord(structured?.axis) ?? asRecord(blocks?.axis);
   const linesVisualLimits = asRecord(linesBlock?.visual_limits);
   const debugVisualBlock =
     asRecord(data.debug_visual) ?? asRecord(structured?.debug_visual);
@@ -137,11 +162,46 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     asNumberOrNull(data.y_max) ?? asNumberOrNull(linesVisualLimits?.y_max);
 
   const axisStatus =
-    asStringOrNull(data.axis_status) ?? asStringOrNull(axisBlock?.axis_status);
+    asStringOrNull(data.axis_status) ??
+    asStringOrNull(axisBlock?.axis_status);
   const axisSource =
-    asStringOrNull(data.axis_source) ?? asStringOrNull(axisBlock?.axis_source);
+    asStringOrNull(data.axis_source) ??
+    asStringOrNull(data.source) ??
+    asStringOrNull(axisBlock?.axis_source) ??
+    asStringOrNull(axisBlock?.source);
+  const confidence =
+    asNumberOrNull(data.confidence) ?? asNumberOrNull(axisBlock?.confidence);
   const badFrames =
     asNumberOrNull(data.bad_frames) ?? asNumberOrNull(axisBlock?.bad_frames);
+  const pendingFrames =
+    asNumberOrNull(data.pending_count) ??
+    asNumberOrNull(data.pending_frames) ??
+    asNumberOrNull(axisBlock?.pending_count) ??
+    asNumberOrNull(axisBlock?.pending_frames);
+  const labelsCount =
+    asNumberOrNull(data.labels_count) ??
+    asNumberOrNull(axisBlock?.labels_count) ??
+    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.labels_count);
+  const residualPx =
+    asNumberOrNull(data.residual_px) ??
+    asNumberOrNull(axisBlock?.residual_px) ??
+    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.residual_px);
+  const maxErrorPx =
+    asNumberOrNull(data.max_error_px) ??
+    asNumberOrNull(axisBlock?.max_error_px) ??
+    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.max_error_px);
+  const slope =
+    asNumberOrNull(data.slope) ??
+    asNumberOrNull(axisBlock?.slope) ??
+    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.slope);
+  const intercept =
+    asNumberOrNull(data.intercept) ??
+    asNumberOrNull(axisBlock?.intercept) ??
+    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.intercept);
+  const valuePerPx =
+    asNumberOrNull(data.value_per_px) ??
+    asNumberOrNull(axisBlock?.value_per_px) ??
+    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.value_per_px);
 
   const analysisRoi =
     asRecord(data.analysis_roi) ?? asRecord(statusBlock?.analysis_roi);
@@ -154,6 +214,7 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     lines,
     yMin,
     yMax,
+    confidence,
     axisDeltas:
       asAxisDeltas(data.axis_deltas) ?? asAxisDeltas(histogramBlock?.axis_deltas),
     axisDiagnostics:
@@ -163,6 +224,13 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     axisStatus,
     axisSource,
     badFrames,
+    pendingFrames,
+    labelsCount,
+    residualPx,
+    maxErrorPx,
+    slope,
+    intercept,
+    valuePerPx,
     debugVisual: debugVisualBlock,
   };
 }

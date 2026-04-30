@@ -1,0 +1,36 @@
+{
+  "scenarios": [
+    {
+      "scenario_id": "CEN-01",
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen01/screenshot"
+    },
+    {
+      "scenario_id": "CEN-02",
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_refs": {
+        "trace_jsonl": "artifact://cen02/trace"
+      }
+    },
+    {
+      "scenario_id": "CEN-03",
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen03/incident-package"
+    },
+    {
+      "scenario_id": "CEN-04",
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen04/worksheet"
+    },
+    {
+      "scenario_id": "CEN-05",
+      "session_type": "manual-field",
+      "result": "pass",
+      "evidence_ref": "artifact://cen05/stress"
+    }
+  ]
+}

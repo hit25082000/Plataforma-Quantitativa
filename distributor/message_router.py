@@ -1,6 +1,7 @@
 """Message routing with JSON validation and dom_snapshot throttling."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -103,6 +104,8 @@ class MessageRouter:
         self._ui_flush_loop_lag_ms_total = 0.0
         self._ui_flush_loop_count = 0
         self._ui_skipped_due_no_clients = 0
+        self._ui_skipped_same_payload = 0
+        self._ui_last_visual_hash_by_key: dict[str, str] = {}
         self._last_market_messages: deque[dict[str, Any]] = deque(maxlen=20)
         self._last_trade_messages: deque[dict[str, Any]] = deque(maxlen=20)
         self._last_vp_events: deque[dict[str, Any]] = deque(maxlen=20)
@@ -343,10 +346,16 @@ class MessageRouter:
 
     async def _enqueue_latest_visual(self, msg: dict[str, Any]) -> None:
         key = self._visual_key(msg)
+        compact = json.dumps(msg, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+        digest = hashlib.sha256(compact.encode("utf-8")).hexdigest()
         async with self._ui_lock:
+            if self._ui_last_visual_hash_by_key.get(key) == digest:
+                self._ui_skipped_same_payload += 1
+                return
             if key in self._ui_latest_by_key:
                 self._ui_replaced_count += 1
             self._ui_latest_by_key[key] = msg
+            self._ui_last_visual_hash_by_key[key] = digest
             self._ui_aggregated_count += 1
 
     async def _enqueue_trade(self, msg: dict[str, Any]) -> None:
@@ -487,6 +496,7 @@ class MessageRouter:
             "ui_replaced_count": self._ui_replaced_count,
             "ui_trade_batched_count": self._ui_trade_batched_count,
             "ui_skipped_due_no_clients": self._ui_skipped_due_no_clients,
+            "ui_skipped_same_payload": self._ui_skipped_same_payload,
             "ui_flush_duration_ms": self._ui_flush_duration_ms_total / max(1, self._ui_flushed_count),
             "ui_flush_loop_lag_ms": self._ui_flush_loop_lag_ms_total / max(1, self._ui_flush_loop_count),
         }

@@ -1,0 +1,261 @@
+{
+  "runner": "verify_ovr_stab_g8_readiness.py",
+  "contract_version": "1.1",
+  "generated_at_iso": "2026-04-30T20:22:38Z",
+  "g8_ready": false,
+  "classification_counts": {
+    "FALSE_NEGATIVE_RISK": 3,
+    "CONFIRMED_NOT_READY": 2
+  },
+  "executive_summary": {
+    "status": "FAIL",
+    "g8_ready": false,
+    "top_blockers": [
+      {
+        "scenario_id": "CEN-01",
+        "gap_id": "GAP-CEN-01-LOCAL",
+        "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-01.state=missing)"
+      },
+      {
+        "scenario_id": "CEN-02",
+        "gap_id": "GAP-CEN-02-LOCAL",
+        "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-02.state=missing)"
+      },
+      {
+        "scenario_id": "CEN-03",
+        "gap_id": "GAP-CEN-03-LOCAL",
+        "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-03.state=missing)"
+      }
+    ],
+    "blocker_count": 7,
+    "recommendation": "Bloquear promocao e tratar top blockers antes do proximo gate."
+  },
+  "scenario_results": [
+    {
+      "scenario_id": "CEN-01",
+      "title": "Parado 60s",
+      "ovr_id": "OVR-STAB-QA-01",
+      "status": "FAIL",
+      "classification": "FALSE_NEGATIVE_RISK",
+      "diagnosis": "campo indica pronto, mas validacao local falhou (risco de falso negativo)",
+      "next_action": "auditar gate local (ovr_status.OVR-STAB-QA-01.state=missing) e alinhar regra com evidencia real confirmada de CEN-01",
+      "local_validation": {
+        "pass": false,
+        "details": "ovr_status.OVR-STAB-QA-01.state=missing"
+      },
+      "field_validation": {
+        "pass": true,
+        "evidence_ref": "artifact://cen01/screenshot",
+        "details": "pass=true",
+        "issues": [],
+        "incident_evidence_index": {}
+      },
+      "gaps": [
+        {
+          "gap_id": "GAP-CEN-01-LOCAL",
+          "status": "FAIL",
+          "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-01.state=missing)"
+        }
+      ],
+      "diagnostics": {
+        "local_pass": false,
+        "field_pass": true,
+        "local_details": "ovr_status.OVR-STAB-QA-01.state=missing",
+        "field_details": "pass=true",
+        "field_issue_count": 0,
+        "gap_count": 1
+      }
+    },
+    {
+      "scenario_id": "CEN-02",
+      "title": "Zoom/escala",
+      "ovr_id": "OVR-STAB-QA-02",
+      "status": "FAIL",
+      "classification": "FALSE_NEGATIVE_RISK",
+      "diagnosis": "campo indica pronto, mas validacao local falhou (risco de falso negativo)",
+      "next_action": "auditar gate local (ovr_status.OVR-STAB-QA-02.state=missing) e alinhar regra com evidencia real confirmada de CEN-02",
+      "local_validation": {
+        "pass": false,
+        "details": "ovr_status.OVR-STAB-QA-02.state=missing"
+      },
+      "field_validation": {
+        "pass": true,
+        "evidence_ref": "artifact://cen02/trace",
+        "details": "CEN-02:SUSPECT:missing_transition|acao:registrar evento SUSPECT no transition_evidence com evidencias completas,CEN-02:FROZEN:missing_transition|acao:registrar evento FROZEN no transition_evidence com evidencias completas,CEN-02:RECALIBRATING:missing_transition|acao:registrar evento RECALIBRATING no transition_evidence com evidencias completas",
+        "issues": [
+          "CEN-02:SUSPECT:missing_transition|acao:registrar evento SUSPECT no transition_evidence com evidencias completas",
+          "CEN-02:FROZEN:missing_transition|acao:registrar evento FROZEN no transition_evidence com evidencias completas",
+          "CEN-02:RECALIBRATING:missing_transition|acao:registrar evento RECALIBRATING no transition_evidence com evidencias completas"
+        ],
+        "incident_evidence_index": {}
+      },
+      "gaps": [
+        {
+          "gap_id": "GAP-CEN-02-LOCAL",
+          "status": "FAIL",
+          "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-02.state=missing)"
+        }
+      ],
+      "diagnostics": {
+        "local_pass": false,
+        "field_pass": true,
+        "local_details": "ovr_status.OVR-STAB-QA-02.state=missing",
+        "field_details": "CEN-02:SUSPECT:missing_transition|acao:registrar evento SUSPECT no transition_evidence com evidencias completas,CEN-02:FROZEN:missing_transition|acao:registrar evento FROZEN no transition_evidence com evidencias completas,CEN-02:RECALIBRATING:missing_transition|acao:registrar evento RECALIBRATING no transition_evidence com evidencias completas",
+        "field_issue_count": 3,
+        "gap_count": 1
+      }
+    },
+    {
+      "scenario_id": "CEN-03",
+      "title": "OCR degradado",
+      "ovr_id": "OVR-STAB-QA-03",
+      "status": "FAIL",
+      "classification": "CONFIRMED_NOT_READY",
+      "diagnosis": "local e campo convergem para falha (ovr_status.OVR-STAB-QA-03.state=missing; CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report,CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report)",
+      "next_action": "tratar causa raiz de CEN-03, repetir validacao local e anexar evidence_ref de campo",
+      "local_validation": {
+        "pass": false,
+        "details": "ovr_status.OVR-STAB-QA-03.state=missing"
+      },
+      "field_validation": {
+        "pass": false,
+        "evidence_ref": "artifact://cen03/incident-package",
+        "details": "CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report,CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report",
+        "issues": [
+          "CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report",
+          "CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report"
+        ],
+        "incident_evidence_index": {}
+      },
+      "gaps": [
+        {
+          "gap_id": "GAP-CEN-03-LOCAL",
+          "status": "FAIL",
+          "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-03.state=missing)"
+        },
+        {
+          "gap_id": "GAP-CEN-03-FIELD",
+          "status": "FAIL",
+          "reason": "field-report invalido: CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report,CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report"
+        }
+      ],
+      "diagnostics": {
+        "local_pass": false,
+        "field_pass": false,
+        "local_details": "ovr_status.OVR-STAB-QA-03.state=missing",
+        "field_details": "CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report,CEN-03.incident_packages_missing_or_empty|acao:corrigir incident_packages (canais hud/status_endpoint/trace_jsonl, transicoes e evidence_ref) e reenviar report",
+        "field_issue_count": 2,
+        "gap_count": 2
+      }
+    },
+    {
+      "scenario_id": "CEN-04",
+      "title": "Multi-monitor DPI",
+      "ovr_id": "OVR-STAB-QA-04",
+      "status": "FAIL",
+      "classification": "CONFIRMED_NOT_READY",
+      "diagnosis": "local e campo convergem para falha (ovr_status.OVR-STAB-QA-04.state=missing; CEN-04:missing_monitor_dpi_matrix|acao:preencher monitor_dpi_matrix com 100/125/150)",
+      "next_action": "tratar causa raiz de CEN-04, repetir validacao local e anexar evidence_ref de campo",
+      "local_validation": {
+        "pass": false,
+        "details": "ovr_status.OVR-STAB-QA-04.state=missing"
+      },
+      "field_validation": {
+        "pass": false,
+        "evidence_ref": "artifact://cen04/worksheet",
+        "details": "CEN-04:missing_monitor_dpi_matrix|acao:preencher monitor_dpi_matrix com 100/125/150",
+        "issues": [
+          "CEN-04:missing_monitor_dpi_matrix|acao:preencher monitor_dpi_matrix com 100/125/150"
+        ],
+        "incident_evidence_index": {}
+      },
+      "gaps": [
+        {
+          "gap_id": "GAP-CEN-04-LOCAL",
+          "status": "FAIL",
+          "reason": "evidencia local insuficiente (ovr_status.OVR-STAB-QA-04.state=missing)"
+        },
+        {
+          "gap_id": "GAP-CEN-04-FIELD",
+          "status": "FAIL",
+          "reason": "field-report invalido: CEN-04:missing_monitor_dpi_matrix|acao:preencher monitor_dpi_matrix com 100/125/150"
+        }
+      ],
+      "diagnostics": {
+        "local_pass": false,
+        "field_pass": false,
+        "local_details": "ovr_status.OVR-STAB-QA-04.state=missing",
+        "field_details": "CEN-04:missing_monitor_dpi_matrix|acao:preencher monitor_dpi_matrix com 100/125/150",
+        "field_issue_count": 1,
+        "gap_count": 2
+      }
+    },
+    {
+      "scenario_id": "CEN-05",
+      "title": "Carga real",
+      "ovr_id": "OVR-STAB-QA-05",
+      "status": "FAIL",
+      "classification": "FALSE_NEGATIVE_RISK",
+      "diagnosis": "campo indica pronto, mas validacao local falhou (risco de falso negativo)",
+      "next_action": "auditar gate local (stress_gate_ok=0) e alinhar regra com evidencia real confirmada de CEN-05",
+      "local_validation": {
+        "pass": false,
+        "details": "stress_gate_ok=0"
+      },
+      "field_validation": {
+        "pass": true,
+        "evidence_ref": "artifact://cen05/stress",
+        "details": "pass=true",
+        "issues": [],
+        "incident_evidence_index": {}
+      },
+      "gaps": [
+        {
+          "gap_id": "GAP-CEN-05-LOCAL",
+          "status": "FAIL",
+          "reason": "manifesto ausente ou gate inválido"
+        }
+      ],
+      "diagnostics": {
+        "local_pass": false,
+        "field_pass": true,
+        "local_details": "stress_gate_ok=0",
+        "field_details": "pass=true",
+        "field_issue_count": 0,
+        "gap_count": 1
+      }
+    }
+  ],
+  "artifacts": {
+    "summary_md": "distributor\\logs\\g8-readiness-executive-example\\summary.md",
+    "summary_manifest": "distributor\\logs\\g8-readiness-executive-example\\summary.manifest.json"
+  },
+  "inputs": {
+    "qa_manifest": "distributor\\tests\\fixtures\\qa_manifest.sample.json",
+    "stress_manifest": "distributor\\tests\\fixtures\\stress_manifest.sample.json",
+    "field_report": "distributor\\tests\\fixtures\\field_report_real_integration.json"
+  },
+  "field_report_validation": {
+    "global_issues": [],
+    "scenario_issues": {
+      "CEN-02": [
+        "CEN-02:SUSPECT:missing_transition|acao:registrar evento SUSPECT no transition_evidence com evidencias completas",
+        "CEN-02:FROZEN:missing_transition|acao:registrar evento FROZEN no transition_evidence com evidencias completas",
+        "CEN-02:RECALIBRATING:missing_transition|acao:registrar evento RECALIBRATING no transition_evidence com evidencias completas"
+      ]
+    }
+  },
+  "report_contract": {
+    "scenario_results_required_fields": [
+      "scenario_id",
+      "status",
+      "classification",
+      "diagnosis",
+      "next_action",
+      "local_validation",
+      "field_validation",
+      "gaps",
+      "diagnostics"
+    ]
+  }
+}

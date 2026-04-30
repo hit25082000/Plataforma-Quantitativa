@@ -1,0 +1,65 @@
+{
+  "scenario_id": "CEN-02",
+  "required_transitions": [
+    "SUSPECT",
+    "FROZEN",
+    "RECALIBRATING"
+  ],
+  "required_steps": [
+    "capturar_baseline_estavel_5s",
+    "aplicar_zoom_in_progressivo",
+    "aplicar_zoom_out_progressivo",
+    "ajustar_escala_vertical_manual",
+    "aguardar_retorno_stable_pos_evento"
+  ],
+  "minimum_gates": {
+    "required_transitions_count": {
+      "op": ">=",
+      "value": 3
+    },
+    "stable_return_required": {
+      "op": "==",
+      "value": 1
+    },
+    "drift_px_max_after_stable": {
+      "op": "<=",
+      "value": 3.0
+    },
+    "evidence_ref_coverage_ratio": {
+      "op": "==",
+      "value": 1.0
+    }
+  },
+  "required_transition_evidence_fields": [
+    "screenshot_ref",
+    "trace_ref",
+    "status_endpoint_ref",
+    "expected_vs_observed"
+  ],
+  "required_fields": {
+    "steps": [
+      "step_id",
+      "executed",
+      "timestamp_utc",
+      "action",
+      "axis_status_before",
+      "axis_status_after",
+      "stable_reached",
+      "evidence_ref"
+    ],
+    "transitions": [
+      "transition_state",
+      "observed",
+      "event_timestamp_utc",
+      "pre_window_ref",
+      "post_window_ref",
+      "trigger_action",
+      "drift_px_peak",
+      "evidence_ref",
+      "screenshot_ref",
+      "trace_ref",
+      "status_endpoint_ref",
+      "expected_vs_observed"
+    ]
+  }
+}

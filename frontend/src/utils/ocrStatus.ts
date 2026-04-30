@@ -3,6 +3,7 @@ const WAITING_STATUSES = new Set([
   "warming_up",
   "idle",
   "ocr_axis_warming",
+  "reconnecting",
 ]);
 
 export interface OcrAxisDeltaInterval {
@@ -27,7 +28,8 @@ function extractInsufficientLabels(status: string): number | null {
 }
 
 export function overlayStatusColor(status: string): string {
-  if (status === "ok") return "#00FF88";
+  if (status === "ok" || status === "stable") return "#00FF88";
+  if (status === "degraded" || status === "unstable") return "#FFB800";
   if (WAITING_STATUSES.has(status)) return "#FFB800";
   return "#FF4444";
 }
@@ -66,7 +68,16 @@ export function overlayStatusText(
     return status.replace(/^open_failed:\s*/i, "Falha ao abrir overlay: ");
   }
   if (status === "ocr_unreachable_retrying") {
-    return "OCR indisponível (tentando reconectar; em PC lento aguarde mais 1–2 min).";
+    return "OCR indisponível (reconectando automaticamente; mantenha o overlay aberto e aguarde 1-2 min).";
+  }
+  if (status === "degraded") {
+    return "OCR degradado (dados parciais ou atrasados).";
+  }
+  if (status === "unstable") {
+    return "OCR instável (variação de leitura em monitoramento).";
+  }
+  if (status === "reconnecting") {
+    return "OCR: reconectando serviço…";
   }
   if (status.startsWith("error:")) {
     return status.replace(/^error:\s*/i, "Erro OCR: ");

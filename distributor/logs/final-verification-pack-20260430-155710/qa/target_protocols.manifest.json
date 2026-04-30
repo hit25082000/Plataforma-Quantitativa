@@ -1,0 +1,477 @@
+{
+  "runner": "run_ovr_stab_qa_evidence.py",
+  "scope": "target-protocols-ovr-stab-aud-qa-obs",
+  "artifact_naming": {
+    "pattern": "ovr-stab-<scenario_id>-<artifact_kind>-<utc_compact>.<ext>",
+    "allowed_artifact_kinds": [
+      "screenshot",
+      "video",
+      "trace",
+      "log-snippet",
+      "manifest-ref"
+    ],
+    "utc_compact_example": "20260430T174500Z"
+  },
+  "targets": {
+    "OVR-STAB-AUD-04": {
+      "title": "Coleta 60s com grafico parado",
+      "objective": "Isolar jitter em cenario estavel e atribuir causa observavel por sinais de eixo/render.",
+      "acceptance_criteria": [
+        "captura de 60s registrada com resumo de variacao por frame",
+        "manifesto inclui sinalizacao de causa provavel: label/regressao/render",
+        "evidencia organizada em json/md/csv com links para logs da sessao"
+      ],
+      "manual_dependencies": [
+        "sessao Profit/replay com grafico parado por 60s"
+      ],
+      "local_tooling_ready": true,
+      "evidence_state": "pending-field",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ]
+      }
+    },
+    "OVR-STAB-AUD-05": {
+      "title": "Coleta com mudanca de zoom/escala",
+      "objective": "Documentar transicoes de estado durante troca de escala e validar comportamento de congelamento/recalibracao.",
+      "acceptance_criteria": [
+        "eventos de zoom/escala anotados com timestamp e descricao",
+        "transicoes SUSPECT/FROZEN/RECALIBRATING aparecem na evidencia",
+        "trace aponta janela pre-evento e pos-evento com correlacao"
+      ],
+      "manual_dependencies": [
+        "acao manual de zoom/escala no grafico"
+      ],
+      "local_tooling_ready": true,
+      "evidence_state": "pending-field",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ],
+        "cen02_execution_steps": [
+          "capturar_baseline_estavel_5s",
+          "aplicar_zoom_in_progressivo",
+          "aplicar_zoom_out_progressivo",
+          "ajustar_escala_vertical_manual",
+          "aguardar_retorno_stable_pos_evento"
+        ],
+        "cen02_required_transitions": [
+          "SUSPECT",
+          "FROZEN",
+          "RECALIBRATING"
+        ],
+        "cen02_transition_required_fields": [
+          "transition_state",
+          "observed",
+          "event_timestamp_utc",
+          "pre_window_ref",
+          "post_window_ref",
+          "trigger_action",
+          "drift_px_peak",
+          "evidence_ref"
+        ],
+        "cen02_step_required_fields": [
+          "step_id",
+          "executed",
+          "timestamp_utc",
+          "action",
+          "axis_status_before",
+          "axis_status_after",
+          "stable_reached",
+          "evidence_ref"
+        ],
+        "cen02_quality_gates": {
+          "required_transitions_count": {
+            "op": ">=",
+            "value": 3
+          },
+          "stable_return_required": {
+            "op": "==",
+            "value": 1
+          },
+          "drift_px_max_after_stable": {
+            "op": "<=",
+            "value": 3.0
+          },
+          "evidence_ref_coverage_ratio": {
+            "op": "==",
+            "value": 1.0
+          }
+        }
+      }
+    },
+    "OVR-STAB-QA-03": {
+      "title": "Protocolo CEN-03 de OCR degradado",
+      "objective": "Padronizar a injeção/observação de OCR ruim com explicabilidade fim-a-fim em HUD/status/trace.",
+      "acceptance_criteria": [
+        "protocolo segue passos de injeção e recuperação do CEN-03 sem ambiguidade",
+        "sinais esperados por canal (HUD, status endpoint, trace jsonl) são mapeados e conferidos",
+        "evidência registra sintomas, causa provável e ação aplicada com referência objetiva"
+      ],
+      "manual_dependencies": [
+        "sessão Profit/replay com capacidade de induzir OCR degradado"
+      ],
+      "local_tooling_ready": true,
+      "evidence_state": "pending-field",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ],
+        "injection_protocol_steps": [
+          "capture_baseline_axis_stable",
+          "apply_ocr_degradation_injection",
+          "observe_status_transition_to_frozen_or_recalibrating",
+          "verify_last_stable_axis_preserved",
+          "remove_degradation_and_watch_recovery_to_stable"
+        ],
+        "operator_direct_flow": [
+          {
+            "step_id": "baseline_check",
+            "operator_action": "Confirmar axis_status=STABLE por 5s",
+            "expected_result": "baseline sem jitter e confidence estavel",
+            "evidence_required": "screenshot + trace_ref"
+          },
+          {
+            "step_id": "inject_degradation",
+            "operator_action": "Aplicar oclusao parcial no eixo ou reduzir contraste",
+            "expected_result": "queda de confidence/residual_px crescente",
+            "evidence_required": "video_ref ou screenshot sequencial"
+          },
+          {
+            "step_id": "confirm_protection",
+            "operator_action": "Acompanhar transicao para FROZEN/RECALIBRATING",
+            "expected_result": "last_stable_axis preservado sem salto abrupto",
+            "evidence_required": "trace_ref + status_endpoint_ref"
+          },
+          {
+            "step_id": "recover_signal",
+            "operator_action": "Remover degradacao e aguardar recuperacao",
+            "expected_result": "retorno para STABLE com drift controlado",
+            "evidence_required": "screenshot pos-recuperacao + trace_ref"
+          }
+        ],
+        "required_signals": {
+          "hud": [
+            "axis_status",
+            "axis_source",
+            "pending_frames",
+            "bad_frames",
+            "confidence",
+            "residual_px"
+          ],
+          "status_endpoint": [
+            "status",
+            "axis_status",
+            "axis_source",
+            "bad_frames",
+            "pending_count",
+            "confidence",
+            "residual_px",
+            "last_frame"
+          ],
+          "trace_jsonl": [
+            "timestamp_utc",
+            "frame_seq",
+            "axis_status",
+            "axis_source",
+            "bad_frames",
+            "pending_count",
+            "confidence",
+            "residual_px",
+            "max_error_px",
+            "last_stable_axis"
+          ]
+        },
+        "required_transitions": [
+          "STABLE->FROZEN|RECALIBRATING",
+          "FROZEN|RECALIBRATING->STABLE"
+        ],
+        "incident_minimum_evidence": {
+          "min_evidence_refs": 3,
+          "required_artifact_kinds": [
+            "screenshot",
+            "trace",
+            "log-snippet"
+          ],
+          "required_channels_with_expected_vs_observed": [
+            "hud",
+            "status_endpoint",
+            "trace_jsonl"
+          ],
+          "required_incident_fields": [
+            "incident_id",
+            "scenario_id",
+            "injection_method",
+            "injection_window_utc",
+            "symptom",
+            "observed_state_transitions",
+            "expected_signals_by_channel",
+            "observed_signals_by_channel",
+            "suspected_root_cause",
+            "action_taken",
+            "result",
+            "evidence_ref"
+          ]
+        },
+        "evidence_template_required_fields": [
+          "incident_id",
+          "scenario_id",
+          "injection_method",
+          "injection_window_utc",
+          "symptom",
+          "observed_state_transitions",
+          "expected_signals_by_channel",
+          "observed_signals_by_channel",
+          "suspected_root_cause",
+          "action_taken",
+          "result",
+          "evidence_ref"
+        ],
+        "incident_examples": [
+          {
+            "incident_id": "CEN-03-INC-EX-001",
+            "scenario_id": "CEN-03",
+            "symptom": "linhas POC/VAL congeladas durante oclusao parcial",
+            "suspected_root_cause": "OCR sem labels validas por contraste baixo temporario",
+            "action_taken": "mantido FROZEN ate remocao da oclusao",
+            "result": "pass",
+            "evidence_ref": [
+              "artifact://ovr-stab-CEN-03-screenshot-20260430T174500Z.png",
+              "artifact://ovr-stab-CEN-03-trace-20260430T174500Z.jsonl",
+              "artifact://ovr-stab-CEN-03-log-snippet-20260430T174500Z.txt"
+            ]
+          },
+          {
+            "incident_id": "CEN-03-INC-EX-002",
+            "scenario_id": "CEN-03",
+            "symptom": "recuperacao lenta para STABLE apos degradacao removida",
+            "suspected_root_cause": "pending_count alto durante janela de revalidacao",
+            "action_taken": "coleta adicional de 10s e comparacao expected_vs_observed",
+            "result": "fail",
+            "evidence_ref": [
+              "artifact://ovr-stab-CEN-03-screenshot-20260430T180000Z.png",
+              "artifact://ovr-stab-CEN-03-trace-20260430T180000Z.jsonl",
+              "artifact://ovr-stab-CEN-03-log-snippet-20260430T180000Z.txt"
+            ]
+          }
+        ]
+      }
+    },
+    "OVR-STAB-QA-04": {
+      "title": "Protocolo multi-monitor DPI 100/125/150",
+      "objective": "Garantir alinhamento de bounds/overlay ao mover janela entre monitores com DPI distintos.",
+      "acceptance_criteria": [
+        "execucao registrada para 100%, 125% e 150%",
+        "cada monitor possui status pass/fail e anexo de evidencia",
+        "manifesto inclui observacoes sobre drift e offset em pixels"
+      ],
+      "manual_dependencies": [
+        "ambiente com ao menos dois monitores e perfis DPI 100/125/150"
+      ],
+      "local_tooling_ready": true,
+      "evidence_state": "pending-field",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ],
+        "monitor_dpi_matrix": [
+          {
+            "monitor_id": "monitor-1",
+            "dpi_percent": 100,
+            "transition": "baseline-open"
+          },
+          {
+            "monitor_id": "monitor-2",
+            "dpi_percent": 125,
+            "transition": "move-to-monitor"
+          },
+          {
+            "monitor_id": "monitor-3",
+            "dpi_percent": 150,
+            "transition": "move-to-monitor"
+          }
+        ],
+        "reproduction_steps": [
+          "open_window_on_baseline_monitor",
+          "move_window_to_next_monitor",
+          "minimize_window_on_target_monitor",
+          "restore_window_on_target_monitor",
+          "move_window_back_to_baseline_monitor"
+        ],
+        "drift_collection_required_fields": [
+          "scenario_id",
+          "step_id",
+          "monitor_id",
+          "dpi_percent",
+          "timestamp_utc",
+          "axis_status_before",
+          "axis_status_after",
+          "drift_px",
+          "drift_band",
+          "evidence_ref"
+        ]
+      }
+    },
+    "OVR-STAB-QA-05": {
+      "title": "Protocolo de carga real CEN-05",
+      "objective": "Comprovar estabilidade simultanea de backlog, taxa de publish e FPS efetivo sob carga.",
+      "acceptance_criteria": [
+        "stress.csv e summary.manifest.json anexados com resultado por cenario",
+        "thresholds de backlog/publish/FPS avaliados de forma objetiva e rastreavel",
+        "nenhum cenario com backlog crescente ou jitter persistente de publish"
+      ],
+      "manual_dependencies": [
+        "execucao em horario de mercado ou replay representativo de alta carga"
+      ],
+      "local_tooling_ready": true,
+      "evidence_state": "pending-field",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ]
+      }
+    },
+    "OVR-STAB-OBS-09": {
+      "title": "Checklist estruturado de explicabilidade",
+      "objective": "Padronizar evidencias para explicar falhas sem depender de memoria operacional.",
+      "acceptance_criteria": [
+        "matriz sintoma->causa->sinal preenchida para cada incidente",
+        "campo de confianca da hipotese e proximo passo obrigatorios",
+        "bundle final possui md/json com referencias cruzadas"
+      ],
+      "manual_dependencies": [],
+      "local_tooling_ready": true,
+      "evidence_state": "ready-local",
+      "execution_template": {
+        "artifact_paths": [
+          "summary.csv",
+          "summary.md",
+          "target_protocols.manifest.json",
+          "target_protocols.checklist.md"
+        ],
+        "required_notes": [
+          "scenario_id",
+          "scenario",
+          "symptom",
+          "timestamps",
+          "observed_state_transitions",
+          "suspected_root_cause",
+          "observed_signal",
+          "next_action",
+          "evidence_ref",
+          "resultado"
+        ]
+      }
+    }
+  },
+  "cen05_threshold_contract": {
+    "queue_max": {
+      "op": "<=",
+      "value": 1
+    },
+    "backlog_growth_ratio": {
+      "op": "<=",
+      "value": 1.5
+    },
+    "latency_p95_ms": {
+      "op": "<=",
+      "value": 60.0
+    },
+    "latency_p99_ms": {
+      "op": "<=",
+      "value": 120.0
+    },
+    "consumer_fps": {
+      "op": ">=",
+      "value": 90.0
+    },
+    "publish_rate_floor_ratio": {
+      "op": ">=",
+      "value": 0.75
+    },
+    "publish_rate_overshoot_ratio": {
+      "op": "<=",
+      "value": 1.15
+    },
+    "publish_interval_jitter_cv": {
+      "op": "<=",
+      "value": 0.35
+    }
+  }
+}

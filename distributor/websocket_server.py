@@ -53,7 +53,21 @@ def _sanitize_error_details(raw: Any) -> Any:
         compact = " ".join(raw.split())
         return compact[:300] + ("..." if len(compact) > 300 else "")
     if isinstance(raw, dict):
-        allowed = {"error", "message", "reason", "status", "code", "detail", "details"}
+        allowed = {
+            "error",
+            "message",
+            "reason",
+            "status",
+            "code",
+            "detail",
+            "details",
+            "fields",
+            "field",
+            "required",
+            "min",
+            "max",
+            "value",
+        }
         sanitized: dict[str, Any] = {}
         for key in allowed:
             if key in raw:
@@ -99,6 +113,90 @@ def _ocr_overlay_url(path: str) -> str:
     return f"http://127.0.0.1:{OCR_OVERLAY_PORT}{path}"
 
 
+_OCR_CONFIG_LIMITS: dict[str, tuple[float, float]] = {
+    "refresh_ms": (120.0, 800.0),
+    "ws_publish_min_ms": (100.0, 2000.0),
+    "axis_max_bad_frames": (1.0, 120.0),
+    "line_y_smooth_alpha": (0.0, 1.0),
+    "line_y_snap_px": (1.0, 200.0),
+    "line_y_deadband_px": (0.0, 20.0),
+    "axis_blend_beta": (0.01, 1.0),
+    "axis_warmup_secs": (0.0, 120.0),
+    "min_conf": (0.0, 100.0),
+}
+
+_OCR_CONFIG_ALLOWED_FIELDS = set(_OCR_CONFIG_LIMITS)
+_OCR_CONFIG_INT_FIELDS = {
+    "refresh_ms",
+    "ws_publish_min_ms",
+    "axis_max_bad_frames",
+    "min_conf",
+}
+
+
+def _validate_ocr_overlay_config_payload(payload: Any) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise _ocr_error_response(
+            status_code=400,
+            endpoint="/api/ocr-overlay/config",
+            error_code="OCR_INVALID_PAYLOAD",
+            message="Payload inválido para configuração do OCR overlay.",
+            details={"reason": "payload_must_be_object"},
+        )
+    if not payload:
+        raise _ocr_error_response(
+            status_code=400,
+            endpoint="/api/ocr-overlay/config",
+            error_code="OCR_INVALID_PAYLOAD",
+            message="Payload inválido para configuração do OCR overlay.",
+            details={"reason": "payload_must_not_be_empty"},
+        )
+    unknown_fields = sorted(str(k) for k in payload if str(k) not in _OCR_CONFIG_ALLOWED_FIELDS)
+    if unknown_fields:
+        raise _ocr_error_response(
+            status_code=400,
+            endpoint="/api/ocr-overlay/config",
+            error_code="OCR_INVALID_PAYLOAD",
+            message="Payload inválido para configuração do OCR overlay.",
+            details={"reason": "unknown_fields", "fields": unknown_fields},
+        )
+
+    normalized: dict[str, Any] = {}
+    invalid_fields: list[dict[str, Any]] = []
+    for field, value in payload.items():
+        name = str(field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            invalid_fields.append({"field": name, "reason": "must_be_number"})
+            continue
+        num_value = float(value)
+        min_value, max_value = _OCR_CONFIG_LIMITS[name]
+        if num_value < min_value or num_value > max_value:
+            invalid_fields.append(
+                {
+                    "field": name,
+                    "reason": "out_of_range",
+                    "min": min_value,
+                    "max": max_value,
+                    "value": num_value,
+                }
+            )
+            continue
+        if name in _OCR_CONFIG_INT_FIELDS:
+            normalized[name] = int(round(num_value))
+        else:
+            normalized[name] = num_value
+
+    if invalid_fields:
+        raise _ocr_error_response(
+            status_code=400,
+            endpoint="/api/ocr-overlay/config",
+            error_code="OCR_INVALID_PAYLOAD",
+            message="Payload inválido para configuração do OCR overlay.",
+            details={"reason": "invalid_fields", "fields": invalid_fields},
+        )
+    return normalized
+
+
 def _ocr_overlay_proxy_sync(method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     data_bytes = None
     headers = {"Content-Type": "application/json"}
@@ -118,7 +216,28 @@ def _ocr_overlay_proxy_sync(method: str, path: str, payload: Optional[dict[str, 
 async def _ocr_overlay_proxy(method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
     endpoint = f"/api/ocr-overlay{path.removeprefix('/api/ocr-overlay')}"
     try:
-        return await asyncio.to_thread(_ocr_overlay_proxy_sync, method, path, payload)
+        response = await asyncio.to_thread(_ocr_overlay_proxy_sync, method, path, payload)
+        if not isinstance(response, dict):
+            raise _ocr_error_response(
+                status_code=503,
+                endpoint=endpoint,
+                error_code="OCR_DOWNSTREAM_BAD_PAYLOAD",
+                message="Resposta inválida do serviço OCR overlay.",
+                details={"type": str(type(response))},
+            )
+        if response.get("ok") is False:
+            raise _ocr_error_response(
+                status_code=503,
+                endpoint=endpoint,
+                error_code="OCR_DEGRADED_STATE",
+                message="Serviço OCR overlay em estado degradado.",
+                details={
+                    "downstream_endpoint": response.get("endpoint"),
+                    "error": response.get("error"),
+                    "meta": response.get("meta"),
+                },
+            )
+        return response
     except urllib.error.HTTPError as exc:
         detail_bytes = b""
         with suppress(Exception):
@@ -156,8 +275,8 @@ async def _ocr_overlay_proxy(method: str, path: str, payload: Optional[dict[str,
         raise _ocr_error_response(
             status_code=503,
             endpoint=endpoint,
-            error_code="OCR_DOWNSTREAM_HTTP_ERROR",
-            message=f"Falha HTTP no serviço OCR overlay ({exc.code}).",
+            error_code="OCR_DOWNSTREAM_UNAVAILABLE",
+            message=f"Serviço OCR overlay indisponível ({exc.code}).",
             details=parsed_detail,
         ) from exc
     except TimeoutError as exc:
@@ -176,6 +295,16 @@ async def _ocr_overlay_proxy(method: str, path: str, payload: Optional[dict[str,
             message="Timeout no serviço OCR overlay.",
             details=str(exc),
         ) from exc
+    except json.JSONDecodeError as exc:
+        raise _ocr_error_response(
+            status_code=503,
+            endpoint=endpoint,
+            error_code="OCR_DOWNSTREAM_BAD_PAYLOAD",
+            message="Resposta inválida do serviço OCR overlay.",
+            details=str(exc),
+        ) from exc
+    except HTTPException:
+        raise
     except Exception as exc:  # noqa: BLE001
         raise _ocr_error_response(
             status_code=503,
@@ -558,6 +687,15 @@ def create_app(
     async def ocr_overlay_unfreeze() -> dict[str, Any]:
         return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/unfreeze")
 
+    @app.get("/api/ocr-overlay/config")
+    async def ocr_overlay_config() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("GET", "/api/ocr-overlay/config")
+
+    @app.post("/api/ocr-overlay/config")
+    async def ocr_overlay_config_update(body: dict[str, Any]) -> dict[str, Any]:
+        payload = _validate_ocr_overlay_config_payload(body)
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/config", payload=payload)
+
     @app.post("/api/ocr-overlay/manual-calibration")
     async def ocr_overlay_manual_calibration(body: dict[str, Any]) -> dict[str, Any]:
         points = body.get("points")
@@ -570,6 +708,10 @@ def create_app(
                 details={"required": "points[] com pelo menos 2 itens"},
             )
         return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/manual-calibration", payload=body)
+
+    @app.post("/api/ocr-overlay/manual-unlock")
+    async def ocr_overlay_manual_unlock() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/manual-unlock")
 
     @app.websocket("/ws/tape-intelligence")
     async def ws_tape_intelligence(websocket: WebSocket) -> None:

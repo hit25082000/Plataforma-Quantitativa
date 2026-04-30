@@ -12,7 +12,7 @@ function asPayload(value: unknown): PqOcrOverlayStatusPayload | null {
   const raw = value as Record<string, unknown>;
   const action = raw.action;
   const status = raw.status;
-  if ((action !== "recalibrate" && action !== "freeze") || typeof status !== "string") {
+  if ((action !== "recalibrate" && action !== "freeze" && action !== "manual") || typeof status !== "string") {
     return null;
   }
   if (!["start", "ok", "error", "released"].includes(status)) {

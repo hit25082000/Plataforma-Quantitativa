@@ -1,0 +1,130 @@
+{
+  "runner": "run_overlay_ws_stress_regression.py",
+  "scope": "overlay_update_websocket_throttle_diff",
+  "started_at_epoch_s": 1777577987.8475516,
+  "finished_at_epoch_s": 1777577992.6319866,
+  "overall_ok": true,
+  "gate": {
+    "ok": true,
+    "failures": [],
+    "thresholds": {
+      "queue_max": 1,
+      "latency_p95_max_ms": 60.0,
+      "latency_p99_max_ms": 120.0,
+      "backlog_growth_ratio_max": 1.5,
+      "consumer_fps_min": 90.0,
+      "publish_rate_floor_ratio_min": 0.75,
+      "publish_rate_overshoot_ratio_max": 1.15,
+      "publish_interval_jitter_cv_max": 0.35,
+      "published_count_min": 1
+    },
+    "scenarios": [
+      {
+        "scenario": "hf_240hz_always_diff",
+        "ok": true,
+        "failures": []
+      },
+      {
+        "scenario": "hf_480hz_mixed_diff",
+        "ok": true,
+        "failures": []
+      },
+      {
+        "scenario": "hf_600hz_burst_diff",
+        "ok": true,
+        "failures": []
+      }
+    ]
+  },
+  "rows": [
+    {
+      "scenario": "hf_240hz_always_diff",
+      "duration_s": 12.0,
+      "frame_hz": 240.0,
+      "frames_produced": 2880,
+      "frames_consumed": 2880,
+      "queue_replaced": 0,
+      "queue_max": 1,
+      "published_count": 115,
+      "publish_rate_hz": 9.583,
+      "consumer_fps": 240.0,
+      "latency_p50_ms": 0.0,
+      "latency_p95_ms": 0.0,
+      "latency_p99_ms": 0.0,
+      "latency_max_ms": 0.0,
+      "latency_mean_ms": 0.0,
+      "latency_head_p95_ms": 0.0,
+      "latency_tail_p95_ms": 0.0,
+      "backlog_growth_ratio": 0.0,
+      "backlog_stable": true,
+      "throttle_ms": 100,
+      "send_cost_ms": 2,
+      "client_count": 2,
+      "theoretical_publish_rate_hz": 10.0,
+      "publish_rate_overshoot_ratio": 0.958,
+      "publish_rate_floor_ratio": 0.958,
+      "publish_interval_jitter_cv": 0.0
+    },
+    {
+      "scenario": "hf_480hz_mixed_diff",
+      "duration_s": 12.0,
+      "frame_hz": 480.0,
+      "frames_produced": 5760,
+      "frames_consumed": 3000,
+      "queue_replaced": 2760,
+      "queue_max": 1,
+      "published_count": 119,
+      "publish_rate_hz": 9.917,
+      "consumer_fps": 250.0,
+      "latency_p50_ms": 0.0,
+      "latency_p95_ms": 0.0,
+      "latency_p99_ms": 0.0,
+      "latency_max_ms": 0.0,
+      "latency_mean_ms": 0.0,
+      "latency_head_p95_ms": 0.0,
+      "latency_tail_p95_ms": 0.0,
+      "backlog_growth_ratio": 0.0,
+      "backlog_stable": true,
+      "throttle_ms": 100,
+      "send_cost_ms": 2,
+      "client_count": 2,
+      "theoretical_publish_rate_hz": 10.0,
+      "publish_rate_overshoot_ratio": 0.992,
+      "publish_rate_floor_ratio": 0.992,
+      "publish_interval_jitter_cv": 0.0
+    },
+    {
+      "scenario": "hf_600hz_burst_diff",
+      "duration_s": 10.0,
+      "frame_hz": 600.0,
+      "frames_produced": 6000,
+      "frames_consumed": 1112,
+      "queue_replaced": 4888,
+      "queue_max": 1,
+      "published_count": 79,
+      "publish_rate_hz": 7.9,
+      "consumer_fps": 111.2,
+      "latency_p50_ms": 0.0,
+      "latency_p95_ms": 0.0,
+      "latency_p99_ms": 0.0,
+      "latency_max_ms": 0.667,
+      "latency_mean_ms": 0.001,
+      "latency_head_p95_ms": 0.0,
+      "latency_tail_p95_ms": 0.0,
+      "backlog_growth_ratio": 0.0,
+      "backlog_stable": true,
+      "throttle_ms": 120,
+      "send_cost_ms": 3,
+      "client_count": 3,
+      "theoretical_publish_rate_hz": 8.333,
+      "publish_rate_overshoot_ratio": 0.948,
+      "publish_rate_floor_ratio": 0.948,
+      "publish_interval_jitter_cv": 0.0
+    }
+  ],
+  "artifacts": {
+    "stress_csv": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-153815\\stress\\stress.csv",
+    "summary_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-153815\\stress\\summary.md",
+    "summary_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\final-verification-pack-20260430-153815\\stress\\summary.manifest.json"
+  }
+}

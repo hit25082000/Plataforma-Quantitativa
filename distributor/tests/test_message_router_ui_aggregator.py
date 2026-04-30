@@ -53,8 +53,8 @@ class TestMessageRouterUiAggregator(unittest.TestCase):
                 )
                 await router.route(raw)
             await router.flush_ui_once()
-            self.assertEqual(len(manager.frames), 1)
-            payload = json.loads(manager.frames[0])
+            self.assertGreaterEqual(len(manager.frames), 1)
+            payload = json.loads(manager.frames[-1])
             self.assertEqual(payload.get("type"), "dom_snapshot")
             self.assertEqual(int(payload.get("seq", -1)), 99)
 
@@ -106,6 +106,74 @@ class TestMessageRouterUiAggregator(unittest.TestCase):
             self.assertEqual(payload.get("type"), "trade_batch")
             self.assertGreater(int(payload.get("batch_size", 0)), 0)
             self.assertIn("items", payload)
+
+        asyncio.run(run())
+
+    def test_trade_batch_respects_limit_and_aggregates_overflow(self) -> None:
+        async def run() -> None:
+            manager = _FakeConnectionManager()
+            router = message_router.MessageRouter(
+                manager,
+                throttle_ms=100,
+                agent007=_FakeAgent007(),
+                ui_snapshot_interval_ms=10,
+                ui_trade_batch_max_items=10,
+            )
+            for _ in range(25):
+                await router.route(
+                    json.dumps(
+                        {
+                            "topic": "market",
+                            "type": "trade",
+                            "ticker": "WINFUT",
+                            "price": 100000,
+                            "qty": 1,
+                            "side": "buy",
+                        }
+                    )
+                )
+            await router.flush_ui_once()
+            self.assertEqual(len(manager.frames), 1)
+            payload = json.loads(manager.frames[0])
+            self.assertEqual(payload.get("type"), "trade_batch")
+            self.assertEqual(int(payload.get("overflow_aggregated", -1)), 1)
+            self.assertEqual(int(payload.get("batch_size", -1)), 11)
+            items = payload.get("items", [])
+            self.assertEqual(len(items), 11)
+            self.assertEqual(items[-1].get("type"), "trade_agg")
+            self.assertEqual(int(items[-1].get("count", -1)), 15)
+            self.assertEqual(int(items[-1].get("qty", -1)), 15)
+
+        asyncio.run(run())
+
+    def test_latest_visual_skips_publish_when_payload_unchanged(self) -> None:
+        async def run() -> None:
+            manager = _FakeConnectionManager()
+            router = message_router.MessageRouter(
+                manager,
+                throttle_ms=100,
+                agent007=_FakeAgent007(),
+                ui_snapshot_interval_ms=10,
+                ui_trade_batch_max_items=20,
+            )
+            payload = {
+                "topic": "market",
+                "type": "dom_snapshot",
+                "ticker": "WINFUT",
+                "seq": 7,
+                "buy": [],
+                "sell": [],
+            }
+            await router.route(json.dumps(payload))
+            await router.flush_ui_once()
+            self.assertEqual(len(manager.frames), 1)
+
+            await router.route(json.dumps(payload))
+            await router.flush_ui_once()
+            self.assertEqual(len(manager.frames), 1)
+
+            metrics = router.metrics()
+            self.assertGreaterEqual(int(metrics.get("ui_skipped_same_payload", 0)), 1)
 
         asyncio.run(run())
 

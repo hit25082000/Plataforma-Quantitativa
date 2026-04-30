@@ -58,15 +58,23 @@ class TestRunOverlayWsStressRegression(unittest.TestCase):
                     "queue_max": 1,
                     "published_count": 9,
                     "publish_rate_hz": 9.0,
+                    "consumer_fps": 120.0,
                     "latency_p50_ms": 0.5,
                     "latency_p95_ms": 1.2,
                     "latency_p99_ms": 2.0,
                     "latency_max_ms": 3.0,
                     "latency_mean_ms": 0.7,
+                    "latency_head_p95_ms": 0.8,
+                    "latency_tail_p95_ms": 1.1,
+                    "backlog_growth_ratio": 1.375,
                     "backlog_stable": True,
                     "throttle_ms": 100,
                     "send_cost_ms": 2,
                     "client_count": 2,
+                    "theoretical_publish_rate_hz": 10.0,
+                    "publish_rate_overshoot_ratio": 0.9,
+                    "publish_rate_floor_ratio": 0.9,
+                    "publish_interval_jitter_cv": 0.2,
                 }
             ]
             csv_path = out_dir / "stress.csv"
@@ -84,6 +92,29 @@ class TestRunOverlayWsStressRegression(unittest.TestCase):
             self.assertIn("overall_ok", summary_path.read_text(encoding="utf-8"))
             parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(parsed["rows"][0]["scenario"], "ok")
+
+    def test_evaluate_rejects_backlog_growth_and_publish_overshoot(self) -> None:
+        rows = [
+            {
+                "scenario": "bad",
+                "queue_max": 1,
+                "latency_p95_ms": 5.0,
+                "latency_p99_ms": 10.0,
+                "published_count": 4,
+                "consumer_fps": 50.0,
+                "backlog_growth_ratio": 2.2,
+                "publish_rate_floor_ratio": 0.4,
+                "publish_rate_overshoot_ratio": 1.4,
+                "publish_interval_jitter_cv": 0.9,
+            }
+        ]
+        gate = runner.evaluate(rows)
+        self.assertFalse(gate["ok"])
+        self.assertTrue(any("backlog_growth_ratio" in item for item in gate["failures"]))
+        self.assertTrue(any("consumer_fps" in item for item in gate["failures"]))
+        self.assertTrue(any("publish_rate_floor_ratio" in item for item in gate["failures"]))
+        self.assertTrue(any("publish_rate_overshoot_ratio" in item for item in gate["failures"]))
+        self.assertTrue(any("publish_interval_jitter_cv" in item for item in gate["failures"]))
 
 
 if __name__ == "__main__":

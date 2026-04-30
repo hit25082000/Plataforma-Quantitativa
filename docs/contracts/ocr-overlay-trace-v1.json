@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/ocr-overlay-trace-v1.json",
+  "title": "ocr_overlay_trace_jsonl",
+  "version": "1.0.0",
+  "description": "Contrato minimo de eventos JSONL para auditoria OCR/overlay.",
+  "type": "object",
+  "oneOf": [
+    { "$ref": "#/$defs/session_start_event" },
+    { "$ref": "#/$defs/frame_event" }
+  ],
+  "$defs": {
+    "session_start_event": {
+      "type": "object",
+      "required": ["event", "event_id", "session_id", "started_at"],
+      "properties": {
+        "event": { "const": "session_start" },
+        "event_id": { "const": "session_start" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "symbol": { "type": "string" },
+        "refresh_ms": { "type": "integer", "minimum": 1 },
+        "started_at": { "type": "string", "minLength": 1 },
+        "pid": { "type": "integer", "minimum": 1 },
+        "hostname": { "type": "string" }
+      }
+    },
+    "status_transition": {
+      "type": "object",
+      "required": ["from", "to", "changed"],
+      "properties": {
+        "from": { "type": ["string", "null"] },
+        "to": { "type": ["string", "null"] },
+        "changed": { "type": "boolean" }
+      }
+    },
+    "render_indicators": {
+      "type": "object",
+      "required": ["line_count_total", "line_count_visible", "line_count_out_of_bounds"],
+      "properties": {
+        "line_count_total": { "type": "integer", "minimum": 0 },
+        "line_count_visible": { "type": "integer", "minimum": 0 },
+        "line_count_out_of_bounds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "frame_event": {
+      "type": "object",
+      "required": [
+        "event",
+        "event_id",
+        "session_id",
+        "seq",
+        "frame_seq",
+        "ts",
+        "timestamp_utc",
+        "status",
+        "render_indicators",
+        "status_transition"
+      ],
+      "properties": {
+        "event": { "const": "frame" },
+        "event_id": { "const": "frame" },
+        "session_id": { "type": "string", "minLength": 1 },
+        "seq": { "type": "integer", "minimum": 0 },
+        "frame_seq": { "type": "integer", "minimum": 0 },
+        "ts": { "type": "string", "minLength": 1 },
+        "timestamp_utc": { "type": "string", "minLength": 1 },
+        "status": { "type": "string", "minLength": 1 },
+        "labels": { "type": "array" },
+        "axis_fit": { "type": "object" },
+        "axis_live": { "type": "object" },
+        "rendered_lines": { "type": "array" },
+        "render_indicators": { "$ref": "#/$defs/render_indicators" },
+        "status_transition": { "$ref": "#/$defs/status_transition" }
+      }
+    }
+  }
+}
