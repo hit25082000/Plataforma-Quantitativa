@@ -13,6 +13,81 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 
+function Load-DotEnvFiles {
+    $dotenvFiles = @(
+        (Join-Path $root ".env"),
+        (Join-Path $root ".env.local")
+    )
+
+    $loadedKeys = @()
+    foreach ($dotenvPath in $dotenvFiles) {
+        if (-not (Test-Path $dotenvPath)) {
+            continue
+        }
+        Get-Content $dotenvPath | ForEach-Object {
+            $line = $_.Trim()
+            if (-not $line -or $line.StartsWith("#")) {
+                return
+            }
+            if ($line -notmatch '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=(.*)$') {
+                return
+            }
+            $key = $Matches[1].Trim()
+            $value = $Matches[2].Trim()
+            if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                $value = $value.Substring(1, $value.Length - 2)
+            }
+            $commentIdx = $value.IndexOf(" #")
+            if ($commentIdx -ge 0) {
+                $value = $value.Substring(0, $commentIdx)
+            }
+            $value = $value.Trim()
+
+            $currentValue = [Environment]::GetEnvironmentVariable($key, "Process")
+            if (-not [string]::IsNullOrWhiteSpace($currentValue)) {
+                return
+            }
+            Set-Item -Path ("env:" + $key) -Value $value
+            $loadedKeys += $key
+        }
+    }
+
+    $loadedKeys = @($loadedKeys | Select-Object -Unique)
+    if ($loadedKeys.Count -gt 0) {
+        Write-Host ("Variaveis carregadas do .env: " + ($loadedKeys -join ", ")) -ForegroundColor Gray
+    }
+}
+
+function Apply-ProfitEnvAliases {
+    $aliasPairs = @(
+        @{ Target = "PROFIT_ACTIVATION_KEY"; Source = "DLL_KEY" },
+        @{ Target = "PROFIT_ACTIVATION_KEY"; Source = "PROFIT_DLL_ACTIVATION_KEY" },
+        @{ Target = "PROFIT_DLL_ACTIVATION_KEY"; Source = "PROFIT_ACTIVATION_KEY" },
+        @{ Target = "PROFIT_USER"; Source = "PROFIT_DLL_USER" },
+        @{ Target = "PROFIT_DLL_USER"; Source = "PROFIT_USER" },
+        @{ Target = "PROFIT_PASSWORD"; Source = "PROFIT_DLL_PASSWORD" },
+        @{ Target = "PROFIT_DLL_PASSWORD"; Source = "PROFIT_PASSWORD" }
+    )
+
+    $applied = @()
+    foreach ($pair in $aliasPairs) {
+        $targetValue = [Environment]::GetEnvironmentVariable($pair.Target, "Process")
+        if (-not [string]::IsNullOrWhiteSpace($targetValue)) {
+            continue
+        }
+        $sourceValue = [Environment]::GetEnvironmentVariable($pair.Source, "Process")
+        if ([string]::IsNullOrWhiteSpace($sourceValue)) {
+            continue
+        }
+        Set-Item -Path ("env:" + $pair.Target) -Value $sourceValue
+        $applied += ($pair.Source + "->" + $pair.Target)
+    }
+
+    if ($applied.Count -gt 0) {
+        Write-Host ("Aliases aplicados: " + ($applied -join ", ")) -ForegroundColor Gray
+    }
+}
+
 function Kill-ListenersOnPort {
     param(
         [int]$Port,
@@ -52,11 +127,47 @@ function Kill-StaleProcesses {
     Kill-ListenersOnPort -Port $ocrKillPort -Label "OCR overlay HTTP/WS"
 }
 
+function Load-KmsSecretsIfEnabled {
+    $enabledRaw = if ($env:AWS_KMS_ENABLED) { $env:AWS_KMS_ENABLED } else { $env:KMS_ENABLED }
+    if (-not $enabledRaw) {
+        return
+    }
+    $enabledNorm = $enabledRaw.Trim().ToLowerInvariant()
+    if ($enabledNorm -notin @("1", "true", "yes", "on", "sim")) {
+        return
+    }
+
+    $loader = Join-Path $root "scripts\load_kms_secrets.py"
+    if (-not (Test-Path $loader)) {
+        throw "AWS_KMS_ENABLED=1, mas loader não encontrado: $loader"
+    }
+
+    Write-Host "=== Carregando segredos AWS KMS ===" -ForegroundColor Cyan
+    $json = & python $loader --json-values
+    if ($LASTEXITCODE -ne 0) {
+        throw "Falha ao carregar segredos via KMS."
+    }
+    if (-not $json) {
+        return
+    }
+    $loaded = $json | ConvertFrom-Json
+    foreach ($prop in $loaded.PSObject.Properties) {
+        Set-Item -Path ("env:" + $prop.Name) -Value ([string]$prop.Value)
+    }
+    $loadedNames = @($loaded.PSObject.Properties | ForEach-Object { $_.Name })
+    if ($loadedNames.Count -gt 0) {
+        Write-Host ("Segredos carregados: " + ($loadedNames -join ", ")) -ForegroundColor Gray
+    }
+}
+
 $syncMonitorProcess = $null
 $distributorProcess = $null
 $ocrProcess = $null
 try {
     Kill-StaleProcesses
+    Load-DotEnvFiles
+    Load-KmsSecretsIfEnabled
+    Apply-ProfitEnvAliases
 
     $engineDir = Join-Path $root "engine\build\Release"
     $engineExe = Join-Path $engineDir "engine.exe"

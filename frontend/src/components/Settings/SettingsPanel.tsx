@@ -26,6 +26,25 @@ type AppConfigRead = {
   agent007_base_url?: string;
   agent007_openrouter_http_referer?: string;
   agent007_openrouter_app_title?: string;
+  google_api_key?: string;
+  voice_functions_enabled?: boolean;
+  vp_period?: string;
+  show_volume_profile_overlay?: boolean;
+  show_tape_intelligence_overlay?: boolean;
+  vp_fallback_mode?: string;
+  vp_fallback_price_top?: number;
+  vp_fallback_price_bot?: number;
+  vp_overlay?: {
+    enabled?: boolean;
+    poc_visible?: boolean;
+    val_vah_visible?: boolean;
+    labels_visible?: boolean;
+    histogram_visible?: boolean;
+    top_avg_visible?: boolean;
+    stretch_lines?: boolean;
+    max_avg_lines?: number;
+    max_visible_histogram_levels?: number;
+  } | null;
 };
 
 export function SettingsPanel({ onClose }: SettingsPanelProps) {
@@ -41,6 +60,37 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [agent007AppTitle, setAgent007AppTitle] = useState("");
   const [initialAgent007, setInitialAgent007] = useState<Agent007Fields | null>(null);
   const [agent007AdvancedOpen, setAgent007AdvancedOpen] = useState(false);
+  const [voiceApiKey, setVoiceApiKey] = useState("");
+  const [voiceEnabled, setVoiceEnabled] = useState(true);
+  const [initialVoice, setInitialVoice] = useState<{ apiKey: string; enabled: boolean } | null>(null);
+  const [vpPeriod, setVpPeriod] = useState<"day" | "week" | "manual">("day");
+  const [initialVpPeriod, setInitialVpPeriod] = useState<"day" | "week" | "manual">("day");
+  const [vpFallbackMode, setVpFallbackMode] = useState<"auto" | "manual">("auto");
+  const [initialVpFallbackMode, setInitialVpFallbackMode] = useState<"auto" | "manual">("auto");
+  const [vpFbTop, setVpFbTop] = useState("");
+  const [vpFbBot, setVpFbBot] = useState("");
+  const [initialVpFbTop, setInitialVpFbTop] = useState("");
+  const [initialVpFbBot, setInitialVpFbBot] = useState("");
+  const [vpOverlayEnabled, setVpOverlayEnabled] = useState(true);
+  const [vpOverlayPocVisible, setVpOverlayPocVisible] = useState(true);
+  const [vpOverlayValVahVisible, setVpOverlayValVahVisible] = useState(true);
+  const [vpOverlayLabelsVisible, setVpOverlayLabelsVisible] = useState(true);
+  const [vpOverlayHistogramVisible, setVpOverlayHistogramVisible] = useState(true);
+  const [vpOverlayTopAvgVisible, setVpOverlayTopAvgVisible] = useState(true);
+  const [vpOverlayStretchLines, setVpOverlayStretchLines] = useState(true);
+  const [vpOverlayMaxAvgLines, setVpOverlayMaxAvgLines] = useState("6");
+  const [vpOverlayMaxVisibleHistogramLevels, setVpOverlayMaxVisibleHistogramLevels] = useState("120");
+  const [initialVpOverlayPrefs, setInitialVpOverlayPrefs] = useState<{
+    enabled: boolean;
+    pocVisible: boolean;
+    valVahVisible: boolean;
+    labelsVisible: boolean;
+    histogramVisible: boolean;
+    topAvgVisible: boolean;
+    stretchLines: boolean;
+    maxAvgLines: string;
+    maxVisibleHistogramLevels: string;
+  } | null>(null);
   const [saving, setSaving] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [diagnostic, setDiagnostic] = useState<{
@@ -105,6 +155,72 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setAgent007Referer(a7.referer);
         setAgent007AppTitle(a7.appTitle);
         setInitialAgent007(a7);
+        const voice = {
+          apiKey: cfg.google_api_key ?? "",
+          enabled: cfg.voice_functions_enabled ?? true,
+        };
+        setVoiceApiKey(voice.apiKey);
+        setVoiceEnabled(voice.enabled);
+        setInitialVoice(voice);
+        const vp = (cfg.vp_period ?? "day").trim().toLowerCase();
+        const normalizedVp = vp === "week" || vp === "manual" ? vp : "day";
+        setVpPeriod(normalizedVp);
+        setInitialVpPeriod(normalizedVp);
+        if (typeof cfg.show_volume_profile_overlay === "boolean") {
+          settings.setShowVolumeProfileOverlay(cfg.show_volume_profile_overlay);
+        }
+        if (typeof cfg.show_tape_intelligence_overlay === "boolean") {
+          settings.setShowTapeIntelligenceOverlay(cfg.show_tape_intelligence_overlay);
+        }
+        const fm = (cfg.vp_fallback_mode ?? "auto").trim().toLowerCase();
+        const mode: "auto" | "manual" = fm === "manual" ? "manual" : "auto";
+        setVpFallbackMode(mode);
+        setInitialVpFallbackMode(mode);
+        const t = cfg.vp_fallback_price_top;
+        const b = cfg.vp_fallback_price_bot;
+        const ts = typeof t === "number" && Number.isFinite(t) ? String(t) : "";
+        const bs = typeof b === "number" && Number.isFinite(b) ? String(b) : "";
+        setVpFbTop(ts);
+        setVpFbBot(bs);
+        setInitialVpFbTop(ts);
+        setInitialVpFbBot(bs);
+        const overlayCfg = cfg.vp_overlay ?? {};
+        const overlayEnabled = overlayCfg.enabled ?? true;
+        const overlayPocVisible = overlayCfg.poc_visible ?? true;
+        const overlayValVahVisible = overlayCfg.val_vah_visible ?? true;
+        const overlayLabelsVisible = overlayCfg.labels_visible ?? true;
+        const overlayHistogramVisible = overlayCfg.histogram_visible ?? true;
+        const overlayTopAvgVisible = overlayCfg.top_avg_visible ?? true;
+        const overlayStretchLines = overlayCfg.stretch_lines ?? true;
+        const overlayMaxAvgLines =
+          typeof overlayCfg.max_avg_lines === "number" && Number.isFinite(overlayCfg.max_avg_lines)
+            ? String(Math.min(24, Math.max(1, Math.round(overlayCfg.max_avg_lines))))
+            : "6";
+        const overlayMaxVisibleHistogramLevels =
+          typeof overlayCfg.max_visible_histogram_levels === "number" &&
+          Number.isFinite(overlayCfg.max_visible_histogram_levels)
+            ? String(Math.min(2000, Math.max(10, Math.round(overlayCfg.max_visible_histogram_levels))))
+            : "120";
+        setVpOverlayEnabled(overlayEnabled);
+        setVpOverlayPocVisible(overlayPocVisible);
+        setVpOverlayValVahVisible(overlayValVahVisible);
+        setVpOverlayLabelsVisible(overlayLabelsVisible);
+        setVpOverlayHistogramVisible(overlayHistogramVisible);
+        setVpOverlayTopAvgVisible(overlayTopAvgVisible);
+        setVpOverlayStretchLines(overlayStretchLines);
+        setVpOverlayMaxAvgLines(overlayMaxAvgLines);
+        setVpOverlayMaxVisibleHistogramLevels(overlayMaxVisibleHistogramLevels);
+        setInitialVpOverlayPrefs({
+          enabled: overlayEnabled,
+          pocVisible: overlayPocVisible,
+          valVahVisible: overlayValVahVisible,
+          labelsVisible: overlayLabelsVisible,
+          histogramVisible: overlayHistogramVisible,
+          topAvgVisible: overlayTopAvgVisible,
+          stretchLines: overlayStretchLines,
+          maxAvgLines: overlayMaxAvgLines,
+          maxVisibleHistogramLevels: overlayMaxVisibleHistogramLevels,
+        });
       })
       .catch(() => {});
   }, []);
@@ -129,6 +245,33 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     );
   };
 
+  const voiceChanged = (): boolean => {
+    if (!initialVoice) return false;
+    return voiceApiKey.trim() !== initialVoice.apiKey.trim() || voiceEnabled !== initialVoice.enabled;
+  };
+
+  const vpChanged = (): boolean => vpPeriod !== initialVpPeriod;
+
+  const vpCalibChanged = (): boolean =>
+    vpFallbackMode !== initialVpFallbackMode ||
+    vpFbTop.trim() !== initialVpFbTop.trim() ||
+    vpFbBot.trim() !== initialVpFbBot.trim();
+
+  const vpOverlayChanged = (): boolean => {
+    if (!initialVpOverlayPrefs) return false;
+    return (
+      vpOverlayEnabled !== initialVpOverlayPrefs.enabled ||
+      vpOverlayPocVisible !== initialVpOverlayPrefs.pocVisible ||
+      vpOverlayValVahVisible !== initialVpOverlayPrefs.valVahVisible ||
+      vpOverlayLabelsVisible !== initialVpOverlayPrefs.labelsVisible ||
+      vpOverlayHistogramVisible !== initialVpOverlayPrefs.histogramVisible ||
+      vpOverlayTopAvgVisible !== initialVpOverlayPrefs.topAvgVisible ||
+      vpOverlayStretchLines !== initialVpOverlayPrefs.stretchLines ||
+      vpOverlayMaxAvgLines.trim() !== initialVpOverlayPrefs.maxAvgLines.trim() ||
+      vpOverlayMaxVisibleHistogramLevels.trim() !== initialVpOverlayPrefs.maxVisibleHistogramLevels.trim()
+    );
+  };
+
   const handleSave = async () => {
     if (!isTauri()) {
       onClose();
@@ -136,24 +279,76 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     }
     const credsChanged = credentialsChanged();
     const a7Changed = agent007Changed();
+    const voiceCfgChanged = voiceChanged();
+    const vpCfgChanged = vpChanged();
+    const vpManualCalibChanged = vpCalibChanged();
+    const vpOverlayCfgChanged = vpOverlayChanged();
     setSaving(true);
     try {
       const config: Record<string, unknown> = {
         profit_activation_key: profitKey.trim() === "" ? undefined : profitKey,
         profit_user: profitUser.trim() === "" ? undefined : profitUser,
-        profit_password: profitPass === "" ? undefined : profitPass,
+        profit_password: profitPass === "" ? undefined : profitPass, // allow-secret
         notifications_enabled: settings.notificationsEnabled,
         sounds_enabled: settings.soundsEnabled,
         volume: settings.volume,
         minimize_to_tray: settings.minimizeToTray,
         start_with_windows: settings.startWithWindows,
+        vp_period: vpPeriod,
+        show_volume_profile_overlay: settings.showVolumeProfileOverlay,
+        show_tape_intelligence_overlay: settings.showTapeIntelligenceOverlay,
       };
+      if (vpOverlayCfgChanged) {
+        config.vp_overlay = {
+          enabled: vpOverlayEnabled,
+          poc_visible: vpOverlayPocVisible,
+          val_vah_visible: vpOverlayValVahVisible,
+          labels_visible: vpOverlayLabelsVisible,
+          histogram_visible: vpOverlayHistogramVisible,
+          top_avg_visible: vpOverlayTopAvgVisible,
+          stretch_lines: vpOverlayStretchLines,
+        };
+        const maxAvg = Number(vpOverlayMaxAvgLines.replace(",", "."));
+        if (Number.isFinite(maxAvg)) {
+          (config.vp_overlay as Record<string, unknown>).max_avg_lines = Math.min(24, Math.max(1, Math.round(maxAvg)));
+        }
+        const maxHist = Number(vpOverlayMaxVisibleHistogramLevels.replace(",", "."));
+        if (Number.isFinite(maxHist)) {
+          (config.vp_overlay as Record<string, unknown>).max_visible_histogram_levels = Math.min(
+            2000,
+            Math.max(10, Math.round(maxHist)),
+          );
+        }
+      }
+      if (vpManualCalibChanged) {
+        config.vp_fallback_mode = vpFallbackMode;
+        if (vpFbTop.trim() === "") {
+          config.vp_fallback_price_top_clear = true;
+        } else {
+          const topN = Number(vpFbTop.replace(",", "."));
+          if (Number.isFinite(topN)) {
+            config.vp_fallback_price_top = topN;
+          }
+        }
+        if (vpFbBot.trim() === "") {
+          config.vp_fallback_price_bot_clear = true;
+        } else {
+          const botN = Number(vpFbBot.replace(",", "."));
+          if (Number.isFinite(botN)) {
+            config.vp_fallback_price_bot = botN;
+          }
+        }
+      }
       if (initialAgent007 != null) {
         config.agent007_api_key = agent007ApiKey;
         config.agent007_model = agent007Model;
         config.agent007_base_url = agent007BaseUrl;
         config.agent007_openrouter_http_referer = agent007Referer;
         config.agent007_openrouter_app_title = agent007AppTitle;
+      }
+      if (initialVoice != null) {
+        config.google_api_key = voiceApiKey;
+        config.voice_functions_enabled = voiceEnabled;
       }
       await invoke("write_config", { config });
       if (credsChanged) {
@@ -168,7 +363,32 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           appTitle: agent007AppTitle,
         });
       }
-      if (credsChanged || a7Changed) {
+      if (voiceCfgChanged) {
+        setInitialVoice({ apiKey: voiceApiKey, enabled: voiceEnabled });
+      }
+      if (vpCfgChanged) {
+        setInitialVpPeriod(vpPeriod);
+        await invoke("set_vp_period", { period: vpPeriod });
+      }
+      if (vpManualCalibChanged) {
+        setInitialVpFallbackMode(vpFallbackMode);
+        setInitialVpFbTop(vpFbTop);
+        setInitialVpFbBot(vpFbBot);
+      }
+      if (vpOverlayCfgChanged && initialVpOverlayPrefs) {
+        setInitialVpOverlayPrefs({
+          enabled: vpOverlayEnabled,
+          pocVisible: vpOverlayPocVisible,
+          valVahVisible: vpOverlayValVahVisible,
+          labelsVisible: vpOverlayLabelsVisible,
+          histogramVisible: vpOverlayHistogramVisible,
+          topAvgVisible: vpOverlayTopAvgVisible,
+          stretchLines: vpOverlayStretchLines,
+          maxAvgLines: vpOverlayMaxAvgLines,
+          maxVisibleHistogramLevels: vpOverlayMaxVisibleHistogramLevels,
+        });
+      }
+      if (credsChanged || a7Changed || voiceCfgChanged) {
         await handleRestartServices();
       }
       onClose();
@@ -358,6 +578,197 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {isTauri() && (
+          <div className="space-y-3 mb-6">
+            <h3 className="text-sm font-medium text-text/80">Copiloto de voz / Gemini Live</h3>
+            <p className="text-xs text-text/60">
+              Configure a chave do copiloto de voz. Na app instalada, esse campo substitui a dependência de variáveis
+              de ambiente do sistema.
+            </p>
+            <input
+              type="password"
+              placeholder="API key (Google / Gemini)"
+              value={voiceApiKey}
+              onChange={(e) => setVoiceApiKey(e.target.value)}
+              autoComplete="off"
+              className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+            />
+            <label className="flex items-center gap-2 text-text">
+              <input
+                type="checkbox"
+                checked={voiceEnabled}
+                onChange={(e) => setVoiceEnabled(e.target.checked)}
+              />
+              Copiloto de voz ativado
+            </label>
+          </div>
+        )}
+
+        {isTauri() && (
+          <div className="space-y-3 mb-6">
+            <h3 className="text-sm font-medium text-text/80">Volume Profile</h3>
+            <p className="text-xs text-text/60">
+              Define o período do VP e persiste a preferência no `config.json`.
+            </p>
+            <label className="flex flex-col gap-1 text-text">
+              <span className="text-xs text-text/70">Período</span>
+              <select
+                value={vpPeriod}
+                onChange={(e) => setVpPeriod(e.target.value as "day" | "week" | "manual")}
+                className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+              >
+                <option value="day">day</option>
+                <option value="week">week</option>
+                <option value="manual">manual</option>
+              </select>
+            </label>
+            <label className="flex items-center gap-2 text-text">
+              <input
+                type="checkbox"
+                checked={settings.showVolumeProfileOverlay}
+                onChange={(e) => settings.setShowVolumeProfileOverlay(e.target.checked)}
+              />
+              Mostrar overlay do Volume Profile
+            </label>
+            <label className="flex items-center gap-2 text-text">
+              <input
+                type="checkbox"
+                checked={settings.showTapeIntelligenceOverlay}
+                onChange={(e) => settings.setShowTapeIntelligenceOverlay(e.target.checked)}
+              />
+              Mostrar badges de Tape Intelligence
+            </label>
+            <div className="pt-2 border-t border-border space-y-2">
+              <h4 className="text-xs font-medium text-text/80">Overlay VP Sato</h4>
+              <p className="text-xs text-text/55">
+                Ajustes visuais do payload consolidado `vp_overlay` e limites de render.
+              </p>
+              <label className="flex items-center gap-2 text-text">
+                <input
+                  type="checkbox"
+                  checked={vpOverlayEnabled}
+                  onChange={(e) => setVpOverlayEnabled(e.target.checked)}
+                />
+                Overlay VP ativo
+              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayPocVisible}
+                    onChange={(e) => setVpOverlayPocVisible(e.target.checked)}
+                  />
+                  Mostrar POC
+                </label>
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayValVahVisible}
+                    onChange={(e) => setVpOverlayValVahVisible(e.target.checked)}
+                  />
+                  Mostrar VAL/VAH
+                </label>
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayLabelsVisible}
+                    onChange={(e) => setVpOverlayLabelsVisible(e.target.checked)}
+                  />
+                  Mostrar labels
+                </label>
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayHistogramVisible}
+                    onChange={(e) => setVpOverlayHistogramVisible(e.target.checked)}
+                  />
+                  Mostrar histograma
+                </label>
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayTopAvgVisible}
+                    onChange={(e) => setVpOverlayTopAvgVisible(e.target.checked)}
+                  />
+                  Mostrar médias top players
+                </label>
+                <label className="flex items-center gap-2 text-text">
+                  <input
+                    type="checkbox"
+                    checked={vpOverlayStretchLines}
+                    onChange={(e) => setVpOverlayStretchLines(e.target.checked)}
+                  />
+                  Esticar linhas até o gráfico
+                </label>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="flex flex-col gap-1 text-text">
+                  <span className="text-xs text-text/70">Máx. médias top players</span>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    value={vpOverlayMaxAvgLines}
+                    onChange={(e) => setVpOverlayMaxAvgLines(e.target.value)}
+                    className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-text">
+                  <span className="text-xs text-text/70">Máx. níveis do histograma</span>
+                  <input
+                    type="number"
+                    min={10}
+                    max={2000}
+                    value={vpOverlayMaxVisibleHistogramLevels}
+                    onChange={(e) => setVpOverlayMaxVisibleHistogramLevels(e.target.value)}
+                    className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+                  />
+                </label>
+              </div>
+            </div>
+            <div className="pt-2 border-t border-border space-y-2">
+              <h4 className="text-xs font-medium text-text/80">Calibração manual (fallback VP)</h4>
+              <p className="text-xs text-text/55">
+                Com OCR indisponível, modo manual usa preço topo/base para mapear o histograma. Modo auto fixa a
+                primeira faixa de preços recebida para reduzir deriva.
+              </p>
+              <label className="flex flex-col gap-1 text-text">
+                <span className="text-xs text-text/70">Modo fallback</span>
+                <select
+                  value={vpFallbackMode}
+                  onChange={(e) => setVpFallbackMode(e.target.value as "auto" | "manual")}
+                  className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+                >
+                  <option value="auto">auto</option>
+                  <option value="manual">manual</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-text">
+                <span className="text-xs text-text/70">Preço topo (eixo Y)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={vpFbTop}
+                  onChange={(e) => setVpFbTop(e.target.value)}
+                  placeholder="ex.: 165000"
+                  className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-text">
+                <span className="text-xs text-text/70">Preço base (eixo Y)</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={vpFbBot}
+                  onChange={(e) => setVpFbBot(e.target.value)}
+                  placeholder="ex.: 163000"
+                  className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
+                />
+              </label>
+            </div>
           </div>
         )}
 

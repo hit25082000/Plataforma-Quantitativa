@@ -83,6 +83,28 @@ export interface DailyMessage {
   trade_date?: string;
 }
 
+export interface VolumeProfileLevel {
+  price: number;
+  total_vol: number;
+  bid_vol: number;
+  ask_vol: number;
+  pct_of_max: number;
+}
+
+export interface VolumeProfileMessage {
+  topic: "market";
+  type: "volume_profile";
+  ticker: string;
+  period: "day" | "week" | "manual";
+  timestamp: number;
+  price_step: number;
+  total_vol: number;
+  poc: number;
+  vah: number;
+  val: number;
+  levels: VolumeProfileLevel[];
+}
+
 export interface BrokerSnapshotMessage {
   topic: "market";
   type: "broker_snapshot";
@@ -169,6 +191,16 @@ export interface Agent007StateMessage {
   ts: string;
 }
 
+export interface IpcFallbackMessage {
+  topic: "system";
+  type: "ipc_fallback";
+  requested_mode: "shm" | "zmq";
+  effective_mode: "websocket" | "shm" | "zmq";
+  reason: string;
+  mapping_name?: string;
+  ts?: string;
+}
+
 export interface OverlayAxisDeltaInterval {
   i: number;
   value_delta: number;
@@ -194,7 +226,9 @@ export type WsSingleMessage =
   | SyncMessage
   | FlowInversionMessage
   | MacdSignalMessage
-  | Agent007StateMessage;
+  | VolumeProfileMessage
+  | Agent007StateMessage
+  | IpcFallbackMessage;
 
 /** Vários payloads em um único frame WS (distributor → UI). */
 export interface WsBatchMessage {

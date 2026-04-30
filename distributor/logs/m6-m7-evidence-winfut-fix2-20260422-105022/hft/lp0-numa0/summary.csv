@@ -1,0 +1,2 @@
+section,run,metric,count,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns,pinning,exit_code,elapsed_s,stderr_log,check_status,check_reason,target_p99_ns,target_p999_ns
+CHECK,pinned,shm_write_trade_duration,,,,-1,-1,,,,,,,fail,no_qpc_samples,10000,20000

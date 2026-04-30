@@ -1,0 +1,83 @@
+{
+  "started_at_epoch_s": 1777052572.643365,
+  "finished_at_epoch_s": 1777052704.103311,
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "python": "3.13.1"
+  },
+  "args": {
+    "engine": "engine\\build\\Release\\engine.exe",
+    "workdir": "engine\\build\\Release",
+    "duration_seconds": 130.0,
+    "timeout_seconds": 180.0,
+    "runs": "pinned",
+    "enable_shm_qpc": true,
+    "hft_qpc_sample_every": 1,
+    "hft_qpc_max_samples": 1000000,
+    "shm_qpc_sample_every": 1,
+    "shm_qpc_max_samples": 1000000,
+    "main_core": 0,
+    "publisher_core": 1,
+    "profit_callback_core": 2,
+    "hft_core_index_mode": "physical",
+    "hft_prefetch": 1,
+    "shm_large_pages": false,
+    "shm_large_pages_strict": false,
+    "shm_numa_node": -1,
+    "shm_prefetch_next_slot": 1,
+    "check_run": "pinned",
+    "check_metric": "shm_write_trade_duration",
+    "target_p99_ns": 10000,
+    "target_p999_ns": 20000,
+    "fail_on_check": false
+  },
+  "checks": [
+    {
+      "run": "pinned",
+      "metric": "shm_write_trade_duration",
+      "target_p99_ns": 10000,
+      "target_p999_ns": 20000,
+      "actual_p99_ns": 6500,
+      "actual_p999_ns": 15353,
+      "status": "ok",
+      "reason": "ok"
+    }
+  ],
+  "runs": [
+    {
+      "run": "pinned",
+      "pinning": 1,
+      "exit_code": 0,
+      "elapsed_s": 131.451,
+      "stdout_log": "distributor\\logs\\m6-m7-evidence-pregao-ativo-final-20260424-134252\\hft\\lp0-numa_auto\\summary_logs\\pinned.stdout.log",
+      "stderr_log": "distributor\\logs\\m6-m7-evidence-pregao-ativo-final-20260424-134252\\hft\\lp0-numa_auto\\summary_logs\\pinned.stderr.log",
+      "metrics": [
+        {
+          "run": "pinned",
+          "metric": "publisher_loop_interval",
+          "count": 74199,
+          "p50_ns": 15200,
+          "p95_ns": 67700,
+          "p99_ns": 31988004,
+          "p999_ns": 87803532,
+          "max_ns": 404987700,
+          "mean_ns": 883146.0
+        },
+        {
+          "run": "pinned",
+          "metric": "shm_write_trade_duration",
+          "count": 9079,
+          "p50_ns": 1800,
+          "p95_ns": 4000,
+          "p99_ns": 6500,
+          "p999_ns": 15353,
+          "max_ns": 20000,
+          "mean_ns": 2168.19
+        }
+      ]
+    }
+  ]
+}

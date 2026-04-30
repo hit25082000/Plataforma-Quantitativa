@@ -27,15 +27,20 @@ const AVAILABLE_TICKERS = [
 function isEngineNotListening(message: string): boolean {
   const raw = (message ?? "").trim();
   if (!raw) {
-    // Em alguns cenários o engine não retorna texto no switch; manter fluxo de retry.
-    return true;
+    return false;
   }
   const m = raw.toLowerCase();
-  return (
-    m.includes("5556") ||
-    m.includes("timed out") ||
+  const explicitNotListening =
+    m.includes("não está escutando") ||
+    m.includes("nao esta escutando") ||
+    m.includes("escutando na porta");
+  const refused =
     m.includes("connection refused") ||
-    m.includes("escutando")
+    m.includes("actively refused") ||
+    m.includes("forcibly rejected");
+  return (
+    explicitNotListening ||
+    refused
   );
 }
 
@@ -49,6 +54,7 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const setSelectedTicker = useMarketStore((s) => s.setSelectedTicker);
   const setAssetSwitchStatus = useMarketStore((s) => s.setAssetSwitchStatus);
+  const setTimesTradesLoading = useMarketStore((s) => s.setTimesTradesLoading);
   const clearMarketData = useMarketStore((s) => s.clearMarketData);
 
   // Fechar ao clicar fora
@@ -72,6 +78,7 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
   const handleSelect = async (ticker: typeof AVAILABLE_TICKERS[0]) => {
     const label = `${ticker.symbol} · ${ticker.exchange}`;
     setSelectedTicker(label);
+    setTimesTradesLoading(true, "Atualizando Times & Trades");
     setIsOpen(false);
     setSearch("");
 
@@ -94,16 +101,28 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
           }
           const maxAttempts = 15;
           const delayMs = 2000;
+          const respawnEveryAttempts = 3;
           for (let i = 0; i < maxAttempts; i++) {
             await new Promise((r) => setTimeout(r, delayMs));
             result = await trySwitch();
             if (result.success) break;
             if (!isEngineNotListening(result.message)) break;
+            if ((i + 1) % respawnEveryAttempts === 0) {
+              try {
+                await invoke("spawn_engine");
+              } catch {
+                // engine já em execução ou falha ao spawnar
+              }
+            }
           }
         }
         if (result.success) {
           clearMarketData();
-          void fetchWarmMacdSnapshot();
+          setTimesTradesLoading(true, "Atualizando Times & Trades");
+          void fetchWarmMacdSnapshot({
+            retries: 8,
+            retryDelayMs: 250,
+          });
           try {
             await invoke("write_config", {
               config: {
@@ -124,8 +143,10 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
           }
         }
         setAssetSwitchStatus(result.success ? "active" : "error", result.message);
+        if (!result.success) setTimesTradesLoading(false);
         if (!result.success) console.warn("Troca de ativo:", result.message);
       } catch (e) {
+        setTimesTradesLoading(false);
         setAssetSwitchStatus("error", String(e));
         console.warn("Erro ao trocar ativo:", e);
       }
@@ -140,10 +161,16 @@ export function AssetSelector({ currentTicker }: AssetSelectorProps) {
         const result = await res.json().catch(() => ({ success: false, message: "Resposta inválida" }));
         if (result.success) {
           clearMarketData();
-          void fetchWarmMacdSnapshot();
+          setTimesTradesLoading(true, "Atualizando Times & Trades");
+          void fetchWarmMacdSnapshot({
+            retries: 8,
+            retryDelayMs: 250,
+          });
         }
         setAssetSwitchStatus(result.success ? "active" : "error", result.message ?? "");
+        if (!result.success) setTimesTradesLoading(false);
       } catch (e) {
+        setTimesTradesLoading(false);
         setAssetSwitchStatus("error", String(e));
       }
     }

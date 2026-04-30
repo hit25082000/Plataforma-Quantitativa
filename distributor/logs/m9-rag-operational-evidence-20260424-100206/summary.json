@@ -1,0 +1,29 @@
+{
+  "overall_ok": 0,
+  "base_url": "http://127.0.0.1:8000",
+  "ticker": "WINFUT",
+  "duration_seconds": 60.0,
+  "interval_seconds": 5.0,
+  "timeout_seconds": 4.0,
+  "sample_count": 10,
+  "ok_sample_count": 6,
+  "http_failures": 4,
+  "views_ingested_delta": 0,
+  "route_total_delta": 0,
+  "max_view_trade_count": 0,
+  "max_view_wall_count": 0,
+  "max_view_lag_ms": 595128,
+  "views_backend_last": "sqlite",
+  "checks": {
+    "http_failures_lte_max": true,
+    "ok_samples_gt_0": true,
+    "rag_metrics_visible": true,
+    "views_enabled_visible": true,
+    "views_ingested_delta_gte_min": false,
+    "view_trade_count_gt_0": false,
+    "view_wall_count_gt_0": false,
+    "view_lag_lte_max": false,
+    "route_total_delta_gt_0": false,
+    "views_backend_matches": true
+  }
+}

@@ -1,0 +1,4 @@
+section,run,metric,count,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns,pinning,exit_code,elapsed_s,stderr_log,check_status,check_reason,target_p99_ns,target_p999_ns
+SUMMARY,pinned,publisher_loop_interval,67953,12800,53339,19752023,120895890,229823500,816102.00,1,0,121.401,tmp\hft_qpc_recheck_logs\pinned.stderr.log,,,,
+SUMMARY,pinned,shm_write_trade_duration,7804,1900,3800,7597,17119,24800,2203.22,1,0,121.401,tmp\hft_qpc_recheck_logs\pinned.stderr.log,,,,
+CHECK,pinned,shm_write_trade_duration,,,,7597,17119,,,,,,,ok,ok,10000,20000

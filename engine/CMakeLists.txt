@@ -20,6 +20,8 @@ set(ENGINE_SOURCES
   src/dom_snapshot.cpp
   src/trade_stream.cpp
   src/trade_reconciler.cpp
+  src/volume_profile.cpp
+  src/hft_tuning.cpp
   src/event_dispatcher.cpp
   src/zmq_publisher.cpp
   src/rules/rule1_aggression.cpp
@@ -27,6 +29,7 @@ set(ENGINE_SOURCES
   src/rules/rule3_vwap.cpp
   src/rules/rule5_convergence.cpp
   src/rules/rule6_absorption.cpp
+  src/shared_memory_ipc.cpp
 )
 
 # Find vcpkg packages

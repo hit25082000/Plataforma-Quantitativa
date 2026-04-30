@@ -5,17 +5,21 @@
 
 namespace config {
 
-// DLL / Login - usar env PROFIT_ACTIVATION_KEY, PROFIT_USER, PROFIT_PASSWORD
+// DLL / Login - usar env PROFIT_ACTIVATION_KEY/PROFIT_DLL_ACTIVATION_KEY,
+// PROFIT_USER/PROFIT_DLL_USER, PROFIT_PASSWORD/PROFIT_DLL_PASSWORD.
 inline const char* activation_key() {
     const char* v = std::getenv("PROFIT_ACTIVATION_KEY");
+    if (!v || !*v) v = std::getenv("PROFIT_DLL_ACTIVATION_KEY");
     return v ? v : "";
 }
 inline const char* user() {
     const char* v = std::getenv("PROFIT_USER");
+    if (!v || !*v) v = std::getenv("PROFIT_DLL_USER");
     return v ? v : "";
 }
 inline const char* password() {
     const char* v = std::getenv("PROFIT_PASSWORD");
+    if (!v || !*v) v = std::getenv("PROFIT_DLL_PASSWORD");
     return v ? v : "";
 }
 

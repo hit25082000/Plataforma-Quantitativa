@@ -3,10 +3,18 @@
 import asyncio
 import json
 import logging
+import os
 import threading
 from typing import Optional
+from urllib.parse import urlparse
 
 import zmq
+
+try:
+    from egress_allowlist import enforce_endpoint_ip_allowlist
+    _HAS_EGRESS_ALLOWLIST = True
+except ImportError:  # fallback se rodando fora do pacote distributor
+    _HAS_EGRESS_ALLOWLIST = False
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +29,7 @@ class ZmqConsumer:
         address: str,
         queue: asyncio.Queue[str],
         dom_soft_limit_pct: int = 70,
+        allowed_ips_raw: Optional[str] = None,
     ) -> None:
         self._address = address
         self._queue = queue
@@ -28,11 +37,18 @@ class ZmqConsumer:
         self._thread: Optional[threading.Thread] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._dropped_count = 0
+        self._dropped_low_priority = 0
         self._rescued_trades = 0
         self._evicted_dom = 0
         safe_pct = max(1, min(int(dom_soft_limit_pct), 99))
         maxsize = max(int(getattr(queue, "maxsize", 0)), 0)
         self._dom_soft_limit = int(maxsize * safe_pct / 100) if maxsize > 0 else 0
+        # Allowlist de egress: lê ZMQ_ALLOWED_IPS ou usa o parâmetro explícito
+        self._allowed_ips_raw: Optional[str] = (
+            allowed_ips_raw
+            if allowed_ips_raw is not None
+            else os.environ.get("ZMQ_ALLOWED_IPS", "").strip() or None
+        )
 
     @staticmethod
     def _message_type(raw: str) -> str:
@@ -44,6 +60,11 @@ class ZmqConsumer:
         except json.JSONDecodeError:
             return ""
         return ""
+
+    @staticmethod
+    def _is_low_priority_type(msg_type: str) -> bool:
+        """Messages that can be dropped first under pressure."""
+        return msg_type in ("wall_remove",)
 
     def _evict_one_dom_snapshot(self) -> bool:
         # Accessing the internal deque keeps this operation O(n) and avoids
@@ -81,6 +102,7 @@ class ZmqConsumer:
         """Best-effort counters for queue pressure diagnostics."""
         return {
             "dropped_dom": self._dropped_count,
+            "dropped_low_priority": self._dropped_low_priority,
             "rescued_trade_like": self._rescued_trades,
             "evicted_dom": self._evicted_dom,
         }
@@ -90,17 +112,27 @@ class ZmqConsumer:
         msg_type = self._message_type(raw)
         is_dom = msg_type == "dom_snapshot"
         is_trade_like = msg_type in ("trade", "flow_inversion")
+        is_low_priority = self._is_low_priority_type(msg_type)
 
-        # Prevent queue growth into runaway latency: drop low-priority DOM early.
-        if is_dom and self._dom_soft_limit > 0:
+        # Prevent queue growth into runaway latency: drop low-priority frames early.
+        if (is_dom or is_low_priority) and self._dom_soft_limit > 0:
             if self._queue.qsize() >= self._dom_soft_limit:
-                self._dropped_count += 1
-                if self._dropped_count % 100 == 0:
-                    logger.warning(
-                        "Market queue pressure: preemptively dropped %s dom_snapshot messages (soft_limit=%s)",
-                        self._dropped_count,
-                        self._dom_soft_limit,
-                    )
+                if is_dom:
+                    self._dropped_count += 1
+                    if self._dropped_count % 100 == 0:
+                        logger.warning(
+                            "Market queue pressure: preemptively dropped %s dom_snapshot messages (soft_limit=%s)",
+                            self._dropped_count,
+                            self._dom_soft_limit,
+                        )
+                else:
+                    self._dropped_low_priority += 1
+                    if self._dropped_low_priority % 500 == 0:
+                        logger.warning(
+                            "Market queue pressure: preemptively dropped %s low-priority messages (soft_limit=%s)",
+                            self._dropped_low_priority,
+                            self._dom_soft_limit,
+                        )
                 return
         try:
             self._queue.put_nowait(raw)
@@ -111,6 +143,14 @@ class ZmqConsumer:
                     logger.warning(
                         "Market queue full: dropped %s dom_snapshot messages",
                         self._dropped_count,
+                    )
+                return
+            if is_low_priority:
+                self._dropped_low_priority += 1
+                if self._dropped_low_priority % 500 == 0:
+                    logger.warning(
+                        "Market queue full: dropped %s low-priority messages",
+                        self._dropped_low_priority,
                     )
                 return
             if is_trade_like and self._evict_one_dom_snapshot():
@@ -128,8 +168,32 @@ class ZmqConsumer:
                     pass
             logger.warning("Market queue full, discarding non-dom message")
 
+    def _check_egress_allowlist(self) -> bool:
+        """Valida endpoint TCP contra ZMQ_ALLOWED_IPS. Retorna True se permitido."""
+        if not self._allowed_ips_raw or not _HAS_EGRESS_ALLOWLIST:
+            return True
+        # ZMQ address é tcp://host:port — extrai host
+        address = self._address.strip()
+        # Normaliza para URL válida para urlparse
+        url_form = address if "://" in address else f"tcp://{address}"
+        try:
+            enforce_endpoint_ip_allowlist(
+                endpoint_url=url_form,
+                raw_allowlist=self._allowed_ips_raw,
+                env_var_name="ZMQ_ALLOWED_IPS",
+                endpoint_label="ZMQ",
+            )
+            return True
+        except RuntimeError as exc:
+            logger.error("ZMQ egress bloqueado por ZMQ_ALLOWED_IPS: %s", exc)
+            return False
+
     def _run(self) -> None:
         """Loop in dedicated thread: receive from ZMQ, push to queue."""
+        if not self._check_egress_allowlist():
+            logger.error("ZMQ consumer aborted: endpoint bloqueado por allowlist (ZMQ_ALLOWED_IPS).")
+            return
+
         ctx = zmq.Context()
         sock = ctx.socket(zmq.SUB)
         sock.setsockopt(zmq.RCVTIMEO, RCVTIMEO_MS)

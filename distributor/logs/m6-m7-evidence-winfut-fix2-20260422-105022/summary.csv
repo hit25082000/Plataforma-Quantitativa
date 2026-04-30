@@ -1,0 +1,7 @@
+section,scenario,window_index,skipped_existing,attempts,retried,ok,exit_code,reason,check_run,check_metric,actual_p99_ns,actual_p999_ns,target_p99_ns,target_p999_ns,gap_messages,ring_dropped_delta,committed_mismatch,crc_mismatch,payload_mismatch,observed_trades,artifact_csv,artifact_manifest
+HFT,lp0-numa0,1,0,1,0,0,0,no_qpc_samples,pinned,shm_write_trade_duration,-1,-1,10000,20000,,,,,,,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\hft\lp0-numa0\summary.csv,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\hft\lp0-numa0\summary.manifest.json
+HFT_AGGREGATE,lp0-numa0,,0,,,0,0,no_qpc_samples,pinned,shm_write_trade_duration,-1,-1,10000,20000,,,,,,,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\hft\lp0-numa0\summary.csv,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\hft\lp0-numa0\summary.manifest.json
+HFT_AGGREGATE_GATE,all,,,,,1,,disabled,,,,,-1,-1,,,,,,,,
+IPC_SESSION,session,,0,1,0,0,1,session_mapping_not_found,,,,,,,0,0,0,0,0,0,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\ipc\session.csv,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\ipc\session.manifest.json
+IPC_AGGREGATE,session,,,,,0,1,session_mapping_not_found,,,,,,,0,0,0,0,0,0,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\ipc\session.csv,distributor\logs\m6-m7-evidence-winfut-fix2-20260422-105022\ipc\session.manifest.json
+OVERALL,m6_m7,,,,,0,,failed,,,,,,,,,,,,,,

@@ -36,6 +36,8 @@ const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
 /** Recuo à direita para não cobrir a faixa de botões/ferramentas do Profit. */
 const DEFAULT_OVERLAY_RIGHT_MARGIN_PX = 208;
+/** Desloca bloco de linha/label um pouco para a esquerda. */
+const OVERLAY_LINE_LEFT_SHIFT_PX = 36;
 const LABEL_MIN_GAP = LABEL_H + 4;
 const LABEL_MARGIN_PX = 2;
 
@@ -47,6 +49,99 @@ interface PositionedOverlayLine extends OverlayLine {
   labelY: number;
   rank: number;
   dense: boolean;
+}
+
+function isSamePriceSet(a: OverlayLine[], b: OverlayLine[]): boolean {
+  if (a.length !== b.length) return false;
+  const aPairs = a.map((x) => `${x.label ?? ""}:${x.value}`).sort();
+  const bPairs = b.map((x) => `${x.label ?? ""}:${x.value}`).sort();
+  for (let i = 0; i < aPairs.length; i++) {
+    if (aPairs[i] !== bPairs[i]) return false;
+  }
+  return true;
+}
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const m = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[m - 1] + sorted[m]) / 2 : sorted[m];
+}
+
+function shouldRejectUnstableOcrFrame(
+  prevLines: OverlayLine[],
+  nextLines: OverlayLine[],
+  axisDiagnostics: OverlayData["axis_diagnostics"],
+): { reject: boolean; reason: string } {
+  if (prevLines.length === 0 || nextLines.length === 0) {
+    return { reject: false, reason: "no_prev_or_next_lines" };
+  }
+  if (!isSamePriceSet(prevLines, nextLines)) {
+    return { reject: false, reason: "price_set_changed" };
+  }
+  const prevByKey = new Map(prevLines.map((l) => [`${l.label ?? ""}:${l.value}`, l.y_screen]));
+  const deltas: number[] = [];
+  for (const line of nextLines) {
+    const key = `${line.label ?? ""}:${line.value}`;
+    const prevY = prevByKey.get(key);
+    if (typeof prevY !== "number") continue;
+    deltas.push(Math.abs(line.y_screen - prevY));
+  }
+  if (deltas.length === 0) return { reject: false, reason: "no_delta_pairs" };
+  const medianDelta = median(deltas);
+  const kept = Number(axisDiagnostics?.kept_labels ?? 0);
+  const rejected = Number(axisDiagnostics?.rejected ?? 0);
+  const lowConfidence = kept <= 3 || rejected >= 2;
+  const hasCollapsedToEdge = nextLines.filter((l) => l.y_screen <= 95 || l.y_screen >= 1075).length >= 2;
+  const largeJump = medianDelta >= 80;
+  if (lowConfidence && (largeJump || hasCollapsedToEdge)) {
+    return { reject: true, reason: "low_confidence_large_jump_or_edge_collapse" };
+  }
+  return { reject: false, reason: "accepted" };
+}
+
+function shouldHoldPreviousLinesOnOcrDropout(
+  prev: OverlayData,
+  next: OverlayData,
+): { hold: boolean; reason: string } {
+  const prevCount = Array.isArray(prev.lines) ? prev.lines.length : 0;
+  const nextCount = Array.isArray(next.lines) ? next.lines.length : 0;
+  if (prevCount === 0 || nextCount > 0) return { hold: false, reason: "no_dropout" };
+  const status = String(next.status ?? "");
+  const kept = Number(next.axis_diagnostics?.kept_labels ?? 0);
+  const rejected = Number(next.axis_diagnostics?.rejected ?? 0);
+  const ocrTransient =
+    status.startsWith("ocr_insufficient_labels") ||
+    status === "warming_up" ||
+    status === "connecting";
+  if (ocrTransient || kept <= 1 || rejected >= 1) {
+    return { hold: true, reason: "transient_ocr_dropout" };
+  }
+  return { hold: false, reason: "dropout_without_ocr_signal" };
+}
+
+function debugOverlayLog(
+  runId: string,
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+) {
+  // #region agent log
+  fetch("http://127.0.0.1:7895/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9b12fa" },
+    body: JSON.stringify({
+      sessionId: "9b12fa",
+      runId,
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
 }
 
 function clamp(v: number, min: number, max: number): number {
@@ -164,7 +259,83 @@ export default function OverlayPage() {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "overlay_update") {
-            setData(msg.data);
+            const lines = Array.isArray(msg.data?.lines) ? msg.data.lines : [];
+            const yValues = lines
+              .map((line: OverlayLine) => Number(line?.y_screen))
+              .filter((v: number) => Number.isFinite(v));
+            // #region agent log
+            debugOverlayLog(
+              "pre-fix",
+              "H1",
+              "OverlayPage.tsx:190",
+              "overlay_update_received",
+              {
+                lineCount: lines.length,
+                yMinIncoming: yValues.length ? Math.min(...yValues) : null,
+                yMaxIncoming: yValues.length ? Math.max(...yValues) : null,
+                sample: lines.slice(0, 3).map((line: OverlayLine) => ({
+                  value: line.value,
+                  y: line.y_screen,
+                  left: line.chart_left,
+                  right: line.chart_right,
+                  label: line.label ?? "",
+                })),
+              },
+            );
+            // #endregion
+            setData((prev) => {
+              const next = msg.data as OverlayData;
+              const holdVerdict = shouldHoldPreviousLinesOnOcrDropout(prev, next);
+              // #region agent log
+              debugOverlayLog(
+                "post-fix",
+                "H11",
+                "OverlayPage.tsx:294",
+                "overlay_dropout_hold_verdict",
+                {
+                  hold: holdVerdict.hold,
+                  reason: holdVerdict.reason,
+                  prevLineCount: prev.lines.length,
+                  nextLineCount: Array.isArray(next.lines) ? next.lines.length : 0,
+                  status: next.status ?? "",
+                  axisKeptLabels: next.axis_diagnostics?.kept_labels ?? null,
+                  axisRejected: next.axis_diagnostics?.rejected ?? null,
+                },
+              );
+              // #endregion
+              if (holdVerdict.hold) {
+                return {
+                  ...next,
+                  lines: prev.lines,
+                };
+              }
+              const verdict = shouldRejectUnstableOcrFrame(
+                prev.lines,
+                next.lines ?? [],
+                next.axis_diagnostics ?? null,
+              );
+              // #region agent log
+              debugOverlayLog(
+                "post-fix",
+                "H10",
+                "OverlayPage.tsx:252",
+                "overlay_frame_filter_verdict",
+                {
+                  verdict: verdict.reject ? "rejected" : "accepted",
+                  reason: verdict.reason,
+                  prevLineCount: prev.lines.length,
+                  nextLineCount: Array.isArray(next.lines) ? next.lines.length : 0,
+                  axisKeptLabels: next.axis_diagnostics?.kept_labels ?? null,
+                  axisRejected: next.axis_diagnostics?.rejected ?? null,
+                },
+              );
+              // #endregion
+              if (!verdict.reject) return next;
+              return {
+                ...next,
+                lines: prev.lines,
+              };
+            });
           }
         } catch {
           // ignore parse errors
@@ -199,6 +370,13 @@ export default function OverlayPage() {
 
   useEffect(() => {
     const onResize = () => {
+      // #region agent log
+      debugOverlayLog("pre-fix", "H2", "OverlayPage.tsx:228", "viewport_resize", {
+        width: window.innerWidth,
+        height: window.innerHeight,
+        devicePixelRatio: window.devicePixelRatio || 1,
+      });
+      // #endregion
       setViewport({ width: window.innerWidth, height: window.innerHeight });
     };
     window.addEventListener("resize", onResize);
@@ -259,6 +437,39 @@ export default function OverlayPage() {
   const H = viewport.height;
   const positionedLines = useMemo(() => layoutOverlayLines(scaledLines, H), [scaledLines, H]);
 
+  useEffect(() => {
+    if (data.lines.length === 0) return;
+    const incoming = data.lines.slice(0, 3).map((line) => line.y_screen);
+    const scaled = scaledLines.slice(0, 3).map((line) => line.y_screen);
+    // #region agent log
+    debugOverlayLog("pre-fix", "H3", "OverlayPage.tsx:293", "scale_transform_snapshot", {
+      devicePixelRatio: window.devicePixelRatio || 1,
+      renderScale,
+      lineCountIncoming: data.lines.length,
+      lineCountScaled: scaledLines.length,
+      incomingYSample: incoming,
+      scaledYSample: scaled,
+    });
+    // #endregion
+  }, [data.lines, scaledLines, renderScale]);
+
+  useEffect(() => {
+    if (positionedLines.length === 0) return;
+    // #region agent log
+    debugOverlayLog("pre-fix", "H4", "OverlayPage.tsx:311", "label_layout_snapshot", {
+      viewportHeight: H,
+      lineCount: positionedLines.length,
+      sample: positionedLines.slice(0, 4).map((line) => ({
+        yScreen: line.y_screen,
+        labelY: line.labelY,
+        dense: line.dense,
+        rank: line.rank,
+        label: line.label ?? "",
+      })),
+    });
+    // #endregion
+  }, [positionedLines, H]);
+
   return (
     <div
       style={{
@@ -316,7 +527,7 @@ function OverlayLineEl({
 
   const lineRight = Math.max(
     chart_left + LABEL_W + 24,
-    chart_right - rightMarginPx,
+    chart_right - rightMarginPx - OVERLAY_LINE_LEFT_SHIFT_PX,
   );
   const lx = lineRight - LABEL_W - 4;
   const ly = labelY - labelH / 2;

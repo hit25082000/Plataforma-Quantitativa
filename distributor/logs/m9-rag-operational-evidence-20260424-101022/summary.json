@@ -1,0 +1,42 @@
+{
+  "overall_ok": 0,
+  "http_overall_ok": 0,
+  "sqlite_overall_ok": 0,
+  "base_url": "http://127.0.0.1:8000",
+  "ticker": "WINFUT",
+  "duration_seconds": 1800.0,
+  "interval_seconds": 5.0,
+  "timeout_seconds": 4.0,
+  "sample_count": 202,
+  "ok_sample_count": 6,
+  "http_failures": 196,
+  "views_ingested_delta": 0,
+  "route_total_delta": 0,
+  "max_view_trade_count": 0,
+  "max_view_wall_count": 0,
+  "max_view_lag_ms": 368042,
+  "views_backend_last": "sqlite",
+  "sqlite_trade_rows_delta": -18630,
+  "sqlite_max_window_trade_count": 23108,
+  "sqlite_max_walls_rows": 345,
+  "sqlite_max_lag_ms": 1214742,
+  "checks_http": {
+    "http_failures_lte_max": true,
+    "ok_samples_gt_0": true,
+    "rag_metrics_visible": true,
+    "views_enabled_visible": true,
+    "views_ingested_delta_gte_min": false,
+    "view_trade_count_gt_0": false,
+    "view_wall_count_gt_0": false,
+    "view_lag_lte_max": true,
+    "route_total_delta_gt_0": false,
+    "views_backend_matches": true
+  },
+  "checks_sqlite": {
+    "sqlite_samples_gt_0": true,
+    "sqlite_trade_rows_delta_gte_min": false,
+    "sqlite_walls_rows_gt_0": true,
+    "sqlite_trade_count_window_gt_0": true,
+    "sqlite_lag_lte_max": false
+  }
+}

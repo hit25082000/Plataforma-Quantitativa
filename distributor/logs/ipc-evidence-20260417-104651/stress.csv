@@ -1,0 +1,8 @@
+section,metric,value
+STRESS,target_rate,1000
+STRESS,duration_sec,0.2
+STRESS,written,200
+STRESS,final_write_seq,200
+STRESS,ring_dropped_counter,0
+STRESS,ring_capacity,559239
+STRESS,achieved_rate,1000.0

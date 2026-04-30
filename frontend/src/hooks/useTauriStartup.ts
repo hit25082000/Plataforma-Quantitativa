@@ -16,20 +16,26 @@ const CONFIG_NEEDED_MESSAGE =
 function isEngineNotListening(message: string): boolean {
   const raw = (message ?? "").trim();
   if (!raw) {
-    // Engine pode fechar socket sem payload; tratar como transitório para permitir retry.
-    return true;
+    return false;
   }
   const m = raw.toLowerCase();
-  return (
-    m.includes("5556") ||
-    m.includes("timed out") ||
+  const explicitNotListening =
+    m.includes("não está escutando") ||
+    m.includes("nao esta escutando") ||
+    m.includes("escutando na porta");
+  const refused =
     m.includes("connection refused") ||
-    m.includes("escutando")
+    m.includes("actively refused") ||
+    m.includes("forcibly rejected");
+  return (
+    explicitNotListening ||
+    refused
   );
 }
 
 const SWITCH_RETRY_MS = 2000;
 const SWITCH_MAX_ATTEMPTS = 15;
+const RESPAWN_EVERY_ATTEMPTS = 3;
 
 async function setActiveAssetWithRetry(
   ticker: string,
@@ -47,7 +53,10 @@ async function setActiveAssetWithRetry(
       );
       if (result.success) return;
       if (!isEngineNotListening(result.message)) return;
-      if (spawnEngineIfNotListening && i === 0) {
+      if (
+        spawnEngineIfNotListening &&
+        (i === 0 || i % RESPAWN_EVERY_ATTEMPTS === 0)
+      ) {
         try {
           await invoke("spawn_engine");
         } catch {

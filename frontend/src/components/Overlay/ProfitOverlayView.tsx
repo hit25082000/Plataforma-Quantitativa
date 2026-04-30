@@ -20,6 +20,30 @@ type OverlayCalibrationPayload = {
   updated_at: string;
 };
 
+function debugOverlayLog(
+  runId: string,
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+) {
+  // #region agent log
+  fetch("http://127.0.0.1:7895/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9b12fa" },
+    body: JSON.stringify({
+      sessionId: "9b12fa",
+      runId,
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
 export function ProfitOverlayView() {
   const calibration = useMarketStore((s) => s.overlayCalibration);
   const ubsPrice = useMarketStore((s) => s.overlayUbsPrice);
@@ -58,6 +82,13 @@ export function ProfitOverlayView() {
           avgPrice: number;
           ts: string;
         };
+        // #region agent log
+        debugOverlayLog("pre-fix", "H7", "ProfitOverlayView.tsx:85", "overlay_lines_event", {
+          ubsPrice: p.ubsPrice,
+          avgPrice: p.avgPrice,
+          ts: p.ts,
+        });
+        // #endregion
         useMarketStore.setState({
           overlayUbsPrice: p.ubsPrice,
           overlayAvgPrice: p.avgPrice,
@@ -65,17 +96,27 @@ export function ProfitOverlayView() {
         });
       });
       unCalib = await listen("pq-overlay-calibration", (e) => {
+        const payload = e.payload as {
+          pricePerPixel: number;
+          originPrice: number;
+          originY: number;
+          chartX: number;
+          chartY: number;
+          chartWidth: number;
+          chartHeight: number;
+          updatedAt: string;
+        };
+        // #region agent log
+        debugOverlayLog(
+          "pre-fix",
+          "H8",
+          "ProfitOverlayView.tsx:102",
+          "overlay_calibration_event",
+          payload,
+        );
+        // #endregion
         useMarketStore.setState({
-          overlayCalibration: e.payload as {
-            pricePerPixel: number;
-            originPrice: number;
-            originY: number;
-            chartX: number;
-            chartY: number;
-            chartWidth: number;
-            chartHeight: number;
-            updatedAt: string;
-          },
+          overlayCalibration: payload,
         });
       });
     })();
@@ -87,7 +128,7 @@ export function ProfitOverlayView() {
 
   const yValues = useMemo(() => {
     if (!calibration || ubsPrice == null || avgPrice == null) return null;
-    return {
+    const next = {
       ubsY: lineY(
         ubsPrice,
         calibration.originPrice,
@@ -101,6 +142,19 @@ export function ProfitOverlayView() {
         calibration.pricePerPixel,
       ),
     };
+    // #region agent log
+    debugOverlayLog("pre-fix", "H9", "ProfitOverlayView.tsx:142", "overlay_line_projection", {
+      ubsPrice,
+      avgPrice,
+      originPrice: calibration.originPrice,
+      originY: calibration.originY,
+      pricePerPixel: calibration.pricePerPixel,
+      updatedAt: calibration.updatedAt,
+      projectedUbsY: next.ubsY,
+      projectedAvgY: next.avgY,
+    });
+    // #endregion
+    return next;
   }, [calibration, ubsPrice, avgPrice]);
 
   return (

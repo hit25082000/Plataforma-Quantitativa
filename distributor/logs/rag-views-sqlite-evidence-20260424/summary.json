@@ -1,0 +1,68 @@
+{
+  "ok": true,
+  "sqlite_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\rag-views-sqlite-evidence-20260424\\rag_views.sqlite3",
+  "checks": {
+    "before_enabled": true,
+    "before_trade_count": 1,
+    "after_enabled": true,
+    "after_trade_count": 1,
+    "after_trade_qty_sum": 50,
+    "after_aggression_delta": 120,
+    "after_latest_wall_count": 2
+  },
+  "before_restart": {
+    "enabled": true,
+    "ticker": "WINFUT",
+    "lookback_seconds": 300,
+    "trade_count": 1,
+    "trade_qty_sum": 50,
+    "vwap_running": 130100.0,
+    "aggression_delta": 120,
+    "latest_wall_count": 2,
+    "wall_count_max": 2,
+    "top_buyers": [
+      {
+        "agent": 111,
+        "qty": 50
+      }
+    ],
+    "top_sellers": [
+      {
+        "agent": 222,
+        "qty": 50
+      }
+    ],
+    "lag_ms": 777,
+    "fresh": true,
+    "has_data": true,
+    "as_of": "2026-04-24T13:48:31.710000Z"
+  },
+  "after_restart": {
+    "enabled": true,
+    "ticker": "WINFUT",
+    "lookback_seconds": 300,
+    "trade_count": 1,
+    "trade_qty_sum": 50,
+    "vwap_running": 130100.0,
+    "aggression_delta": 120,
+    "latest_wall_count": 2,
+    "wall_count_max": 2,
+    "top_buyers": [
+      {
+        "agent": 111,
+        "qty": 50
+      }
+    ],
+    "top_sellers": [
+      {
+        "agent": 222,
+        "qty": 50
+      }
+    ],
+    "lag_ms": 781,
+    "fresh": true,
+    "has_data": true,
+    "as_of": "2026-04-24T13:48:31.714000Z"
+  },
+  "ts": 1777038511533
+}

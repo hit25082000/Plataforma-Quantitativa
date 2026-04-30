@@ -93,11 +93,11 @@ using OfferBookV2_t = void (PROFIT_STDCALL *)(
     int32_t     nAgent,
     int64_t     nOfferID,
     double      dPrice,
-    char        bHasPrice,
-    char        bHasQtd,
-    char        bHasDate,
-    char        bHasOfferID,
-    char        bHasAgent,
+    int32_t     bHasPrice,
+    int32_t     bHasQtd,
+    int32_t     bHasDate,
+    int32_t     bHasOfferID,
+    int32_t     bHasAgent,
     const wchar_t* pwcDate,
     void*       pArraySell,
     void*       pArrayBuy
@@ -179,19 +179,28 @@ constexpr int32_t NL_INTERNAL_ERROR      = static_cast<int32_t>(0x80000001);
 constexpr int32_t NL_NOT_INITIALIZED     = NL_INTERNAL_ERROR + 1;
 constexpr int32_t NL_INVALID_ARGS       = NL_NOT_INITIALIZED + 1;
 constexpr int32_t NL_WAITING_SERVER     = NL_INVALID_ARGS + 1;
+constexpr int32_t NL_NO_LOGIN           = NL_WAITING_SERVER + 1;
+constexpr int32_t NL_NO_LICENSE         = NL_NO_LOGIN + 1;
 constexpr int32_t NL_INVALID_TICKER     = static_cast<int32_t>(0x8000001F);  // Ticker/bolsa inválido para esta função
-constexpr int32_t NL_MARKET_ONLY        = -2147483635;  // Não possui roteamento
+constexpr int32_t NL_MARKET_ONLY        = static_cast<int32_t>(0x8000000A);   // Não possui roteamento
 
 // Connection state types
 constexpr int32_t CONNECTION_STATE_LOGIN        = 0;
 constexpr int32_t CONNECTION_STATE_ROTEAMENTO  = 1;
 constexpr int32_t CONNECTION_STATE_MARKET_DATA = 2;
-constexpr int32_t CONNECTION_STATE_ACTIVATION  = 3;
+constexpr int32_t CONNECTION_STATE_MARKET_LOGIN = 3;
+constexpr int32_t CONNECTION_STATE_ACTIVATION = CONNECTION_STATE_MARKET_LOGIN; // legado
 
 // Results
 constexpr int32_t LOGIN_CONNECTED      = 0;
+constexpr int32_t LOGIN_INVALID        = 1;
+constexpr int32_t LOGIN_INVALID_PASS   = 2;
+constexpr int32_t LOGIN_BLOCKED_PASS   = 3;
+constexpr int32_t LOGIN_EXPIRED_PASS   = 4;
+constexpr int32_t LOGIN_UNKNOWN_ERR    = 200;
 constexpr int32_t MARKET_CONNECTED     = 4;
 constexpr int32_t CONNECTION_ACTIVATE_VALID = 0;
+constexpr int32_t CONNECTION_ACTIVATE_INVALID = 1;
 
 // Trade callback flags (V2)
 constexpr uint32_t TC_IS_EDIT = 1u;

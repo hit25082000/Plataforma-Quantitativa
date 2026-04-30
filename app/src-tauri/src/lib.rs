@@ -3,6 +3,7 @@
 use tauri::Manager;
 
 mod commands;
+mod shared_memory_ipc;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -38,6 +39,7 @@ pub fn run() {
             commands::get_ocr_runtime_port,
         ])
         .setup(|app| {
+            shared_memory_ipc::start_reader(app.handle().clone());
             #[cfg(debug_assertions)]
             {
                 if let Some(window) = app.get_webview_window("main") {

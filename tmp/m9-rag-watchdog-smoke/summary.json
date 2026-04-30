@@ -1,0 +1,21 @@
+{
+  "overall_ok": 0,
+  "base_url": "http://127.0.0.1:65534",
+  "ticker": "WINFUT",
+  "attempt_count": 2,
+  "selected_attempt": 2,
+  "attempts": [
+    {
+      "attempt": 1,
+      "overall_ok": 0,
+      "stop_reason": "warmup_not_ready",
+      "summary_path": "tmp\\m9-rag-watchdog-smoke\\attempt-01\\summary.json"
+    },
+    {
+      "attempt": 2,
+      "overall_ok": 0,
+      "stop_reason": "warmup_not_ready",
+      "summary_path": "tmp\\m9-rag-watchdog-smoke\\attempt-02\\summary.json"
+    }
+  ]
+}

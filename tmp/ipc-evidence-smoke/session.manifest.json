@@ -1,0 +1,36 @@
+{
+  "started_at_epoch_s": 1776440928.9340434,
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "python": "3.13.1"
+  },
+  "args": {
+    "stress": false,
+    "session": true,
+    "stress_rate": 100000,
+    "stress_seconds": 3.0,
+    "session_seconds": 1.0,
+    "messages": 50000,
+    "warmup": 500,
+    "zmq_url": "tcp://127.0.0.1:37591",
+    "shm_name": "Local\\PQMarketDataV1",
+    "shm_mb": 64,
+    "zmq_only": false
+  },
+  "mode": "session",
+  "result": {
+    "duration_sec": 1.0,
+    "observed_trades": 0,
+    "last_write_seq": 0,
+    "ring_dropped_counter": 0,
+    "gap_count": 0,
+    "gap_messages": 0,
+    "committed_mismatch": 0,
+    "next_seq": 1,
+    "loss_detected": 0
+  },
+  "finished_at_epoch_s": 1776440929.984858
+}

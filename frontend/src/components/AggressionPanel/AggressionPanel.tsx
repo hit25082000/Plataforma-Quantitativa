@@ -3,6 +3,7 @@ import { ifrSeriesShortLabel, useMarketStore } from "../../store/marketStore";
 import { formatPrice } from "../../utils/formatters";
 import { OpenAsWidgetButton } from "../OpenAsWidgetButton";
 import { IfrChart, type IfrChartVariant } from "./IfrChart";
+import { VolumeProfilePanel } from "../VolumeProfilePanel/VolumeProfilePanel";
 import { TopBrokersTable } from "./TopBrokersTable";
 import { UBSLine } from "./UBSLine";
 
@@ -43,6 +44,10 @@ export function AggressionPanel() {
         <span>AGGRESSION PANEL</span>
       </div>
       <div className="flex-1 overflow-y-auto p-4 space-y-6">
+        <AggressionSection title="Volume Profile" widgetId="volume-profile">
+          <VolumeProfilePanel />
+        </AggressionSection>
+
         <AggressionSection title="Saldo" widgetId="top-brokers">
           <TopBrokersTable />
         </AggressionSection>

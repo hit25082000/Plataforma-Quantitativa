@@ -8,6 +8,8 @@
 #include "trade_stream.h"
 #include "agent_ranking.h"
 #include "trade_reconciler.h"
+#include "volume_profile.h"
+#include "shared_memory_ipc.h"
 #include <zmq.hpp>
 #include <atomic>
 #include <functional>
@@ -37,6 +39,8 @@ public:
     void start();
     void stop();
     void set_ticker(const std::string& t);
+    void reset_volume_profile();
+    void with_processing_paused(const std::function<void()>& fn);
 
     bool is_bound() const { return bound_.load(); }
 
@@ -53,6 +57,7 @@ private:
     event_dispatcher::EventDispatcher* dispatcher_ = nullptr;
     AgentRanking*                   agent_ranking_ = nullptr;
     TradeReconciler                 reconciler_;
+    volume_profile::VolumeProfileEngine volume_profile_;
     std::function<std::string(int32_t)> agent_name_resolver_;
     std::function<std::string(int32_t)> agent_short_name_resolver_;
     std::unordered_map<int32_t, std::string> agent_name_cache_;
@@ -63,6 +68,9 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> bound_{false};
     std::atomic<int>  msg_count_{0};
+    std::mutex processing_mutex_;
+    std::unique_ptr<shared_memory_ipc::SharedMemoryRingWriter> shm_writer_;
+    bool shm_enabled_{false};
     int64_t metrics_next_log_ms_{0};
     int64_t trade_latency_sum_ms_{0};
     int64_t trade_latency_count_{0};

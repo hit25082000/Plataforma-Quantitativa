@@ -1,0 +1,42 @@
+{
+  "started_at_epoch_s": 1776572241.7780457,
+  "finished_at_epoch_s": 1776572276.970923,
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "python": "3.13.1"
+  },
+  "args": {
+    "engine": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\engine\\build\\Release\\engine.exe",
+    "workdir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\engine\\build\\Release",
+    "duration_seconds": 1.0,
+    "timeout_seconds": 35.0,
+    "runs": "baseline",
+    "enable_shm_qpc": false,
+    "hft_qpc_sample_every": 1,
+    "hft_qpc_max_samples": 1000000,
+    "shm_qpc_sample_every": 1,
+    "shm_qpc_max_samples": 1000000,
+    "main_core": 0,
+    "publisher_core": 1,
+    "profit_callback_core": 2,
+    "hft_prefetch": 1,
+    "shm_large_pages": false,
+    "shm_large_pages_strict": false,
+    "shm_numa_node": -1,
+    "shm_prefetch_next_slot": 1
+  },
+  "runs": [
+    {
+      "run": "baseline",
+      "pinning": 0,
+      "exit_code": 1,
+      "elapsed_s": 35.17,
+      "stdout_log": "tmp\\hft-qpc-smoke-m7\\summary_logs\\baseline.stdout.log",
+      "stderr_log": "tmp\\hft-qpc-smoke-m7\\summary_logs\\baseline.stderr.log",
+      "metrics": []
+    }
+  ]
+}

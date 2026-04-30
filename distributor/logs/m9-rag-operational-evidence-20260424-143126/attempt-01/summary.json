@@ -1,0 +1,55 @@
+{
+  "attempt": 1,
+  "overall_ok": 1,
+  "stop_reason": "ok",
+  "watchdog_triggered": false,
+  "watchdog_threshold": 8,
+  "warmup": {
+    "checks": {
+      "warmup_ok_samples_gte_min": true,
+      "warmup_route_growth_gt_0": true
+    },
+    "ok_samples": 3,
+    "route_growth": 0
+  },
+  "sample_count": 20,
+  "duration_seconds": 120.0,
+  "interval_seconds": 5.0,
+  "timeout_seconds": 4.0,
+  "http_overall_ok": 1,
+  "sqlite_overall_ok": 1,
+  "http_failures": 6,
+  "ok_sample_count": 14,
+  "views_ingested_delta": 8461,
+  "route_total_delta": 17596,
+  "max_view_trade_count": 25169,
+  "max_view_wall_count": 17,
+  "max_view_wall_count_latest": 16,
+  "max_view_wall_count_window": 17,
+  "max_view_lag_ms": 297,
+  "views_backend_last": "sqlite",
+  "sqlite_trade_rows_delta": 9033,
+  "sqlite_trade_rows_growth": 9033,
+  "sqlite_max_window_trade_count": 26142,
+  "sqlite_max_walls_rows": 950,
+  "sqlite_max_lag_ms": -3403518,
+  "sqlite_min_lag_ms": -3526765,
+  "checks_http": {
+    "http_failures_lte_max": true,
+    "ok_samples_gt_0": true,
+    "rag_metrics_visible": true,
+    "views_enabled_visible": true,
+    "views_ingested_delta_gte_min": true,
+    "view_trade_count_gt_0": true,
+    "view_wall_count_gt_0": true,
+    "view_lag_lte_max": true,
+    "views_backend_matches": true
+  },
+  "checks_sqlite": {
+    "sqlite_samples_gt_0": true,
+    "sqlite_trade_rows_growth_gte_min": true,
+    "sqlite_walls_rows_gt_0": true,
+    "sqlite_trade_count_window_gt_0": true,
+    "sqlite_min_lag_lte_max": true
+  }
+}

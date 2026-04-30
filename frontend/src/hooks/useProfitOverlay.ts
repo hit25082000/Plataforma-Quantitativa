@@ -54,6 +54,30 @@ export function overlayLineColorForLabel(label: string, index: number): string {
 
 const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["ubs", "best_bid", "best_ask"];
 
+function debugOverlayLog(
+  runId: string,
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+) {
+  // #region agent log
+  fetch("http://127.0.0.1:7895/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9b12fa" },
+    body: JSON.stringify({
+      sessionId: "9b12fa",
+      runId,
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+  // #endregion
+}
+
 function loadSelectedMetrics(): OverlayMetricId[] {
   try {
     const raw = localStorage.getItem(STORAGE_SELECTED_METRICS);
@@ -510,6 +534,16 @@ export function useProfitOverlay() {
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === "overlay_update") {
+            // #region agent log
+            debugOverlayLog("pre-fix", "H6", "useProfitOverlay.ts:513", "ocr_overlay_update", {
+              status: msg.data?.status ?? "",
+              lineCount: Array.isArray(msg.data?.lines) ? msg.data.lines.length : 0,
+              yMin: msg.data?.y_min ?? null,
+              yMax: msg.data?.y_max ?? null,
+              axisKeptLabels: msg.data?.axis_diagnostics?.kept_labels ?? null,
+              axisRejected: msg.data?.axis_diagnostics?.rejected ?? null,
+            });
+            // #endregion
             if (
               msg.data?.status === "ok" &&
               !firstOverlayLoggedRef.current &&
@@ -577,6 +611,14 @@ export function useProfitOverlay() {
       (t) => Number.isFinite(t.value) && t.value > 0,
     );
     const payload = valid.map(({ value, label }) => ({ value, label }));
+    // #region agent log
+    debugOverlayLog("pre-fix", "H5", "useProfitOverlay.ts:581", "push_targets_called", {
+      targetCount: targets.length,
+      validCount: valid.length,
+      wsState: wsRef.current?.readyState ?? -1,
+      sample: payload.slice(0, 4),
+    });
+    // #endregion
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({ type: "set_positions", targets: payload }),
@@ -596,6 +638,31 @@ export function useProfitOverlay() {
       if (!t || !activeRef.current) return;
       pushTargets(t);
     }, 90);
+  }, [pushTargets]);
+
+  useEffect(() => {
+    const onMouseDown = (ev: MouseEvent) => {
+      if (ev.button !== 0) return;
+      if (!activeRef.current) return;
+      const currentTargets = targetsRef.current;
+      // #region agent log
+      debugOverlayLog(
+        "post-fix",
+        "H12",
+        "useProfitOverlay.ts:650",
+        "left_click_force_push_targets",
+        {
+          targetCount: currentTargets.length,
+          wsState: wsRef.current?.readyState ?? -1,
+        },
+      );
+      // #endregion
+      pushTargets(currentTargets);
+    };
+    window.addEventListener("mousedown", onMouseDown, true);
+    return () => {
+      window.removeEventListener("mousedown", onMouseDown, true);
+    };
   }, [pushTargets]);
 
   const setSelectedMetricIds = useCallback((ids: OverlayMetricId[]) => {

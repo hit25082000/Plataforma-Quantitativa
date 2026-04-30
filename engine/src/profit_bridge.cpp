@@ -1,5 +1,6 @@
 #include "profit_bridge.h"
 #include "config.h"
+#include "hft_tuning.h"
 #include "profit_types.h"
 #include <chrono>
 #include <condition_variable>
@@ -11,6 +12,7 @@
 #include <iostream>
 #include <atomic>
 #include <ctime>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -38,6 +40,10 @@ std::mutex g_market_mutex;
 std::condition_variable g_market_cv;
 bool g_market_connected = false;
 bool g_activation_valid = false;
+constexpr int32_t UNKNOWN_CONN_STATE = std::numeric_limits<int32_t>::lowest();
+std::atomic<int32_t> g_login_result{UNKNOWN_CONN_STATE};
+std::atomic<int32_t> g_market_result{UNKNOWN_CONN_STATE};
+std::atomic<int32_t> g_activation_result{UNKNOWN_CONN_STATE};
 
 std::mutex g_history_mutex;
 std::condition_variable g_history_cv;
@@ -122,6 +128,13 @@ static void push_trade_event(
     g_queue->push(ev);
 }
 
+static inline void maybe_pin_profit_callback_thread_once() {
+    thread_local bool pinned = false;
+    if (pinned) return;
+    hft_tuning::maybe_pin_current_thread_from_env("HFT_PROFIT_CALLBACK_CORE", 2, "profit_callback");
+    pinned = true;
+}
+
 void PROFIT_STDCALL state_callback(int32_t nType, int32_t nResult) {
     const char* type_str = "?";
     switch (nType) {
@@ -133,10 +146,17 @@ void PROFIT_STDCALL state_callback(int32_t nType, int32_t nResult) {
     std::cerr << "[Profit] " << type_str << ": " << nResult << std::endl;
     {
         std::lock_guard<std::mutex> lk(g_market_mutex);
-        if (nType == profit::CONNECTION_STATE_MARKET_DATA && nResult == profit::MARKET_CONNECTED)
-            g_market_connected = true;
-        if (nType == profit::CONNECTION_STATE_ACTIVATION && nResult == profit::CONNECTION_ACTIVATE_VALID)
-            g_activation_valid = true;
+        if (nType == profit::CONNECTION_STATE_LOGIN) {
+            g_login_result.store(nResult);
+        }
+        if (nType == profit::CONNECTION_STATE_MARKET_DATA) {
+            g_market_connected = (nResult == profit::MARKET_CONNECTED);
+            g_market_result.store(nResult);
+        }
+        if (nType == profit::CONNECTION_STATE_MARKET_LOGIN) {
+            g_activation_valid = (nResult == profit::CONNECTION_ACTIVATE_VALID);
+            g_activation_result.store(nResult);
+        }
         if (g_market_connected && g_activation_valid)
             g_market_cv.notify_all();
     }
@@ -171,6 +191,8 @@ void PROFIT_STDCALL daily_callback(
     int32_t /*nQtd*/, int32_t /*nNegocios*/, int32_t /*nContratosOpen*/,
     int32_t /*nQtdBuyer*/, int32_t /*nQtdSeller*/, int32_t /*nNegBuyer*/, int32_t /*nNegSeller*/)
 {
+    maybe_pin_profit_callback_thread_once();
+    hft_tuning::record_profit_callback_tick();
     std::string ticker = trim_ticker(wide_to_utf8(rAssetID.pwcTicker));
     if (!g_queue) return;
     if (g_first_daily.exchange(false))
@@ -190,8 +212,10 @@ void PROFIT_STDCALL daily_callback(
 void PROFIT_STDCALL offer_book_callback_v2(
     profit::TAssetIDRec rAssetID, int32_t nAction, int32_t nPosition,
     int32_t Side, int64_t nQtd, int32_t nAgent, int64_t nOfferID, double dPrice,
-    char, char, char, char, char, const wchar_t*, void*, void*)
+    int32_t, int32_t, int32_t, int32_t, int32_t, const wchar_t*, void*, void*)
 {
+    maybe_pin_profit_callback_thread_once();
+    hft_tuning::record_profit_callback_tick();
     std::string ticker = trim_ticker(wide_to_utf8(rAssetID.pwcTicker));
     if (!g_queue) return;
     if (g_first_offerbook.exchange(false))
@@ -213,6 +237,8 @@ void PROFIT_STDCALL offer_book_callback_v2(
 void PROFIT_STDCALL trade_callback_v2(
     profit::TConnectorAssetIdentifier assetId, size_t pTrade, uint32_t flags)
 {
+    maybe_pin_profit_callback_thread_once();
+    hft_tuning::record_profit_callback_tick();
     std::string ticker = trim_ticker(wide_to_utf8(assetId.Ticker));
     if (!g_queue || !g_translate_trade) return;
     profit::TConnectorTrade trade{};
@@ -235,6 +261,8 @@ void PROFIT_STDCALL trade_callback_v2(
 void PROFIT_STDCALL history_trade_callback_v2(
     profit::TConnectorAssetIdentifier assetId, size_t pTrade, uint32_t flags)
 {
+    maybe_pin_profit_callback_thread_once();
+    hft_tuning::record_profit_callback_tick();
     std::string ticker = trim_ticker(wide_to_utf8(assetId.Ticker));
     if (!g_queue || !g_translate_trade) return;
     profit::TConnectorTrade trade{};
@@ -334,6 +362,9 @@ void ProfitBridge::unload() {
         g_market_connected = false;
         g_activation_valid = false;
     }
+    g_login_result.store(UNKNOWN_CONN_STATE);
+    g_market_result.store(UNKNOWN_CONN_STATE);
+    g_activation_result.store(UNKNOWN_CONN_STATE);
     if (dll_handle_) {
         FREE_LIB(dll_handle_);
         dll_handle_ = nullptr;
@@ -366,6 +397,18 @@ bool ProfitBridge::wait_for_market_connected(std::chrono::milliseconds timeout) 
     // Exemplo C++: Subscribe só quando bMarketConnected && bAtivo (Market 4 e Ativação 0)
     std::unique_lock<std::mutex> lock(g_market_mutex);
     return g_market_cv.wait_for(lock, timeout, [] { return g_market_connected && g_activation_valid; });
+}
+
+int32_t ProfitBridge::last_login_result() const {
+    return g_login_result.load();
+}
+
+int32_t ProfitBridge::last_market_result() const {
+    return g_market_result.load();
+}
+
+int32_t ProfitBridge::last_activation_result() const {
+    return g_activation_result.load();
 }
 
 void ProfitBridge::register_callbacks() {

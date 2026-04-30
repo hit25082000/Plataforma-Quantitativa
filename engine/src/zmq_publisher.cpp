@@ -1,6 +1,8 @@
 #include "zmq_publisher.h"
 #include "alert_types.h"
+#include "hft_tuning.h"
 #include "profit_types.h"
+#include <cctype>
 #include <cstdlib>
 #include <chrono>
 #include <iomanip>
@@ -39,6 +41,16 @@ int64_t read_env_int64_ms(const char* name, int64_t default_ms) {
     } catch (...) {
         return default_ms;
     }
+}
+
+bool read_env_bool(const char* name, bool default_value) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return default_value;
+    std::string raw(v);
+    for (char& c : raw) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    if (raw == "1" || raw == "true" || raw == "yes" || raw == "on") return true;
+    if (raw == "0" || raw == "false" || raw == "no" || raw == "off") return false;
+    return default_value;
 }
 
 template <typename Resolver>
@@ -85,6 +97,18 @@ ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
 {
     dom_snapshot_publish_min_ms_ =
         read_env_int64_ms("DOM_SNAPSHOT_PUBLISH_MIN_MS", 100);
+    volume_profile_.set_ticker(ticker_);
+    shm_enabled_ = read_env_bool("SHM_ENABLED", false);
+    if (shm_enabled_) {
+        shm_writer_ = std::make_unique<shared_memory_ipc::SharedMemoryRingWriter>(
+            shared_memory_ipc::default_mapping_name(),
+            shared_memory_ipc::default_mapping_size_bytes());
+        if (!shm_writer_->is_ready()) {
+            std::cerr << "[ZmqPublisher] SHM enabled but initialization failed. Continuing with ZMQ only."
+                      << std::endl;
+            shm_writer_.reset();
+        }
+    }
 }
 
 ZmqPublisher::~ZmqPublisher() {
@@ -105,6 +129,7 @@ void ZmqPublisher::stop() {
 void ZmqPublisher::set_ticker(const std::string& t) {
     ticker_ = t;
     reconciler_.reset();
+    volume_profile_.set_ticker(t);
     {
         std::lock_guard<std::mutex> lock(agent_cache_mutex_);
         agent_name_cache_.clear();
@@ -112,7 +137,18 @@ void ZmqPublisher::set_ticker(const std::string& t) {
     }
 }
 
+void ZmqPublisher::reset_volume_profile() {
+    volume_profile_.reset();
+}
+
+void ZmqPublisher::with_processing_paused(const std::function<void()>& fn) {
+    std::lock_guard<std::mutex> lock(processing_mutex_);
+    fn();
+}
+
 void ZmqPublisher::run() {
+    hft_tuning::maybe_pin_current_thread_from_env("HFT_PUBLISHER_CORE", 1, "publisher");
+
     zmq::context_t ctx(1);
     zmq::socket_t pub(ctx, ZMQ_PUB);
     try {
@@ -132,6 +168,7 @@ void ZmqPublisher::run() {
     while (running_.load()) {
         event_bus::Event ev;
         queue_.wait_and_pop(ev);
+        hft_tuning::record_publisher_tick();
 
         if (queue_.is_stopped()) break;
 
@@ -140,9 +177,11 @@ void ZmqPublisher::run() {
             std::cerr << "[ZmqPublisher] Processing first event from queue" << std::endl;
         }
 
-        std::visit([&](auto&& e) {
-            using T = std::decay_t<decltype(e)>;
-            if constexpr (std::is_same_v<T, event_bus::TradeEvent>) {
+        {
+            std::lock_guard<std::mutex> lock(processing_mutex_);
+            std::visit([&](auto&& e) {
+                using T = std::decay_t<decltype(e)>;
+                if constexpr (std::is_same_v<T, event_bus::TradeEvent>) {
                 trade_events_processed_++;
                 auto rec = reconciler_.apply(e);
                 if (!rec.accepted) {
@@ -157,6 +196,7 @@ void ZmqPublisher::run() {
                         if (latency_ms > max_trade_latency_ms_) max_trade_latency_ms_ = latency_ms;
                     }
                 }
+                auto vp_msg = volume_profile_.on_trade(e);
                 trade_proc_.process(e);
                 if (count < 3) {
                     std::cerr << "[ZmqPublisher] Trade event: ticker=" << e.ticker
@@ -220,8 +260,15 @@ void ZmqPublisher::run() {
                         agent_short_name_cache_,
                         agent_cache_mutex_);
                 }
+                if (shm_writer_) {
+                    shm_writer_->write_trade(e, acc.vwap(), acc.net_aggression);
+                }
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
+                if (vp_msg) {
+                    zmq::message_t vp_out(vp_msg->dump());
+                    pub.send(vp_out, zmq::send_flags::none);
+                }
                 if (alert_bus_ && dispatcher_) {
                     rules::Alert alert;
                     while (alert_bus_->try_pop(alert)) {
@@ -229,7 +276,7 @@ void ZmqPublisher::run() {
                         publish_alert(pub, alert);
                     }
                 }
-            } else if constexpr (std::is_same_v<T, event_bus::OfferBookEvent>) {
+                } else if constexpr (std::is_same_v<T, event_bus::OfferBookEvent>) {
                 offer_events_processed_++;
                 dom_.process(e);
                 if (count < 3) {
@@ -309,7 +356,7 @@ void ZmqPublisher::run() {
                         publish_alert(pub, alert);
                     }
                 }
-            } else if constexpr (std::is_same_v<T, event_bus::DailyEvent>) {
+                } else if constexpr (std::is_same_v<T, event_bus::DailyEvent>) {
                 daily_events_processed_++;
                 // Despachar para as regras
                 if (dispatcher_) {
@@ -331,13 +378,15 @@ void ZmqPublisher::run() {
                     j["trade_date"] = e.trade_date;
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
-            }
-        }, ev);
+                }
+            }, ev);
+        }
 
         int64_t now_ms = steady_now_ms();
         if (now_ms >= metrics_next_log_ms_) {
             auto qm = queue_.metrics();
             auto rstats = reconciler_.stats();
+            auto shm_stats = shm_writer_ ? shm_writer_->stats() : shared_memory_ipc::SharedMemoryRingWriter::Stats{};
             double avg_trade_latency = trade_latency_count_ > 0
                 ? static_cast<double>(trade_latency_sum_ms_) / static_cast<double>(trade_latency_count_)
                 : 0.0;
@@ -356,6 +405,13 @@ void ZmqPublisher::run() {
                 << " duplicates_ignored=" << rstats.duplicates_ignored
                 << " reconcile_errors=" << rstats.reconcile_errors
                 << " dom_snapshot_skipped=" << dom_snapshot_throttle_skips_
+                << " shm_enabled=" << (shm_writer_ ? 1 : 0)
+                << " shm_write_seq=" << shm_stats.write_seq
+                << " shm_dropped=" << shm_stats.dropped
+                << " shm_capacity=" << shm_stats.capacity
+                << " shm_mapped_bytes=" << shm_stats.mapped_size_bytes
+                << " shm_large_pages=" << shm_stats.large_pages
+                << " shm_numa_node=" << shm_stats.numa_node
                 << std::endl;
             metrics_next_log_ms_ = now_ms + 5000;
         }

@@ -1,0 +1,28 @@
+{
+  "ok": true,
+  "mode": "pregao",
+  "ts": 1777038925573,
+  "sqlite_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\rag_views_pregao.sqlite3",
+  "checks": {
+    "sqlite_exists": true,
+    "trades_rows_gt_0": true,
+    "walls_rows_gt_0": true,
+    "trade_ts_max_present": true,
+    "trade_lag_ms": 169113
+  },
+  "snapshot": {
+    "trades_rows": 19445,
+    "walls_rows": 250,
+    "trade_ts_min": 1777038678924,
+    "trade_ts_max": 1777038756464,
+    "trade_lag_ms": 169113,
+    "top_tickers": [
+      {
+        "ticker": "WINFUT",
+        "qty_sum": 66608,
+        "aggr": -78579495,
+        "rows": 19445
+      }
+    ]
+  }
+}

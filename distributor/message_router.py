@@ -13,6 +13,7 @@ from stats_logger import StatsLogger
 
 if TYPE_CHECKING:
     from connection_manager import ConnectionManager
+    from realtime_rag import RealtimeRagEngine
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ class MessageRouter:
         manager: "ConnectionManager",
         throttle_ms: int,
         agent007: Optional[Agent007Engine] = None,
+        rag_engine: Optional["RealtimeRagEngine"] = None,
     ) -> None:
         self._manager = manager
         self._throttle_ms = throttle_ms
@@ -52,6 +54,7 @@ class MessageRouter:
         self._broker_name: dict[int, str] = {}
         self._broker_short_name: dict[int, str] = {}
         self._trade_cache: dict[str, dict[str, int | float | str]] = {}
+        self._rag = rag_engine
 
     async def route(self, raw: str) -> None:
         """Deserialize, validate, apply throttle, and broadcast if valid."""
@@ -84,6 +87,7 @@ class MessageRouter:
             return
 
         if topic == "alert":
+            self._ingest_rag(msg)
             await self._manager.broadcast(raw)
             self._stats_logger.log(msg)
             self._record_metrics("alert", route_start)
@@ -109,6 +113,7 @@ class MessageRouter:
                 if snap is not None:
                     bundle.append(snap)
                 bundle.append(msg)
+                self._ingest_rag_bundle(bundle)
                 await self._send_ws_payloads(bundle)
                 self._stats_logger.log(msg)
                 self._record_metrics(msg_type, route_start)
@@ -123,6 +128,7 @@ class MessageRouter:
                 self._throttled_dom_count += 1
                 self._record_metrics(msg_type, route_start)
                 return
+            self._ingest_rag(msg)
             await self._manager.broadcast(raw)
             if msg_type in ("trade", "flow_inversion"):
                 self._stats_logger.log(msg)
@@ -309,3 +315,15 @@ class MessageRouter:
         await self._manager.broadcast(
             json.dumps({"topic": "ws_batch", "items": payloads})
         )
+
+    def _ingest_rag_bundle(self, payloads: list[dict[str, Any]]) -> None:
+        for payload in payloads:
+            self._ingest_rag(payload)
+
+    def _ingest_rag(self, msg: dict[str, Any]) -> None:
+        if self._rag is None:
+            return
+        try:
+            self._rag.ingest(msg)
+        except Exception:  # pragma: no cover - proteção defensiva
+            logger.exception("RAG ingest failed for topic=%s type=%s", msg.get("topic"), msg.get("type"))

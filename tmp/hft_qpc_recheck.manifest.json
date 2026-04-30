@@ -1,0 +1,83 @@
+{
+  "started_at_epoch_s": 1777052896.031071,
+  "finished_at_epoch_s": 1777053017.4417024,
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "machine": "AMD64",
+    "python": "3.13.1"
+  },
+  "args": {
+    "engine": "engine\\build\\Release\\engine.exe",
+    "workdir": "engine\\build\\Release",
+    "duration_seconds": 120.0,
+    "timeout_seconds": 180.0,
+    "runs": "pinned",
+    "enable_shm_qpc": true,
+    "hft_qpc_sample_every": 1,
+    "hft_qpc_max_samples": 1000000,
+    "shm_qpc_sample_every": 1,
+    "shm_qpc_max_samples": 1000000,
+    "main_core": 0,
+    "publisher_core": 1,
+    "profit_callback_core": 2,
+    "hft_core_index_mode": "physical",
+    "hft_prefetch": 1,
+    "shm_large_pages": false,
+    "shm_large_pages_strict": false,
+    "shm_numa_node": -1,
+    "shm_prefetch_next_slot": 1,
+    "check_run": "pinned",
+    "check_metric": "shm_write_trade_duration",
+    "target_p99_ns": 10000,
+    "target_p999_ns": 20000,
+    "fail_on_check": false
+  },
+  "checks": [
+    {
+      "run": "pinned",
+      "metric": "shm_write_trade_duration",
+      "target_p99_ns": 10000,
+      "target_p999_ns": 20000,
+      "actual_p99_ns": 7597,
+      "actual_p999_ns": 17119,
+      "status": "ok",
+      "reason": "ok"
+    }
+  ],
+  "runs": [
+    {
+      "run": "pinned",
+      "pinning": 1,
+      "exit_code": 0,
+      "elapsed_s": 121.401,
+      "stdout_log": "tmp\\hft_qpc_recheck_logs\\pinned.stdout.log",
+      "stderr_log": "tmp\\hft_qpc_recheck_logs\\pinned.stderr.log",
+      "metrics": [
+        {
+          "run": "pinned",
+          "metric": "publisher_loop_interval",
+          "count": 67953,
+          "p50_ns": 12800,
+          "p95_ns": 53339,
+          "p99_ns": 19752023,
+          "p999_ns": 120895890,
+          "max_ns": 229823500,
+          "mean_ns": 816102.0
+        },
+        {
+          "run": "pinned",
+          "metric": "shm_write_trade_duration",
+          "count": 7804,
+          "p50_ns": 1900,
+          "p95_ns": 3800,
+          "p99_ns": 7597,
+          "p999_ns": 17119,
+          "max_ns": 24800,
+          "mean_ns": 2203.22
+        }
+      ]
+    }
+  ]
+}

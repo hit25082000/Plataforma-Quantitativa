@@ -1,5 +1,5 @@
 import type { MacdSignalMessage } from "../../types/messages";
-import { useMarketStore } from "../../store/marketStore";
+import { normalizeIfrSeriesMode, useMarketStore } from "../../store/marketStore";
 
 export type IfrChartVariant = "9" | "18" | "30";
 
@@ -43,8 +43,17 @@ export function IfrChart({ variant, fillHeight }: IfrChartProps) {
   const config = getVariantConfig(variant);
   const { rsiField } = config;
   const macdHistory = useMarketStore((s) => s.macdHistory);
+  const ifrSeries = useMarketStore((s) => s.ifrSeries);
+  const ifrLoading = useMarketStore((s) => s.ifrLoading);
+  const ifrLoadingSeries = useMarketStore((s) => s.ifrLoadingSeries);
+  const loadingCurrentSeries =
+    ifrLoading && (ifrLoadingSeries == null || ifrLoadingSeries === ifrSeries);
 
   const data = macdHistory
+    .filter((m) => {
+      const msgSeries = normalizeIfrSeriesMode(m.ifr_series);
+      return msgSeries == null || msgSeries === ifrSeries;
+    })
     .map((m, i) => ({ i, rsi: rsiFromMacdMsg(m, rsiField) }))
     .filter((m): m is { i: number; rsi: number } => m.rsi != null);
   const showingEmpty = data.length === 0;
@@ -55,16 +64,30 @@ export function IfrChart({ variant, fillHeight }: IfrChartProps) {
   return (
     <div
       className={`${heightClass} w-full flex items-center justify-center rounded border border-border/50 bg-bg/50`}
-      aria-label={`IFR ${variant} (valor atual)`}
+      aria-label={
+        loadingCurrentSeries
+          ? `IFR ${variant} atualizando`
+          : `IFR ${variant} (valor atual)`
+      }
     >
-      <span className="font-mono text-xs font-semibold text-text/90 tabular-nums">
-        {showingEmpty || currentRsi == null
-          ? "—"
-          : currentRsi.toLocaleString("pt-BR", {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
-      </span>
+      {loadingCurrentSeries ? (
+        <span className="inline-flex items-center justify-center gap-2 text-[11px] font-semibold text-emerald-300">
+          <span
+            className="h-3 w-3 rounded-full border-2 border-emerald-400/30 border-t-emerald-300 animate-spin"
+            aria-hidden="true"
+          />
+          <span className="font-mono tabular-nums">Atualizando</span>
+        </span>
+      ) : (
+        <span className="font-mono text-xs font-semibold text-text/90 tabular-nums">
+          {showingEmpty || currentRsi == null
+            ? "—"
+            : currentRsi.toLocaleString("pt-BR", {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+        </span>
+      )}
     </div>
   );
 }

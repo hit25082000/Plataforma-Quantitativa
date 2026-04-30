@@ -1,7 +1,9 @@
 #include "dom_snapshot.h"
+#include "hft_tuning.h"
 #include "profit_types.h"
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <tuple>
 
 namespace dom_snapshot {
@@ -18,15 +20,35 @@ DOMSnapshotEngine::DOMSnapshotEngine(int64_t wall_threshold, int64_t spoofing_ti
     , spoofing_timer_ms_(spoofing_timer_ms)
 {}
 
+int64_t PriceLevel::total_quantity() const {
+    int64_t sum = 0;
+    const size_t n = offers.size();
+    for (size_t i = 0; i < n; ++i) {
+        if ((i + 1) < n) {
+            hft_tuning::prefetch_read(&offers[i + 1]);
+        }
+        sum += offers[i].quantity;
+    }
+    return sum;
+}
+
 void DOMSnapshotEngine::build_pending_dom() {
     pending_dom_.ticker = ticker_;
     pending_dom_.buy.clear();
     pending_dom_.sell.clear();
-    for (const auto& pl : buy_side_) {
+    for (size_t i = 0; i < buy_side_.size(); ++i) {
+        if ((i + 1) < buy_side_.size()) {
+            hft_tuning::prefetch_read(&buy_side_[i + 1]);
+        }
+        const auto& pl = buy_side_[i];
         int64_t tq = pl.total_quantity();
         if (tq > 0) pending_dom_.buy.emplace_back(pl.price, tq, pl.offers.size());
     }
-    for (const auto& pl : sell_side_) {
+    for (size_t i = 0; i < sell_side_.size(); ++i) {
+        if ((i + 1) < sell_side_.size()) {
+            hft_tuning::prefetch_read(&sell_side_[i + 1]);
+        }
+        const auto& pl = sell_side_[i];
         int64_t tq = pl.total_quantity();
         if (tq > 0) pending_dom_.sell.emplace_back(pl.price, tq, pl.offers.size());
     }
@@ -200,7 +222,11 @@ int64_t DOMSnapshotEngine::sum_ask_depth(double ref_price, int n_levels) const {
     int64_t total = 0;
     int count = 0;
     // sell_side_ é ordenado por preço crescente (menor ask no início)
-    for (const auto& pl : sell_side_) {
+    for (size_t i = 0; i < sell_side_.size(); ++i) {
+        if ((i + 1) < sell_side_.size()) {
+            hft_tuning::prefetch_read(&sell_side_[i + 1]);
+        }
+        const auto& pl = sell_side_[i];
         if (pl.price > ref_price) {
             total += pl.total_quantity();
             if (++count >= n_levels) break;
@@ -213,7 +239,11 @@ int64_t DOMSnapshotEngine::sum_bid_depth(double ref_price, int n_levels) const {
     int64_t total = 0;
     int count = 0;
     // buy_side_ é ordenado por preço decrescente (maior bid no início)
-    for (const auto& pl : buy_side_) {
+    for (size_t i = 0; i < buy_side_.size(); ++i) {
+        if ((i + 1) < buy_side_.size()) {
+            hft_tuning::prefetch_read(&buy_side_[i + 1]);
+        }
+        const auto& pl = buy_side_[i];
         if (pl.price < ref_price) {
             total += pl.total_quantity();
             if (++count >= n_levels) break;
@@ -224,7 +254,11 @@ int64_t DOMSnapshotEngine::sum_bid_depth(double ref_price, int n_levels) const {
 
 bool DOMSnapshotEngine::has_wall_near(double price, double tolerance, int64_t min_qty) const {
     auto check = [&](const PriceLevels& levels) {
-        for (const auto& pl : levels) {
+        for (size_t i = 0; i < levels.size(); ++i) {
+            if ((i + 1) < levels.size()) {
+                hft_tuning::prefetch_read(&levels[i + 1]);
+            }
+            const auto& pl = levels[i];
             if (std::abs(pl.price - price) <= tolerance && pl.total_quantity() >= min_qty) {
                 return true;
             }

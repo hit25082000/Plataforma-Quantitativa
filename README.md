@@ -74,6 +74,64 @@ Matriz canónica: **[docs/PORTS.md](docs/PORTS.md)**. Resumo: **8000** distribut
 
 Guia de troubleshooting para instalador e app instalado: **[docs/TROUBLESHOOTING_LOGS.md](docs/TROUBLESHOOTING_LOGS.md)**.
 
+### Evidência M6/M7
+
+Execução consolidada (matriz HFT + sessão IPC SHM):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-m6-m7-evidence.ps1 `
+  -HftDurationSeconds 3600 `
+  -HftWindows 2 `
+  -SessionSeconds 21600 `
+  -SessionWindows 1 `
+  -HftEnableShmQpc `
+  -MatrixShmLargePages 0,1 `
+  -MatrixShmNumaNodes -1,0 `
+  -SessionFailOnLoss
+```
+
+Artefatos gerados em `distributor/logs/m6-m7-evidence-<timestamp>`:
+
+- `summary.csv`
+- `summary.manifest.json`
+- `hft/<cenario>/summary.csv` + `summary.manifest.json`
+- `hft/<cenario>/window-XX/summary.csv` + `summary.manifest.json` (quando `-HftWindows > 1`)
+- `ipc/session.csv` + `session.manifest.json` (quando `-SessionWindows = 1`)
+- `ipc/window-XX/session.csv` + `session.manifest.json` (quando `-SessionWindows > 1`)
+
+### QA final OVR-STAB (campo assistido)
+
+Preparação executável de sessão para `OVR-STAB-QA-02/03/04/05`:
+
+```powershell
+python scripts/run_ovr_stab_field_qa.py
+```
+
+Artefatos em `distributor/logs/ovr-stab-field-qa-<timestamp>`:
+
+- `summary.md` (status e bloqueios por tarefa)
+- `commands.md` (checklist de comandos por sessão)
+- `qa_session.manifest.json` (manifesto consolidado)
+
+### Sessão guiada de pregão (60-120s)
+
+Preparação assistida de evidência para coleta curta em sessão real:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/run-pregao-assisted-session.ps1 -DurationSec 90 -DryRun
+```
+
+Artefatos em `distributor/logs/pregao-assisted-session-<timestamp>`:
+
+- `status_snapshot.json` (health/debug/status)
+- `config_snapshot.json` (snapshot de config/env/scripts)
+- `operator_checklist.md` (ações do operador)
+- `commands.md` (fluxo integrado com field QA existente)
+- `operator_notes.md` (template de anotações manuais)
+- `session.manifest.json` (manifesto consolidado da sessão guiada)
+
+Guia operacional: **[docs/OVR-STAB-QA-final-execucao.md](docs/OVR-STAB-QA-final-execucao.md)**.
+
 ---
 
 ## Como Rodar o Sistema Completo
@@ -82,7 +140,23 @@ Guia de troubleshooting para instalador e app instalado: **[docs/TROUBLESHOOTING
    ```powershell
    $env:PROFIT_ACTIVATION_KEY = "sua_chave"
    $env:PROFIT_USER = "seu_usuario"
-   $env:PROFIT_PASSWORD = "sua_senha"
+   $env:PROFIT_PASSWORD = "<SECRET>"
+   ```
+   (aliases também aceitos: `PROFIT_DLL_ACTIVATION_KEY`, `PROFIT_DLL_USER`, `PROFIT_DLL_PASSWORD`)
+
+   **Opcional (AWS KMS/Secrets Manager no startup):**
+   ```powershell
+   $env:AWS_KMS_ENABLED = "1"
+   $env:AWS_KMS_SECRET_MAP = '{"PROFIT_ACTIVATION_KEY":"prod/pq/profit/key","PROFIT_USER":"prod/pq/profit/user","PROFIT_PASSWORD":"prod/pq/profit/password","AGENT007_API_KEY":"prod/pq/openrouter/key"}'
+   $env:AWS_REGION = "sa-east-1"
+   $env:AWS_KMS_ALLOWED_IPS = "52.95.0.0/16"
+   $env:AWS_KMS_AUDIT_LOG_PATH = ".\distributor\logs\kms_audit.jsonl"
+   ```
+   Com `AWS_KMS_ENABLED=1`, os scripts `run-dev.ps1` e `run-dev2.ps1` executam `scripts/load_kms_secrets.py` antes de subir os processos.
+   Opcional (egress/auditoria do chat Agent007):
+   ```powershell
+   $env:AGENT007_ALLOWED_IPS = "203.0.113.10/32,203.0.113.11/32"
+   $env:AGENT007_AUDIT_LOG_PATH = ".\distributor\logs\agent007_chat_audit.jsonl"
    ```
 
 2. **Engine** (publica em `tcp://localhost:5555`):

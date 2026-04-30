@@ -1,0 +1,10 @@
+section,metric,value
+STRESS,duration_sec,30.001
+STRESS,observed_trades,0
+STRESS,last_write_seq,0
+STRESS,ring_dropped_counter,0
+STRESS,gap_count,0
+STRESS,gap_messages,0
+STRESS,committed_mismatch,0
+STRESS,next_seq,1
+STRESS,loss_detected,0

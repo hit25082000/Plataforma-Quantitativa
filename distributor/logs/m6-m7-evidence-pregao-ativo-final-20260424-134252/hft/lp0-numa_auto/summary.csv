@@ -1,0 +1,4 @@
+section,run,metric,count,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns,pinning,exit_code,elapsed_s,stderr_log,check_status,check_reason,target_p99_ns,target_p999_ns
+SUMMARY,pinned,publisher_loop_interval,74199,15200,67700,31988004,87803532,404987700,883146.00,1,0,131.451,distributor\logs\m6-m7-evidence-pregao-ativo-final-20260424-134252\hft\lp0-numa_auto\summary_logs\pinned.stderr.log,,,,
+SUMMARY,pinned,shm_write_trade_duration,9079,1800,4000,6500,15353,20000,2168.19,1,0,131.451,distributor\logs\m6-m7-evidence-pregao-ativo-final-20260424-134252\hft\lp0-numa_auto\summary_logs\pinned.stderr.log,,,,
+CHECK,pinned,shm_write_trade_duration,,,,6500,15353,,,,,,,ok,ok,10000,20000

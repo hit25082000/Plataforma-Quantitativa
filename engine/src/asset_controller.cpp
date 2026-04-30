@@ -51,6 +51,10 @@ bool write_all(sock_t fd, const char* data, size_t len) {
     return true;
 }
 
+constexpr int LISTEN_BACKLOG = 16;
+// switch can include market wait + subscribe retries + relogin path
+constexpr auto SWITCH_RESPONSE_TIMEOUT = std::chrono::seconds(150);
+
 } // namespace
 
 AssetController::AssetController() = default;
@@ -121,7 +125,7 @@ void AssetController::listener_loop(uint16_t port) {
         return;
     }
 
-    if (listen(listen_fd, 1) != 0) {
+    if (listen(listen_fd, LISTEN_BACKLOG) != 0) {
         std::cerr << "[AssetController] listen failed" << std::endl;
         close_sock(listen_fd);
         return;
@@ -168,8 +172,13 @@ void AssetController::listener_loop(uint16_t port) {
 
             {
                 std::unique_lock<std::mutex> lk(mtx_);
-                cv_.wait_for(lk, std::chrono::seconds(10), [this] { return completed_; });
+                cv_.wait_for(lk, SWITCH_RESPONSE_TIMEOUT, [this] { return completed_; });
                 std::string resp = completed_ ? result_ : "ERR: timeout";
+                if (!completed_) {
+                    std::cerr << "[AssetController] SWITCH timeout waiting for engine completion after "
+                              << std::chrono::duration_cast<std::chrono::seconds>(SWITCH_RESPONSE_TIMEOUT).count()
+                              << "s" << std::endl;
+                }
                 if (resp.empty() || resp == "OK") resp = "OK";
                 resp += "\n";
                 write_all(client, resp.c_str(), resp.size());

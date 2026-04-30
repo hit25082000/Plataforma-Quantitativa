@@ -1,3 +1,4 @@
+import { listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
 import { useMarketStore } from "../store/marketStore";
 import { isTauri } from "../utils/tauri";
@@ -11,6 +12,7 @@ import type {
   FlowInversionMessage,
   MacdSignalMessage,
   SyncMessage,
+  VolumeProfileMessage,
   TradeMessage,
   WallAddMessage,
   WallRemoveMessage,
@@ -33,6 +35,9 @@ const WS_CONNECT_TIMEOUT_MS = 10000;
 /** Distributor WS. Ver docs/PORTS.md */
 const WS_URL_TAURI = "ws://127.0.0.1:8000/ws";
 const TRADE_BATCH_MAX = 200;
+const TAURI_MARKET_EVENT = "pq:market-message";
+const TAURI_IPC_TRANSPORT_EVENT = "pq:ipc-transport";
+const TAURI_IPC_FALLBACK_EVENT = "pq:ipc-fallback";
 
 function getWsUrl(): string {
   if (isTauri()) {
@@ -47,6 +52,13 @@ function dispatchWsPayload(
   msg: WsSingleMessage,
   store: ReturnType<typeof useMarketStore.getState>,
 ): void {
+  if (
+    msg.topic === "system" &&
+    (msg as { type?: string }).type === "ipc_fallback"
+  ) {
+    store.setWsStatus("disconnected");
+    return;
+  }
   if (msg.topic === "alert") {
     const a = msg as AlertMessage;
     const key = getAlertCooldownKey(a);
@@ -80,6 +92,8 @@ function dispatchWsPayload(
     else if (m.type === "wall_remove")
       store.removeWall(msg as WallRemoveMessage);
     else if (m.type === "daily") store.updateDaily(msg as DailyMessage);
+    else if (m.type === "volume_profile")
+      store.updateVolumeProfile(msg as VolumeProfileMessage);
     else if (m.type === "broker_snapshot")
       store.applyBrokerSnapshot(msg as BrokerSnapshotMessage);
     else if (m.type === "flow_inversion")
@@ -119,6 +133,10 @@ let pendingTrades: TradeMessage[] = [];
 let tradeFlushRafId: number | null = null;
 let pendingDomSnapshot: DomSnapshotMessage | null = null;
 let domFlushRafId: number | null = null;
+let ipcTransportMode: "shm" | "websocket" | "unknown" = "unknown";
+let tauriUnlistenMarket: (() => void) | null = null;
+let tauriUnlistenTransport: (() => void) | null = null;
+let tauriUnlistenFallback: (() => void) | null = null;
 
 function flushTradeBatch(): void {
   tradeFlushRafId = null;
@@ -197,8 +215,51 @@ export function useWebSocket(enableConnection: boolean = true): void {
     wsRefCount++;
     subscribedRef.current = true;
 
+    const startTauriListeners = async () => {
+      if (!isTauri()) return;
+      if (tauriUnlistenTransport == null) {
+        tauriUnlistenTransport = await listen<{ mode?: string }>(
+          TAURI_IPC_TRANSPORT_EVENT,
+          (ev) => {
+            const mode = (ev.payload?.mode || "").toLowerCase();
+            if (mode === "shm") {
+              ipcTransportMode = "shm";
+              useMarketStore.getState().setWsStatus("connected");
+              if (sharedWs) {
+                sharedWs.close();
+                sharedWs = null;
+              }
+              return;
+            }
+            ipcTransportMode = "websocket";
+            if (!sharedWs || sharedWs.readyState !== WebSocket.OPEN) {
+              connect();
+            }
+          },
+        );
+      }
+      if (tauriUnlistenMarket == null) {
+        tauriUnlistenMarket = await listen<WsSingleMessage>(
+          TAURI_MARKET_EVENT,
+          (ev) => {
+            if (ipcTransportMode !== "shm") return;
+            dispatchWsPayload(ev.payload, useMarketStore.getState());
+          },
+        );
+      }
+      if (tauriUnlistenFallback == null) {
+        tauriUnlistenFallback = await listen(TAURI_IPC_FALLBACK_EVENT, () => {
+          ipcTransportMode = "websocket";
+          if (!sharedWs || sharedWs.readyState !== WebSocket.OPEN) {
+            connect();
+          }
+        });
+      }
+    };
+
     const connect = () => {
       if (wsRefCount <= 0) return;
+      if (isTauri() && ipcTransportMode === "shm") return;
       const store = useMarketStore.getState();
       store.setWsStatus("connecting");
 
@@ -223,7 +284,10 @@ export function useWebSocket(enableConnection: boolean = true): void {
         }
         wsBackoffMs = INITIAL_BACKOFF_MS;
         store.setWsStatus("connected");
-        void fetchWarmMacdSnapshot();
+        void fetchWarmMacdSnapshot({
+          retries: 6,
+          retryDelayMs: 250,
+        });
       };
 
       ws.onmessage = (ev) => {
@@ -249,10 +313,16 @@ export function useWebSocket(enableConnection: boolean = true): void {
     };
 
     if (!sharedWs || sharedWs.readyState !== WebSocket.OPEN) {
-      connect();
+      void startTauriListeners();
+      if (!isTauri() || ipcTransportMode !== "shm") {
+        connect();
+      }
     } else {
       useMarketStore.getState().setWsStatus("connected");
-      void fetchWarmMacdSnapshot();
+      void fetchWarmMacdSnapshot({
+        retries: 6,
+        retryDelayMs: 250,
+      });
     }
 
     return () => {
@@ -279,6 +349,19 @@ export function useWebSocket(enableConnection: boolean = true): void {
             sharedWs.close();
             sharedWs = null;
           }
+          if (tauriUnlistenMarket) {
+            tauriUnlistenMarket();
+            tauriUnlistenMarket = null;
+          }
+          if (tauriUnlistenTransport) {
+            tauriUnlistenTransport();
+            tauriUnlistenTransport = null;
+          }
+          if (tauriUnlistenFallback) {
+            tauriUnlistenFallback();
+            tauriUnlistenFallback = null;
+          }
+          ipcTransportMode = "unknown";
         }
       }
     };

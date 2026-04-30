@@ -1,0 +1,15 @@
+{
+  "overall_ok": 0,
+  "base_url": "http://127.0.0.1:8000",
+  "ticker": "WINFUT",
+  "attempt_count": 1,
+  "selected_attempt": 1,
+  "attempts": [
+    {
+      "attempt": 1,
+      "overall_ok": 0,
+      "stop_reason": "gates_failed",
+      "summary_path": "distributor\\logs\\m9-rag-operational-evidence-20260424-141308\\attempt-01\\summary.json"
+    }
+  ]
+}

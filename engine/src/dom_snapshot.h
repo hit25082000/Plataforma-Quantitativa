@@ -19,11 +19,7 @@ struct PriceLevel {
     double price;
     std::vector<OfferEntry> offers;
 
-    int64_t total_quantity() const {
-        int64_t sum = 0;
-        for (const auto& o : offers) sum += o.quantity;
-        return sum;
-    }
+    int64_t total_quantity() const;
 };
 
 struct WallEvent {

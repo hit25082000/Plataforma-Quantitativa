@@ -178,10 +178,15 @@ class CandleMacd:
         if new_series != IFR_SERIES_30M:
             self._renko_brick_points = new_brick
         if not same_mode:
-            for st in self._states.values():
+            for ticker, st in self._states.items():
                 st.renko_ref = None
                 st.renko_initialized = False
                 st.renko_closes = []
+                if new_series != IFR_SERIES_30M:
+                    current_closes = st.closes
+                    self._load_state(ticker, st)
+                    if len(current_closes) > len(st.closes):
+                        st.closes = current_closes[-200:]
 
     def set_renko_brick_points(self, points: float) -> None:
         """Compat: 16 ou 42 pontos Renko."""

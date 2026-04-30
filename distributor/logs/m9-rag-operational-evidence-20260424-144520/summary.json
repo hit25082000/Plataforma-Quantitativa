@@ -1,0 +1,27 @@
+{
+  "overall_ok": 0,
+  "base_url": "http://127.0.0.1:8000",
+  "ticker": "WINFUT",
+  "attempt_count": 3,
+  "selected_attempt": 3,
+  "attempts": [
+    {
+      "attempt": 1,
+      "overall_ok": 0,
+      "stop_reason": "watchdog_health_drop",
+      "summary_path": "distributor\\logs\\m9-rag-operational-evidence-20260424-144520\\attempt-01\\summary.json"
+    },
+    {
+      "attempt": 2,
+      "overall_ok": 0,
+      "stop_reason": "watchdog_health_drop",
+      "summary_path": "distributor\\logs\\m9-rag-operational-evidence-20260424-144520\\attempt-02\\summary.json"
+    },
+    {
+      "attempt": 3,
+      "overall_ok": 0,
+      "stop_reason": "watchdog_health_drop",
+      "summary_path": "distributor\\logs\\m9-rag-operational-evidence-20260424-144520\\attempt-03\\summary.json"
+    }
+  ]
+}

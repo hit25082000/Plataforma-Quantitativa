@@ -1,8 +1,10 @@
 """Entry point for M3 Distribution Layer."""
 
 import asyncio
+import json
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 
 import uvicorn
@@ -10,8 +12,13 @@ import uvicorn
 from agent_007 import Agent007Engine
 from config import (
     DOM_THROTTLE_MS,
+    IPC_MODE,
     MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
     MARKET_QUEUE_MAXSIZE,
+    SHM_FALLBACK_PROBE_INTERVAL_MS,
+    SHM_FALLBACK_PROBE_TIMEOUT_MS,
+    SHM_MAPPING_NAME,
+    SHM_SIZE_MB,
     WS_HOST,
     WS_PORT,
     ZMQ_ADDRESS,
@@ -20,6 +27,8 @@ from config import (
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
 from websocket_server import create_app, init_app
+from mmap_consumer import MmapConsumer
+from realtime_rag import create_rag_engine_from_config
 from zmq_consumer import ZmqConsumer
 
 logging.basicConfig(
@@ -43,16 +52,60 @@ async def consume_loop(queue: asyncio.Queue[str], router: MessageRouter) -> None
             last_log_ms = now_ms
 
 
-if __name__ == "__main__":
-    queue = asyncio.Queue(maxsize=MARKET_QUEUE_MAXSIZE)
-    manager = ConnectionManager()
-    agent007_engine = Agent007Engine()
-    router = MessageRouter(manager, DOM_THROTTLE_MS, agent007_engine)
+def resolve_market_consumer(queue: asyncio.Queue[str]) -> tuple[object, str, dict | None]:
+    """Build market consumer with one-way startup fallback shm->zmq."""
+    if IPC_MODE != "shm":
+        consumer = ZmqConsumer(
+            ZMQ_ADDRESS,
+            queue,
+            dom_soft_limit_pct=MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
+        )
+        return consumer, "zmq", None
+
+    map_size_bytes = SHM_SIZE_MB * 1024 * 1024
+    deadline = time.monotonic() + max(200, SHM_FALLBACK_PROBE_TIMEOUT_MS) / 1000.0
+    reason = "probe_timeout"
+    while time.monotonic() < deadline:
+        ok, reason = MmapConsumer.probe_mapping(SHM_MAPPING_NAME, map_size_bytes)
+        if ok:
+            consumer = MmapConsumer(
+                SHM_MAPPING_NAME,
+                queue,
+                map_size_bytes=map_size_bytes,
+                dom_soft_limit_pct=MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
+            )
+            return consumer, "shm", None
+        time.sleep(max(20, SHM_FALLBACK_PROBE_INTERVAL_MS) / 1000.0)
+
+    fallback_event = {
+        "topic": "system",
+        "type": "ipc_fallback",
+        "requested_mode": "shm",
+        "effective_mode": "zmq",
+        "reason": reason,
+        "mapping_name": SHM_MAPPING_NAME,
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    logging.warning("IPC fallback activated: %s", json.dumps(fallback_event))
     consumer = ZmqConsumer(
         ZMQ_ADDRESS,
         queue,
         dom_soft_limit_pct=MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
     )
+    return consumer, "zmq", fallback_event
+
+
+if __name__ == "__main__":
+    queue = asyncio.Queue(maxsize=MARKET_QUEUE_MAXSIZE)
+    manager = ConnectionManager()
+    agent007_engine = Agent007Engine()
+    rag_engine = create_rag_engine_from_config()
+    router = MessageRouter(manager, DOM_THROTTLE_MS, agent007_engine, rag_engine=rag_engine)
+    consumer, effective_ipc_mode, fallback_event = resolve_market_consumer(queue)
+    if effective_ipc_mode == "shm":
+        logging.info("Distributor IPC mode=shm mapping=%s size_mb=%s", SHM_MAPPING_NAME, SHM_SIZE_MB)
+    else:
+        logging.info("Distributor IPC mode=zmq address=%s", ZMQ_ADDRESS)
     consumer_sync = ZmqConsumer(
         ZMQ_SYNC_ADDRESS,
         queue,
@@ -64,9 +117,16 @@ if __name__ == "__main__":
         consumer,
         agent007_engine,
         router,
+        rag_pipeline=rag_engine,
         sync_consumer=consumer_sync,
         market_queue_ref=queue,
+        market_ipc_mode=effective_ipc_mode,
+        fallback_event=fallback_event,
     )
+    if rag_engine is None:
+        logging.info("RAG mode disabled (set RAG_ENABLED=1 to enable M9 pipeline)")
+    else:
+        logging.info("RAG mode enabled (window=%ss top_k=%s)", rag_engine.metrics().get("window_seconds"), rag_engine.metrics().get("top_k"))
 
     async def pipeline_health_loop() -> None:
         """Unified distributor health snapshot for faster diagnosis."""
@@ -77,7 +137,8 @@ if __name__ == "__main__":
             c_main = consumer.metrics()
             c_sync = consumer_sync.metrics()
             logging.info(
-                "Pipeline health: backlog=%s route_avg_ms=%.3f route_total=%s invalid_json=%s throttled_dom=%s dropped_dom=%s rescued_trade_like=%s",
+                "Pipeline health: mode=%s backlog=%s route_avg_ms=%.3f route_total=%s invalid_json=%s throttled_dom=%s dropped_dom=%s rescued_trade_like=%s gap_count=%s gap_messages=%s ring_dropped=%s integrity_failures=%s crc_mismatch=%s payload_mismatch=%s committed_mismatch=%s",
+                effective_ipc_mode,
                 backlog,
                 float(r["route_avg_ms"]),
                 int(r["route_count_total"]),
@@ -85,7 +146,26 @@ if __name__ == "__main__":
                 int(r["throttled_dom_count"]),
                 int(c_main["dropped_dom"] + c_sync["dropped_dom"]),
                 int(c_main["rescued_trade_like"] + c_sync["rescued_trade_like"]),
+                int(c_main.get("gap_count", 0) + c_sync.get("gap_count", 0)),
+                int(c_main.get("gap_messages", 0) + c_sync.get("gap_messages", 0)),
+                int(c_main.get("ring_dropped", 0) + c_sync.get("ring_dropped", 0)),
+                int(c_main.get("integrity_failures", 0) + c_sync.get("integrity_failures", 0)),
+                int(c_main.get("crc_mismatch", 0) + c_sync.get("crc_mismatch", 0)),
+                int(c_main.get("payload_mismatch", 0) + c_sync.get("payload_mismatch", 0)),
+                int(c_main.get("committed_mismatch", 0) + c_sync.get("committed_mismatch", 0)),
             )
+            if rag_engine is not None:
+                rm = rag_engine.metrics()
+                logging.info(
+                    "RAG health: events=%s windows=%s vectors=%s misses=%s query_ms=%.3f stream_ok=%s stream_fail=%s",
+                    int(rm.get("events_ingested_total", 0)),
+                    int(rm.get("windows_finalized_total", 0)),
+                    int(rm.get("vector_store_size", 0)),
+                    int(rm.get("vector_query_miss_total", 0)),
+                    float(rm.get("last_query_ms", 0.0)),
+                    int(rm.get("stream_published_total", 0)),
+                    int(rm.get("stream_publish_failures_total", 0)),
+                )
 
     @asynccontextmanager
     async def lifespan(app):  # noqa: ARG001

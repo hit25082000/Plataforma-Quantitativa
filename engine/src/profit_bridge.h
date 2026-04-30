@@ -40,6 +40,12 @@ public:
 
     /** Bloqueia até o Market estar conectado (callback type 2, result 4) ou timeout. */
     bool wait_for_market_connected(std::chrono::milliseconds timeout);
+    /** Último status de login (callback type 0). */
+    int32_t last_login_result() const;
+    /** Último status de market data (callback type 2). */
+    int32_t last_market_result() const;
+    /** Último status de ativação (callback type 3). */
+    int32_t last_activation_result() const;
     /** Dispara download do histórico do dia atual (dd/mm/yyyy..dd/mm/yyyy). */
     int32_t request_history_today(const wchar_t* ticker, const wchar_t* bolsa);
     /** Aguarda fim do histórico atual (TC_LAST_PACKET). */

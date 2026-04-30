@@ -1,0 +1,2 @@
+{"ts_epoch_ms": 1777044013676, "ok": false, "ticker": "WINFUT", "phase": "warmup", "attempt": 2, "error": "<urlopen error timed out>"}
+{"ts_epoch_ms": 1777044015486, "ok": false, "ticker": "WINFUT", "phase": "warmup", "attempt": 2, "error": "<urlopen error timed out>"}

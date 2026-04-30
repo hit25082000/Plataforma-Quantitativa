@@ -6,10 +6,10 @@ O IPC atual usa ZeroMQ (TCP) com serialização JSON, exigindo: (1) serializaç�
 
 ## Goals
 
-- [ ] Latência IPC produtor→consumidor < 10μs (atualmente ~1-5ms com ZMQ+JSON)
+- [ ] Latência IPC produtor→consumidor < 10μs (atualmente ~1-5ms com ZMQ+JSON) — validar no hardware alvo com `SHM_QPC_DIAG=1` (p99 `write_trade`) + benchmark P3
 - [ ] Zero cópias de dados entre engine C++ e consumidores Python/Rust
-- [ ] Zero perda de mensagens sob throughput de 100k+ mensagens/segundo
-- [ ] Migração transparente: sistema funciona com ZMQ como fallback durante transição
+- [ ] Zero perda de mensagens sob throughput de 100k+ mensagens/segundo — `scripts/benchmark_ipc_zmq_vs_shm.py --stress --stress-rate 100000`
+- [x] Migração transparente: sistema funciona com ZMQ como fallback durante transição
 
 ## Out of Scope
 
@@ -95,8 +95,8 @@ O IPC atual usa ZeroMQ (TCP) com serialização JSON, exigindo: (1) serializaç�
 
 **Acceptance Criteria**:
 
-1. WHEN benchmark suite runs THEN it SHALL measure p50, p95, p99 latency for both ZMQ and SHM paths
-2. WHEN benchmark completes THEN it SHALL output CSV with results and summary comparison
+1. [x] WHEN benchmark suite runs THEN it SHALL measure p50, p95, p99 latency for both ZMQ and SHM paths
+2. [x] WHEN benchmark completes THEN it SHALL output CSV with results and summary comparison
 
 ---
 
@@ -104,7 +104,7 @@ O IPC atual usa ZeroMQ (TCP) com serialização JSON, exigindo: (1) serializaç�
 
 - WHEN ring buffer wraps around (circular) THEN consumer SHALL detect via sequence number gap and skip stale entries
 - WHEN consumer reads slower than producer THEN system SHALL NOT block the producer; consumer sees a gap in sequence numbers
-- WHEN engine crashes mid-write THEN consumer SHALL detect incomplete entry via CRC or magic number and skip it
+- WHEN engine crashes mid-write THEN consumer SHALL detect incomplete entry via CRC16-CCITT (`TradePayload.reserved0`) or sequence mismatch and skip it
 - WHEN multiple consumers read simultaneously THEN each SHALL maintain its own read cursor independently
 - WHEN system runs for > 8 hours continuously THEN ring buffer SHALL NOT leak memory or degrade performance
 
@@ -112,7 +112,7 @@ O IPC atual usa ZeroMQ (TCP) com serialização JSON, exigindo: (1) serializaç�
 
 ## Success Criteria
 
-- [ ] Latência IPC p99 < 10μs medida com `QueryPerformanceCounter`
+- [ ] Latência IPC p99 < 10μs medida com `QueryPerformanceCounter` — instrumentação engine: `SHM_QPC_DIAG=1` (p99 de `write_trade` no stderr ao encerrar o writer)
 - [ ] Zero perda de trades em sessão de 6 horas de pregão (9h-17h B3)
-- [ ] Throughput sustentado de 100k mensagens/segundo sem backpressure
-- [ ] Distributor Python funciona identicamente via SHM ou ZMQ (interface transparente)
+- [ ] Throughput sustentado de 100k mensagens/segundo sem backpressure — verificação automatizada: `--stress` (contador `dropped` do header)
+- [x] Distributor Python funciona identicamente via SHM ou ZMQ (interface transparente)

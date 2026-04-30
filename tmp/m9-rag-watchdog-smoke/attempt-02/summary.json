@@ -1,0 +1,15 @@
+{
+  "attempt": 2,
+  "overall_ok": 0,
+  "stop_reason": "warmup_not_ready",
+  "warmup": {
+    "checks": {
+      "warmup_ok_samples_gte_min": false,
+      "warmup_route_growth_gt_0": true
+    },
+    "ok_samples": 0,
+    "route_growth": 0
+  },
+  "sample_count": 2,
+  "ok_sample_count": 0
+}

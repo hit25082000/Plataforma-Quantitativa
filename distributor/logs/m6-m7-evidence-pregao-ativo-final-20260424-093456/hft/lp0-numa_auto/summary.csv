@@ -1,0 +1,5 @@
+section,run,metric,count,p50_ns,p95_ns,p99_ns,p999_ns,max_ns,mean_ns,pinning,exit_code,elapsed_s,stderr_log,check_status,check_reason,target_p99_ns,target_p999_ns
+SUMMARY,pinned,profit_callback_interval,248122,2300,16600,18507248,69005814,369970400,494145.00,1,0,131.405,C:\Users\luiz.domingues\Dev\Plataforma Quantitativa\distributor\logs\m6-m7-evidence-pregao-ativo-final-20260424-093456\hft\lp0-numa_auto\summary_logs\pinned.stderr.log,,,,
+SUMMARY,pinned,publisher_loop_interval,248123,23500,65200,11210873,61153903,331915800,374180.00,1,0,131.405,C:\Users\luiz.domingues\Dev\Plataforma Quantitativa\distributor\logs\m6-m7-evidence-pregao-ativo-final-20260424-093456\hft\lp0-numa_auto\summary_logs\pinned.stderr.log,,,,
+SUMMARY,pinned,shm_write_trade_duration,32237,1800,3700,6200,15052,102500,2067.34,1,0,131.405,C:\Users\luiz.domingues\Dev\Plataforma Quantitativa\distributor\logs\m6-m7-evidence-pregao-ativo-final-20260424-093456\hft\lp0-numa_auto\summary_logs\pinned.stderr.log,,,,
+CHECK,pinned,shm_write_trade_duration,,,,6200,15052,,,,,,,ok,ok,10000,20000

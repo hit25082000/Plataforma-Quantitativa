@@ -7,6 +7,7 @@ import type {
   DomSnapshotMessage,
   FlowInversionMessage,
   MacdSignalMessage,
+  VolumeProfileMessage,
   SyncMessage,
   TradeMessage,
   WallAddMessage,
@@ -49,6 +50,12 @@ const MAX_ALERTS = 50;
 const MAX_FLOW_INVERSIONS = 30;
 const MAX_MACD_HISTORY = 50;
 
+function normalizeEventTs(ts: string | number | undefined): string {
+  const parsed =
+    typeof ts === "number" ? ts : ts ? Date.parse(ts) : Number.NaN;
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
+}
+
 /** Passo de agressão para o painel: indicadores e histórico atualizam de 100 em 100 */
 export const AGGRESSION_STEP = 100;
 
@@ -58,6 +65,24 @@ export type AssetSwitchStatus = "idle" | "switching" | "active" | "error";
 
 /** Série usada para o IFR: Renko 42/16 ou fechamento de candles de 30 min. */
 export type IfrSeriesMode = "42r" | "16r" | "30m";
+
+export function normalizeIfrSeriesMode(v: unknown): IfrSeriesMode | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim().toLowerCase();
+  if (s === "42r" || s === "42") return "42r";
+  if (s === "16r" || s === "16") return "16r";
+  if (
+    s === "30m" ||
+    s === "30min" ||
+    s === "30_min" ||
+    s === "30_minutos" ||
+    s === "30 min" ||
+    s === "30minutos"
+  ) {
+    return "30m";
+  }
+  return null;
+}
 
 export function ifrSeriesShortLabel(s: IfrSeriesMode): string {
   switch (s) {
@@ -99,13 +124,25 @@ interface MarketStore {
   /** Série do IFR no distributor (Renko ou 30 min) */
   ifrSeries: IfrSeriesMode;
   setIfrSeries: (s: IfrSeriesMode) => void;
+  ifrLoading: boolean;
+  ifrLoadingSeries: IfrSeriesMode | null;
+  ifrLoadingMessage: string;
+  setIfrLoading: (
+    loading: boolean,
+    series?: IfrSeriesMode | null,
+    message?: string,
+  ) => void;
 
   /** Ticker recebido do stream (para verificação/debug) */
   streamingTicker: string;
+  lastMarketEventTs: string | null;
 
   assetSwitchStatus: AssetSwitchStatus;
   assetSwitchMessage: string;
   setAssetSwitchStatus: (s: AssetSwitchStatus, message?: string) => void;
+  timesTradesLoading: boolean;
+  timesTradesLoadingMessage: string;
+  setTimesTradesLoading: (loading: boolean, message?: string) => void;
 
   /** Limpa alertas e todos os dados de mercado ao trocar de ativo */
   clearMarketData: () => void;
@@ -148,6 +185,9 @@ interface MarketStore {
   dailyVolume: number;
   updateDaily: (msg: DailyMessage) => void;
 
+  volumeProfile: VolumeProfileMessage | null;
+  updateVolumeProfile: (msg: VolumeProfileMessage) => void;
+
   inSync: boolean;
   syncVariations: Record<string, number>;
   updateSync: (msg: SyncMessage) => void;
@@ -178,14 +218,33 @@ export const useMarketStore = create<MarketStore>((set) => ({
 
   ifrSeries: "42r",
   setIfrSeries: (s) => set({ ifrSeries: s }),
+  ifrLoading: false,
+  ifrLoadingSeries: null,
+  ifrLoadingMessage: "",
+  setIfrLoading: (loading, series, message) =>
+    set((state) => ({
+      ifrLoading: loading,
+      ifrLoadingSeries: loading ? (series ?? state.ifrSeries) : null,
+      ifrLoadingMessage: loading ? (message ?? "Atualizando IFR") : "",
+    })),
 
   streamingTicker: "",
+  lastMarketEventTs: null,
   assetSwitchStatus: "idle" as AssetSwitchStatus,
   assetSwitchMessage: "",
   setAssetSwitchStatus: (s, message) =>
     set({
       assetSwitchStatus: s,
       assetSwitchMessage: s === "error" && message ? message : "",
+    }),
+  timesTradesLoading: false,
+  timesTradesLoadingMessage: "",
+  setTimesTradesLoading: (loading, message) =>
+    set({
+      timesTradesLoading: loading,
+      timesTradesLoadingMessage: loading
+        ? (message ?? "Atualizando Times & Trades")
+        : "",
     }),
 
   /** Limpa alertas, DOM, trades, daily, sync, flow inversions e MACD ao trocar de ativo */
@@ -210,12 +269,17 @@ export const useMarketStore = create<MarketStore>((set) => ({
       dailyOpen: 0,
       dailyClose: 0,
       dailyVolume: 0,
+      volumeProfile: null,
       inSync: true,
       syncVariations: {},
       flowInversions: [],
       macdHistory: [],
       macdDirection: null,
+      ifrLoading: false,
+      ifrLoadingSeries: null,
+      ifrLoadingMessage: "",
       streamingTicker: "",
+      lastMarketEventTs: null,
     }),
 
   alerts: [],
@@ -233,6 +297,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       domBuy: msg.buy,
       domSell: msg.sell,
       streamingTicker: msg.ticker,
+      lastMarketEventTs: normalizeEventTs(msg.ts),
     }),
   addWall: (msg) =>
     set((state) => {
@@ -282,6 +347,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
         agentNames,
         agentShortNames,
         streamingTicker: msg.ticker,
+        lastMarketEventTs: normalizeEventTs(msg.ts),
+        timesTradesLoading: false,
+        timesTradesLoadingMessage: "",
       };
     }),
   updateTradeBatch: (msgs) =>
@@ -312,6 +380,9 @@ export const useMarketStore = create<MarketStore>((set) => ({
         agentNames,
         agentShortNames,
         streamingTicker,
+        lastMarketEventTs: normalizeEventTs(msgs[msgs.length - 1]?.ts),
+        timesTradesLoading: false,
+        timesTradesLoadingMessage: "",
       };
     }),
   applyBrokerSnapshot: (msg) =>
@@ -347,6 +418,8 @@ export const useMarketStore = create<MarketStore>((set) => ({
         agentNames: toStringRecord(msg.agent_name),
         agentShortNames: toStringRecord(msg.agent_short_name),
         lastDailyTradeDate: td ? td : null,
+        timesTradesLoading: false,
+        timesTradesLoadingMessage: "",
       };
     }),
 
@@ -365,6 +438,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
         dailyClose: msg.close,
         dailyVolume: msg.volume,
         streamingTicker: msg.ticker,
+        lastMarketEventTs: normalizeEventTs(msg.ts),
       };
       if (!td) return base;
       const prev = state.lastDailyTradeDate;
@@ -381,6 +455,14 @@ export const useMarketStore = create<MarketStore>((set) => ({
         };
       }
       return { ...base, lastDailyTradeDate: td };
+    }),
+
+  volumeProfile: null,
+  updateVolumeProfile: (msg) =>
+    set({
+      volumeProfile: msg,
+      streamingTicker: msg.ticker,
+      lastMarketEventTs: normalizeEventTs(msg.timestamp),
     }),
 
   inSync: true,
@@ -425,9 +507,17 @@ export const useMarketStore = create<MarketStore>((set) => ({
           ? [...state.macdHistory.slice(0, -1), merged]
           : [...state.macdHistory, merged];
       }
+      const incomingSeries = normalizeIfrSeriesMode(merged.ifr_series);
+      const loadingDone =
+        state.ifrLoading &&
+        incomingSeries != null &&
+        incomingSeries === (state.ifrLoadingSeries ?? state.ifrSeries);
       return {
         macdHistory: nextHistory.slice(-MAX_MACD_HISTORY),
         macdDirection: merged.direction,
+        ifrLoading: loadingDone ? false : state.ifrLoading,
+        ifrLoadingSeries: loadingDone ? null : state.ifrLoadingSeries,
+        ifrLoadingMessage: loadingDone ? "" : state.ifrLoadingMessage,
       };
     }),
 

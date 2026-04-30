@@ -84,7 +84,13 @@ function WidgetWindow({ widgetId }: { widgetId: string }) {
         selected_ticker: ticker,
         selected_exchange: exchange,
       });
-      void fetchWarmMacdSnapshot();
+      useMarketStore
+        .getState()
+        .setTimesTradesLoading(true, "Atualizando Times & Trades");
+      void fetchWarmMacdSnapshot({
+        retries: 8,
+        retryDelayMs: 250,
+      });
     }).then((fn) => {
       unlisten = fn;
     });
@@ -98,10 +104,15 @@ function WidgetWindow({ widgetId }: { widgetId: string }) {
       const s = ev.payload.series;
       if (s !== "42r" && s !== "16r" && s !== "30m") return;
       useMarketStore.getState().setIfrSeries(s);
+      useMarketStore.getState().setIfrLoading(true, s, "Atualizando IFR");
       void invoke("sync_ifr_series_to_distributor", { series: s }).catch(
         () => {},
       );
-      void fetchWarmMacdSnapshot();
+      void fetchWarmMacdSnapshot({
+        retries: 8,
+        retryDelayMs: 250,
+        expectedSeries: s,
+      });
     }).then((fn) => {
       unlisten = fn;
     });
