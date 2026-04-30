@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -22,6 +23,9 @@ public:
     void start(uint16_t port);
     void stop();
 
+    /// `VP_PERIOD\t<day|week|manual>` — resposta imediata; string vazia = OK, senão texto do erro.
+    void set_vp_period_handler(std::function<std::string(const std::string& period)> h);
+
     /** Returns true if there is a pending switch request. Caller must call complete_switch() after processing. */
     bool poll_switch(SwitchRequest& out);
 
@@ -39,6 +43,8 @@ private:
     std::optional<SwitchRequest> pending_;
     std::string result_;
     bool completed_ = false;
+
+    std::function<std::string(const std::string&)> vp_period_handler_;
 };
 
 } // namespace asset_controller

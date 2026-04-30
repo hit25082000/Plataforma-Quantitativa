@@ -7,8 +7,8 @@ Todas as portas abaixo são **localhost** (máquina única). Ao alterar uma port
 ## Matriz
 
 | Porta | Protocolo | Processo / função | Ficheiros de referência |
-|-------|-----------|-------------------|-------------------------|
-| **8000** | HTTP + WebSocket | Distributor (FastAPI → clientes); REST `GET /api/agent007/snapshot`, `POST /api/agent007/chat`, `POST /api/agent007/weis` | `distributor/config.py` (`WS_PORT`), `frontend/vite.config.ts`, `frontend/src/hooks/useWebSocket.ts`, `app/src-tauri/src/commands.rs` (`HEALTH_URL`) |
+| --- | --- | --- | --- |
+| **8000** | HTTP + WebSocket | Distributor (FastAPI → clientes); REST `GET /api/agent007/snapshot`, `POST /api/agent007/chat`, `POST /api/agent007/weis`; WS `/ws`, `/ws/volume-profile` (`volume_profile`) e `/ws/tape-intelligence` (`tape_intelligence`) | `distributor/config.py` (`WS_PORT`), `frontend/vite.config.ts`, `frontend/src/hooks/useWebSocket.ts`, `app/src-tauri/src/commands.rs` (`HEALTH_URL`) |
 | **5555** | ZMQ | Engine PUB → distributor SUB (mercado) | `distributor/config.py` (`ZMQ_ADDRESS`) |
 | **5556** | TCP | Engine listener **SWITCH** (troca de ativo / controle) | `app/src-tauri/src/commands.rs` (`ENGINE_CONTROL_PORT`), `distributor/websocket_server.py` (`ENGINE_CONTROL_PORT`) |
 | **5557** | ZMQ | Sync monitor PUB → distributor SUB | `sync_monitor/config.py` (`ZMQ_PUB_PORT`), `distributor/config.py` (`ZMQ_SYNC_ADDRESS`) |

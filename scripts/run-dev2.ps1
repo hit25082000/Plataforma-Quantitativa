@@ -1,6 +1,6 @@
 param(
     [switch]$RequireShmMapping,
-    [int]$ShmProbeTimeoutSeconds = 8
+    [int]$ShmProbeTimeoutSeconds = 90
 )
 
 # Run local SHM test: engine (SHM writer) + distributor (SHM consumer).

@@ -1,0 +1,275 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/overlay-update-v1.json",
+  "title": "overlay_update",
+  "version": "1.0.0",
+  "type": "object",
+  "required": [
+    "status",
+    "lines",
+    "y_min",
+    "y_max",
+    "axis_deltas",
+    "axis_diagnostics",
+    "analysis_roi",
+    "analysis_sample",
+    "ts",
+    "structured",
+    "overlay_target",
+    "axis_status",
+    "axis_source",
+    "confidence",
+    "residual_px",
+    "max_error_px",
+    "bad_frames",
+    "pending_count"
+  ],
+  "properties": {
+    "status": { "type": "string" },
+    "axis_locked": { "type": "boolean" },
+    "lines": { "type": "array", "items": { "$ref": "#/$defs/overlay_line_legacy" } },
+    "y_min": { "type": ["number", "null"] },
+    "y_max": { "type": ["number", "null"] },
+    "target_count": { "type": "integer", "minimum": 0 },
+    "line_count": { "type": "integer", "minimum": 0 },
+    "chart_rect": { "type": ["object", "null"] },
+    "axis_deltas": { "type": ["object", "null"] },
+    "axis_diagnostics": { "type": ["object", "null"] },
+    "analysis_roi": { "type": ["object", "null"] },
+    "analysis_sample": { "type": ["object", "null"] },
+    "ts": { "type": ["number", "null"] },
+    "structured": { "$ref": "#/$defs/structured_block" },
+    "overlay_target": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/overlay_target" }
+    },
+    "axis_status": {
+      "type": "string",
+      "enum": [
+        "CALIBRATING",
+        "STABLE",
+        "SUSPECT",
+        "FROZEN",
+        "RECALIBRATING",
+        "MANUAL_LOCKED"
+      ]
+    },
+    "axis_source": {
+      "type": "string",
+      "enum": ["none", "ocr", "last_stable", "manual"]
+    },
+    "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+    "residual_px": { "type": "number", "minimum": 0 },
+    "max_error_px": { "type": "number", "minimum": 0 },
+    "bad_frames": { "type": "integer", "minimum": 0 },
+    "pending_count": { "type": "integer", "minimum": 0 },
+    "pending_candidate": {
+      "anyOf": [
+        { "$ref": "#/$defs/axis_candidate" },
+        { "type": "null" }
+      ]
+    }
+  },
+  "$defs": {
+    "axis_label": {
+      "type": "object",
+      "required": ["value", "y_screen"],
+      "properties": {
+        "value": { "type": "number" },
+        "y_screen": { "type": "number" }
+      }
+    },
+    "overlay_line_legacy": {
+      "type": "object",
+      "required": ["value", "y_screen"],
+      "properties": {
+        "value": { "type": "number" },
+        "y_screen": { "type": "number" },
+        "color": { "type": "string" },
+        "chart_left": { "type": "number" },
+        "chart_right": { "type": "number" },
+        "label": { "type": "string" },
+        "status": { "type": "string", "enum": ["visible", "clamped_top", "clamped_bottom"] },
+        "out_of_bounds": { "type": "boolean" }
+      }
+    },
+    "axis_candidate": {
+      "type": "object",
+      "required": [
+        "slope",
+        "intercept",
+        "value_per_px",
+        "confidence",
+        "labels_count",
+        "residual_px",
+        "max_error_px",
+        "tick_valid",
+        "monotonic_valid"
+      ],
+      "properties": {
+        "slope": { "type": "number" },
+        "intercept": { "type": "number" },
+        "value_per_px": { "type": "number", "exclusiveMinimum": 0 },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "labels_count": { "type": "integer", "minimum": 0 },
+        "inliers_count": { "type": "integer", "minimum": 0 },
+        "residual_px": { "type": "number", "minimum": 0 },
+        "max_error_px": { "type": "number", "minimum": 0 },
+        "tick_valid": { "type": "boolean" },
+        "monotonic_valid": { "type": "boolean" },
+        "value_min": { "type": "number" },
+        "value_max": { "type": "number" },
+        "y_min": { "type": "number" },
+        "y_max": { "type": "number" }
+      }
+    },
+    "stable_axis": {
+      "type": "object",
+      "required": ["slope", "intercept", "value_per_px"],
+      "properties": {
+        "slope": { "type": "number" },
+        "intercept": { "type": "number" },
+        "value_per_px": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "overlay_line": {
+      "type": "object",
+      "required": ["value", "y_screen"],
+      "properties": {
+        "value": { "type": "number" },
+        "y_screen": { "type": "number" },
+        "color": { "type": "string" },
+        "chart_left": { "type": "number" },
+        "chart_right": { "type": "number" },
+        "label": { "type": "string" },
+        "status": { "type": "string", "enum": ["visible", "clamped_top", "clamped_bottom"] },
+        "out_of_bounds": { "type": "boolean" }
+      }
+    },
+    "status_block": {
+      "type": "object",
+      "required": ["state", "axis_locked", "timestamp"],
+      "properties": {
+        "state": { "type": "string" },
+        "axis_locked": { "type": "boolean" },
+        "analysis_roi": { "type": ["object", "null"] },
+        "analysis_sample": { "type": ["object", "null"] },
+        "timestamp": { "type": "number" }
+      }
+    },
+    "structured_block": {
+      "type": "object",
+      "required": ["status", "axis", "lines", "histogram", "debug_visual", "overlay_target"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status_block" },
+        "axis": { "$ref": "#/$defs/axis_block" },
+        "lines": { "$ref": "#/$defs/lines_block" },
+        "histogram": { "$ref": "#/$defs/histogram_block" },
+        "debug_visual": { "$ref": "#/$defs/debug_visual_block" },
+        "overlay_target": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/overlay_target" }
+        }
+      }
+    },
+    "axis_block": {
+      "type": "object",
+      "required": [
+        "axis_status",
+        "axis_source",
+        "confidence",
+        "residual_px",
+        "max_error_px",
+        "bad_frames",
+        "pending_count",
+        "labels_count",
+        "ocr_labels",
+        "regression"
+      ],
+      "properties": {
+        "axis": { "anyOf": [{ "$ref": "#/$defs/stable_axis" }, { "type": "null" }] },
+        "regression": { "anyOf": [{ "$ref": "#/$defs/stable_axis" }, { "type": "null" }] },
+        "axis_labels": { "type": "array", "items": { "$ref": "#/$defs/axis_label" } },
+        "ocr_labels": { "type": "array", "items": { "$ref": "#/$defs/axis_label" } },
+        "labels_count": { "type": "integer", "minimum": 0 },
+        "axis_status": {
+          "type": "string",
+          "enum": [
+            "CALIBRATING",
+            "STABLE",
+            "SUSPECT",
+            "FROZEN",
+            "RECALIBRATING",
+            "MANUAL_LOCKED"
+          ]
+        },
+        "axis_source": { "type": "string", "enum": ["none", "ocr", "last_stable", "manual"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "residual_px": { "type": "number", "minimum": 0 },
+        "max_error_px": { "type": "number", "minimum": 0 },
+        "bad_frames": { "type": "integer", "minimum": 0 },
+        "pending_count": { "type": "integer", "minimum": 0 },
+        "pending_candidate": {
+          "anyOf": [{ "$ref": "#/$defs/axis_candidate" }, { "type": "null" }]
+        }
+      }
+    },
+    "lines_block": {
+      "type": "object",
+      "required": ["items", "count", "target_count", "visual_limits"],
+      "properties": {
+        "items": { "type": "array", "items": { "$ref": "#/$defs/overlay_line" } },
+        "count": { "type": "integer", "minimum": 0 },
+        "target_count": { "type": "integer", "minimum": 0 },
+        "visual_limits": {
+          "type": "object",
+          "required": ["chart_top", "chart_bottom", "y_min", "y_max"],
+          "properties": {
+            "chart_top": { "type": ["number", "null"] },
+            "chart_bottom": { "type": ["number", "null"] },
+            "y_min": { "type": ["number", "null"] },
+            "y_max": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+    "histogram_block": {
+      "type": "object",
+      "required": ["axis_deltas", "axis_diagnostics"],
+      "properties": {
+        "axis_deltas": { "type": ["object", "null"] },
+        "axis_diagnostics": { "type": ["object", "null"] }
+      }
+    },
+    "debug_visual_block": {
+      "type": "object",
+      "required": ["ocr_labels", "regression", "analysis_roi", "chart_bounds"],
+      "properties": {
+        "ocr_labels": { "type": "array", "items": { "$ref": "#/$defs/axis_label" } },
+        "regression": { "anyOf": [{ "$ref": "#/$defs/stable_axis" }, { "type": "null" }] },
+        "analysis_roi": { "type": ["object", "null"] },
+        "chart_bounds": {
+          "type": "object",
+          "required": ["left", "top", "right", "bottom", "width", "height"],
+          "properties": {
+            "left": { "type": ["number", "null"] },
+            "top": { "type": ["number", "null"] },
+            "right": { "type": ["number", "null"] },
+            "bottom": { "type": ["number", "null"] },
+            "width": { "type": ["number", "null"] },
+            "height": { "type": ["number", "null"] }
+          }
+        }
+      }
+    },
+    "overlay_target": {
+      "type": "object",
+      "required": ["id", "value", "label"],
+      "properties": {
+        "id": { "type": "integer", "minimum": 0 },
+        "value": { "type": "number" },
+        "label": { "type": "string" }
+      }
+    }
+  }
+}

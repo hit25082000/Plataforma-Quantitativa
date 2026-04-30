@@ -9,6 +9,7 @@ import { RenkoBrickSelector } from "./RenkoBrickSelector";
 import OverlayControl from "../OverlayControl";
 
 const STALE_ASSET_MS = 15_000;
+const OUT_OF_SESSION_MIN_STALE_MS = 5 * 60_000;
 
 function parseSelectedAsset(label: string): { symbol: string; exchange: string } {
   const parts = label.split("·").map((p) => p.trim());
@@ -16,6 +17,14 @@ function parseSelectedAsset(label: string): { symbol: string; exchange: string }
     symbol: parts[0] ?? "",
     exchange: parts[1] ?? "",
   };
+}
+
+function normalizeTickerSymbol(value: string): string {
+  return value
+    .split("·")[0]
+    ?.trim()
+    .toUpperCase()
+    .replace(/\s+/g, "") ?? "";
 }
 
 function isLikelyOutOfSession(exchange: string, now: Date): boolean {
@@ -37,6 +46,8 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
   const selectedTicker = useMarketStore((s) => s.selectedTicker);
   const streamingTicker = useMarketStore((s) => s.streamingTicker);
   const lastMarketEventTs = useMarketStore((s) => s.lastMarketEventTs);
+  const vpOverlay = useMarketStore((s) => s.vpOverlay);
+  const overlayLastUpdateTs = useMarketStore((s) => s.overlayLastUpdateTs);
   const vwap = useMarketStore((s) => s.vwap);
   const assetSwitchStatus = useMarketStore((s) => s.assetSwitchStatus);
   const assetSwitchMessage = useMarketStore((s) => s.assetSwitchMessage);
@@ -65,9 +76,47 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
   };
 
   const cfg = statusConfig[wsStatus];
+  const overlayHealth = useMemo(() => {
+    if (!vpOverlay) return null;
+    const health =
+      vpOverlay.health && typeof vpOverlay.health === "object"
+        ? (vpOverlay.health as Record<string, unknown>)
+        : {};
+    const dataStatus =
+      typeof health.data_status === "string" ? health.data_status : null;
+    const ocrConfidence =
+      typeof health.ocr_confidence === "number" && Number.isFinite(health.ocr_confidence)
+        ? Math.round(health.ocr_confidence * 1000) / 1000
+        : null;
+    const axisStaleMs =
+      typeof health.axis_stale_ms === "number" && Number.isFinite(health.axis_stale_ms)
+        ? Math.max(0, Math.round(health.axis_stale_ms))
+        : null;
+    const lastTradeAgeMs =
+      typeof health.last_trade_age_ms === "number" && Number.isFinite(health.last_trade_age_ms)
+        ? Math.max(0, Math.round(health.last_trade_age_ms))
+        : null;
+    const updatedAtMs = overlayLastUpdateTs ? Date.parse(overlayLastUpdateTs) : Number.NaN;
+    const overlayAgeMs = Number.isFinite(updatedAtMs) ? Math.max(0, Date.now() - updatedAtMs) : null;
+    return {
+      dataStatus,
+      ocrConfidence,
+      axisStaleMs,
+      lastTradeAgeMs,
+      overlayAgeMs,
+    };
+  }, [overlayLastUpdateTs, vpOverlay]);
   const { symbol: selectedSymbol, exchange: selectedExchange } = useMemo(
     () => parseSelectedAsset(selectedTicker),
     [selectedTicker],
+  );
+  const normalizedSelectedSymbol = useMemo(
+    () => normalizeTickerSymbol(selectedSymbol),
+    [selectedSymbol],
+  );
+  const normalizedStreamingTicker = useMemo(
+    () => normalizeTickerSymbol(streamingTicker),
+    [streamingTicker],
   );
 
   const marketUpdateIndicator = useMemo(() => {
@@ -109,14 +158,33 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         detail: `Última atualização há ${ageSec}s.`,
       };
     }
-    if (streamingTicker && selectedSymbol && streamingTicker !== selectedSymbol) {
+    if (
+      normalizedStreamingTicker &&
+      normalizedSelectedSymbol &&
+      normalizedStreamingTicker !== normalizedSelectedSymbol
+    ) {
       return {
         label: "SEM ATUALIZAÇÃO: POSSÍVEL BUG",
         color: "text-red-400",
         detail: `Stream em ${streamingTicker}, mas ativo selecionado é ${selectedSymbol}.`,
       };
     }
-    if (isLikelyOutOfSession(selectedExchange, new Date(nowMs))) {
+    const hasMatchingStream = Boolean(
+      normalizedStreamingTicker &&
+        normalizedSelectedSymbol &&
+        normalizedStreamingTicker === normalizedSelectedSymbol,
+    );
+    if (hasMatchingStream) {
+      return {
+        label: "SEM ATUALIZAÇÃO: SEM NEGÓCIOS RECENTES",
+        color: "text-amber-300",
+        detail: `${selectedSymbol} sem novos negócios há ${ageSec}s, mas o stream segue ativo para o ativo selecionado.`,
+      };
+    }
+    if (
+      ageMs >= OUT_OF_SESSION_MIN_STALE_MS &&
+      isLikelyOutOfSession(selectedExchange, new Date(nowMs))
+    ) {
       return {
         label: "SEM ATUALIZAÇÃO: FORA DO PREGÃO",
         color: "text-amber-300",
@@ -138,6 +206,8 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
     streamingTicker,
     selectedSymbol,
     selectedExchange,
+    normalizedSelectedSymbol,
+    normalizedStreamingTicker,
   ]);
 
   const handleCloseOverlay = async () => {
@@ -170,6 +240,29 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         {marketUpdateIndicator.label}
       </span>
       <span className="text-text/80">VWAP: {vwap > 0 ? formatPrice(vwap) : "—"}</span>
+      {overlayHealth && (
+        <span
+          className={`text-xs max-w-[320px] truncate ${
+            overlayHealth.dataStatus === "ok"
+              ? "text-emerald-400"
+              : overlayHealth.dataStatus === "degraded"
+                ? "text-amber-300"
+                : "text-red-400"
+          }`}
+          title={[
+            `vp_overlay: ${overlayHealth.dataStatus ?? "n/d"}`,
+            overlayHealth.ocrConfidence != null ? `ocr ${overlayHealth.ocrConfidence}` : null,
+            overlayHealth.axisStaleMs != null ? `axis stale ${overlayHealth.axisStaleMs}ms` : null,
+            overlayHealth.lastTradeAgeMs != null ? `trade age ${overlayHealth.lastTradeAgeMs}ms` : null,
+            overlayHealth.overlayAgeMs != null ? `publish age ${overlayHealth.overlayAgeMs}ms` : null,
+          ]
+            .filter(Boolean)
+            .join(" · ")}
+        >
+          {overlayHealth.dataStatus ? `VP OVERLAY: ${overlayHealth.dataStatus.toUpperCase()}` : "VP OVERLAY"}
+          {overlayHealth.overlayAgeMs != null ? ` (${Math.floor(overlayHealth.overlayAgeMs / 1000)}s)` : ""}
+        </span>
+      )}
       <span className="text-text/60 ml-auto flex items-center gap-2">
         <button
           type="button"

@@ -74,9 +74,10 @@ enum BookSide : int {
     SideSell = 1
 };
 
-// TradeType: 2 = compra agressão, 3 = venda agressão
+// TradeType: 2 = compra agressão, 3 = venda agressão, 13 = negócio sem lado agressor informado
 constexpr uint8_t TRADE_TYPE_BUY_AGGRESSION  = 2;
 constexpr uint8_t TRADE_TYPE_SELL_AGGRESSION  = 3;
+constexpr uint8_t TRADE_TYPE_UNCLASSIFIED     = 13;
 
 // TNewDailyCallback parameters (individual params per DLL manual, NOT a struct)
 // The DLL calls this callback with 19 individual parameters via stdcall.

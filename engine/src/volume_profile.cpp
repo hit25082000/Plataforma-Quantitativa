@@ -6,6 +6,8 @@
 #include <cctype>
 #include <ctime>
 #include <iomanip>
+#include <iostream>
+#include <atomic>
 #include <iterator>
 #include <sstream>
 
@@ -169,11 +171,21 @@ std::optional<nlohmann::json> VolumeProfileEngine::on_trade(const event_bus::Tra
     const int64_t level_price = normalize_price(ev.price);
     if (level_price == 0 && ev.price != 0.0) return std::nullopt;
 
-    LevelAcc& acc = levels_[level_price];
     if (ev.trade_type == profit::TRADE_TYPE_SELL_AGGRESSION) {
+        LevelAcc& acc = levels_[level_price];
         acc.ask_vol += static_cast<uint64_t>(ev.qty);
-    } else {
+    } else if (ev.trade_type == profit::TRADE_TYPE_BUY_AGGRESSION) {
+        LevelAcc& acc = levels_[level_price];
         acc.bid_vol += static_cast<uint64_t>(ev.qty);
+    } else if (ev.trade_type == profit::TRADE_TYPE_UNCLASSIFIED) {
+        LevelAcc& acc = levels_[level_price];
+        acc.neutral_vol += static_cast<uint64_t>(ev.qty);
+    } else {
+        static std::atomic<int> unknown_logged{0};
+        if (unknown_logged.fetch_add(1) < 32) {
+            std::cerr << "[VolumeProfile] ignoring unknown trade_type="
+                      << static_cast<int>(ev.trade_type) << " ticker=" << ev.ticker << std::endl;
+        }
     }
 
     return build_payload();
@@ -189,6 +201,7 @@ std::vector<LevelSnapshot> VolumeProfileEngine::build_levels(uint64_t max_total)
         snap.total_vol = total;
         snap.bid_vol = acc.bid_vol;
         snap.ask_vol = acc.ask_vol;
+        snap.neutral_vol = acc.neutral_vol;
         snap.pct_of_max = max_total > 0
             ? static_cast<double>(total) / static_cast<double>(max_total)
             : 0.0;
@@ -224,34 +237,42 @@ std::pair<int64_t, int64_t> VolumeProfileEngine::compute_value_area() const {
     uint64_t selected = poc_it->second;
     const uint64_t target = static_cast<uint64_t>(std::ceil(static_cast<double>(total_volume) * 0.70));
 
+    bool expand_up_next = true;
     while (selected < target && (left > 0 || right + 1 < ordered.size())) {
-        const uint64_t lower = left > 0 ? ordered[left - 1].second : 0;
-        const uint64_t higher = right + 1 < ordered.size() ? ordered[right + 1].second : 0;
+        const uint64_t vol_down = left > 0 ? ordered[left - 1].second : 0;
+        const uint64_t vol_up = right + 1 < ordered.size() ? ordered[right + 1].second : 0;
 
-        if (higher > lower) {
-            ++right;
-            selected += higher;
-            continue;
+        bool moved = false;
+        if (expand_up_next) {
+            if (right + 1 < ordered.size()) {
+                ++right;
+                selected += vol_up;
+                moved = true;
+            } else if (left > 0) {
+                --left;
+                selected += vol_down;
+                moved = true;
+            }
+        } else {
+            if (left > 0) {
+                --left;
+                selected += vol_down;
+                moved = true;
+            } else if (right + 1 < ordered.size()) {
+                ++right;
+                selected += vol_up;
+                moved = true;
+            }
         }
-        if (lower > higher) {
-            --left;
-            selected += lower;
-            continue;
+        expand_up_next = !expand_up_next;
+        if (!moved) {
+            break;
         }
-        if (right + 1 < ordered.size()) {
-            ++right;
-            selected += higher;
-            continue;
-        }
-        if (left > 0) {
-            --left;
-            selected += lower;
-            continue;
-        }
-        break;
     }
 
-    return {ordered[left].first, ordered[right].first};
+    const int64_t low_px = std::min(ordered[left].first, ordered[right].first);
+    const int64_t high_px = std::max(ordered[left].first, ordered[right].first);
+    return {low_px, high_px};
 }
 
 nlohmann::json VolumeProfileEngine::build_payload() const {
@@ -293,6 +314,7 @@ nlohmann::json VolumeProfileEngine::build_payload() const {
             {"total_vol", lvl.total_vol},
             {"bid_vol", lvl.bid_vol},
             {"ask_vol", lvl.ask_vol},
+            {"neutral_vol", lvl.neutral_vol},
             {"pct_of_max", lvl.pct_of_max},
         });
     }

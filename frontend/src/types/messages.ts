@@ -89,6 +89,8 @@ export interface VolumeProfileLevel {
   bid_vol: number;
   ask_vol: number;
   pct_of_max: number;
+  /** Y em px (tela) quando o distributor enriquece com eixo OCR */
+  y?: number;
 }
 
 export interface VolumeProfileMessage {
@@ -103,6 +105,119 @@ export interface VolumeProfileMessage {
   vah: number;
   val: number;
   levels: VolumeProfileLevel[];
+  poc_y?: number;
+  vah_y?: number;
+  val_y?: number;
+}
+
+export interface TopPlayerAvgLine {
+  player_id: number;
+  player_name?: string;
+  mode: "total" | "buy" | "sell" | "net";
+  avg_price: number;
+  label: string;
+  dashed?: boolean;
+}
+
+export interface TapeIntelligenceLevel {
+  player: number;
+  player_id?: number;
+  player_name?: string;
+  price: number;
+  total_vol: number;
+  bid_vol: number;
+  ask_vol: number;
+  buy_absorption?: number;
+  sell_absorption?: number;
+}
+
+export interface TapeIntelligenceMessage {
+  topic: "market";
+  type: "tape_intelligence";
+  ticker: string;
+  timestamp: number;
+  poc_price: number;
+  vah_price: number;
+  val_price: number;
+  poc_player: number;
+  val_buyer: number;
+  vah_seller: number;
+  poc_player_name?: string;
+  val_buyer_name?: string;
+  vah_seller_name?: string;
+  poc_top3: TapeIntelligenceLevel[];
+  vah_top3: TapeIntelligenceLevel[];
+  val_top3: TapeIntelligenceLevel[];
+  poc_y?: number;
+  vah_y?: number;
+  val_y?: number;
+  val_holder_state?: string;
+  vah_holder_state?: string;
+  top_player_avg_lines?: TopPlayerAvgLine[];
+}
+
+export interface VpOverlayHolder {
+  method: string;
+  state: string;
+  contracts: number;
+  participation_pct: number;
+}
+
+export interface VpOverlayAnchor {
+  price: number;
+  player_id: number;
+  label: string;
+  holder: VpOverlayHolder;
+  line_color?: string;
+  y?: number;
+}
+
+export interface VpOverlayDisplay {
+  overlay_enabled?: boolean;
+  poc_visible?: boolean;
+  val_vah_visible?: boolean;
+  labels_visible?: boolean;
+  histogram_visible?: boolean;
+  top_avg_visible?: boolean;
+  stretch_lines?: boolean;
+  max_avg_lines?: number;
+  max_histogram_width_px?: number;
+  max_visible_histogram_levels?: number;
+}
+
+export interface VpOverlayMessage {
+  topic: "market";
+  type: "vp_overlay";
+  version: number;
+  symbol: string;
+  raw_ticker?: string;
+  scope: string;
+  sequence: number;
+  updated_at: number;
+  poc: VpOverlayAnchor;
+  val: VpOverlayAnchor;
+  vah: VpOverlayAnchor;
+  levels: VolumeProfileLevel[];
+  top_player_avg_lines: unknown[];
+  display: VpOverlayDisplay;
+  health: Record<string, unknown>;
+  axis?: Record<string, unknown>;
+  demo?: boolean;
+}
+
+export interface VpOverlayDebugMessage extends VpOverlayMessage {
+  health: VpOverlayMessage["health"] & {
+    data_status?: string;
+    axis_stale_ms?: number;
+    last_trade_age_ms?: number;
+    last_overlay_publish_age_ms?: number;
+    last_overlay_publish_age_sec?: number;
+    overlay_age_state?: "fresh" | "stale" | "missing";
+    ocr_confidence?: number;
+    axis_status?: string;
+    axis_source?: string;
+    bad_frames?: number;
+  };
 }
 
 export interface BrokerSnapshotMessage {
@@ -227,6 +342,8 @@ export type WsSingleMessage =
   | FlowInversionMessage
   | MacdSignalMessage
   | VolumeProfileMessage
+  | TapeIntelligenceMessage
+  | VpOverlayMessage
   | Agent007StateMessage
   | IpcFallbackMessage;
 

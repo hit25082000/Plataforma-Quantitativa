@@ -10,6 +10,11 @@ if(DEFINED ENV{VCPKG_ROOT})
 endif()
 
 # Sources
+set(TRADE_RECONCILER_TEST_SOURCES
+  tests/trade_reconciler_tests.cpp
+  src/trade_reconciler.cpp
+)
+
 set(ENGINE_SOURCES
   src/main.cpp
   src/asset_controller.cpp
@@ -21,6 +26,7 @@ set(ENGINE_SOURCES
   src/trade_stream.cpp
   src/trade_reconciler.cpp
   src/volume_profile.cpp
+  src/tape_intelligence.cpp
   src/hft_tuning.cpp
   src/event_dispatcher.cpp
   src/zmq_publisher.cpp
@@ -30,6 +36,16 @@ set(ENGINE_SOURCES
   src/rules/rule5_convergence.cpp
   src/rules/rule6_absorption.cpp
   src/shared_memory_ipc.cpp
+)
+
+set(VOLUME_PROFILE_TEST_SOURCES
+  tests/volume_profile_tests.cpp
+  src/volume_profile.cpp
+)
+
+set(TAPE_INTELLIGENCE_TEST_SOURCES
+  tests/tape_intelligence_tests.cpp
+  src/tape_intelligence.cpp
 )
 
 # Find vcpkg packages
@@ -49,6 +65,37 @@ target_link_libraries(engine PRIVATE
   cppzmq
   libzmq
 )
+
+add_executable(volume_profile_tests ${VOLUME_PROFILE_TEST_SOURCES})
+
+target_include_directories(volume_profile_tests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(volume_profile_tests PRIVATE
+  nlohmann_json::nlohmann_json
+)
+
+add_executable(tape_intelligence_tests ${TAPE_INTELLIGENCE_TEST_SOURCES})
+
+target_include_directories(tape_intelligence_tests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(tape_intelligence_tests PRIVATE
+  nlohmann_json::nlohmann_json
+)
+
+add_executable(trade_reconciler_tests ${TRADE_RECONCILER_TEST_SOURCES})
+
+target_include_directories(trade_reconciler_tests PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(trade_reconciler_tests PRIVATE)
 
 # Copy DLL to output: manual requires ProfitDLL64.dll for 64-bit, ProfitDLL.dll for 32-bit
 if(CMAKE_SIZEOF_VOID_P EQUAL 8)

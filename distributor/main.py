@@ -6,6 +6,7 @@ import logging
 import sys
 import time
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import uvicorn
 
@@ -15,6 +16,7 @@ from config import (
     IPC_MODE,
     MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
     MARKET_QUEUE_MAXSIZE,
+    UI_CLIENT_QUEUE_MAXSIZE,
     SHM_FALLBACK_PROBE_INTERVAL_MS,
     SHM_FALLBACK_PROBE_TIMEOUT_MS,
     SHM_MAPPING_NAME,
@@ -26,6 +28,7 @@ from config import (
 )
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
+from vp_overlay_consolidator import VpOverlayConsolidator
 from websocket_server import create_app, init_app
 from mmap_consumer import MmapConsumer
 from realtime_rag import create_rag_engine_from_config
@@ -97,13 +100,36 @@ def resolve_market_consumer(queue: asyncio.Queue[str]) -> tuple[object, str, dic
 
 if __name__ == "__main__":
     queue = asyncio.Queue(maxsize=MARKET_QUEUE_MAXSIZE)
-    manager = ConnectionManager()
+    manager = ConnectionManager(client_queue_maxsize=UI_CLIENT_QUEUE_MAXSIZE)
+    vp_tape_manager = ConnectionManager(client_queue_maxsize=UI_CLIENT_QUEUE_MAXSIZE)
+    vp_overlay_manager = ConnectionManager(
+        client_queue_maxsize=1,
+        dropped_metric_key="vp_overlay_client_queue_dropped",
+    )
+    vp_overlay_consolidator = VpOverlayConsolidator(publish_interval_ms=125)
     agent007_engine = Agent007Engine()
     rag_engine = create_rag_engine_from_config()
-    router = MessageRouter(manager, DOM_THROTTLE_MS, agent007_engine, rag_engine=rag_engine)
+    router = MessageRouter(
+        manager,
+        DOM_THROTTLE_MS,
+        agent007_engine,
+        rag_engine=rag_engine,
+        vp_tape_manager=vp_tape_manager,
+        vp_overlay_manager=vp_overlay_manager,
+        vp_overlay_consolidator=vp_overlay_consolidator,
+    )
     consumer, effective_ipc_mode, fallback_event = resolve_market_consumer(queue)
+    consumer_zmq_market_aux: Optional[ZmqConsumer] = None
     if effective_ipc_mode == "shm":
         logging.info("Distributor IPC mode=shm mapping=%s size_mb=%s", SHM_MAPPING_NAME, SHM_SIZE_MB)
+        consumer_zmq_market_aux = ZmqConsumer(
+            ZMQ_ADDRESS,
+            queue,
+            dom_soft_limit_pct=MARKET_QUEUE_DOM_SOFT_LIMIT_PCT,
+            market_type_allowlist=frozenset(
+                ("volume_profile", "tape_intelligence", "daily")
+            ),
+        )
     else:
         logging.info("Distributor IPC mode=zmq address=%s", ZMQ_ADDRESS)
     consumer_sync = ZmqConsumer(
@@ -117,8 +143,11 @@ if __name__ == "__main__":
         consumer,
         agent007_engine,
         router,
+        volume_profile_connection_manager=vp_tape_manager,
+        vp_overlay_connection_manager=vp_overlay_manager,
         rag_pipeline=rag_engine,
         sync_consumer=consumer_sync,
+        zmq_market_aux=consumer_zmq_market_aux,
         market_queue_ref=queue,
         market_ipc_mode=effective_ipc_mode,
         fallback_event=fallback_event,
@@ -134,25 +163,45 @@ if __name__ == "__main__":
             await asyncio.sleep(5)
             backlog = queue.qsize()
             r = router.metrics()
+            m = manager.metrics()
             c_main = consumer.metrics()
             c_sync = consumer_sync.metrics()
+            c_aux = (
+                consumer_zmq_market_aux.metrics()
+                if consumer_zmq_market_aux is not None
+                else None
+            )
+            dropped_dom = int(c_main["dropped_dom"] + c_sync["dropped_dom"])
+            rescued = int(c_main["rescued_trade_like"] + c_sync["rescued_trade_like"])
+            gap_c = int(c_main.get("gap_count", 0) + c_sync.get("gap_count", 0))
+            gap_m = int(c_main.get("gap_messages", 0) + c_sync.get("gap_messages", 0))
+            ring_d = int(c_main.get("ring_dropped", 0) + c_sync.get("ring_dropped", 0))
+            integ = int(c_main.get("integrity_failures", 0) + c_sync.get("integrity_failures", 0))
+            crc_m = int(c_main.get("crc_mismatch", 0) + c_sync.get("crc_mismatch", 0))
+            pay_m = int(c_main.get("payload_mismatch", 0) + c_sync.get("payload_mismatch", 0))
+            com_m = int(c_main.get("committed_mismatch", 0) + c_sync.get("committed_mismatch", 0))
+            if c_aux is not None:
+                dropped_dom += int(c_aux["dropped_dom"])
+                rescued += int(c_aux["rescued_trade_like"])
             logging.info(
-                "Pipeline health: mode=%s backlog=%s route_avg_ms=%.3f route_total=%s invalid_json=%s throttled_dom=%s dropped_dom=%s rescued_trade_like=%s gap_count=%s gap_messages=%s ring_dropped=%s integrity_failures=%s crc_mismatch=%s payload_mismatch=%s committed_mismatch=%s",
+                "Pipeline health: mode=%s backlog=%s route_avg_ms=%.3f route_total=%s invalid_json=%s throttled_dom=%s dropped_dom=%s rescued_trade_like=%s gap_count=%s gap_messages=%s ring_dropped=%s integrity_failures=%s crc_mismatch=%s payload_mismatch=%s committed_mismatch=%s ws_clients=%s ws_queue_dropped=%s",
                 effective_ipc_mode,
                 backlog,
                 float(r["route_avg_ms"]),
                 int(r["route_count_total"]),
                 int(r["invalid_json_count"]),
                 int(r["throttled_dom_count"]),
-                int(c_main["dropped_dom"] + c_sync["dropped_dom"]),
-                int(c_main["rescued_trade_like"] + c_sync["rescued_trade_like"]),
-                int(c_main.get("gap_count", 0) + c_sync.get("gap_count", 0)),
-                int(c_main.get("gap_messages", 0) + c_sync.get("gap_messages", 0)),
-                int(c_main.get("ring_dropped", 0) + c_sync.get("ring_dropped", 0)),
-                int(c_main.get("integrity_failures", 0) + c_sync.get("integrity_failures", 0)),
-                int(c_main.get("crc_mismatch", 0) + c_sync.get("crc_mismatch", 0)),
-                int(c_main.get("payload_mismatch", 0) + c_sync.get("payload_mismatch", 0)),
-                int(c_main.get("committed_mismatch", 0) + c_sync.get("committed_mismatch", 0)),
+                dropped_dom,
+                rescued,
+                gap_c,
+                gap_m,
+                ring_d,
+                integ,
+                crc_m,
+                pay_m,
+                com_m,
+                int(m["connected_ws_clients"]),
+                int(m["ui_client_queue_dropped"]),
             )
             if rag_engine is not None:
                 rm = rag_engine.metrics()
@@ -172,7 +221,10 @@ if __name__ == "__main__":
         loop = asyncio.get_running_loop()
         consumer.start(loop=loop)
         consumer_sync.start(loop=loop)
+        if consumer_zmq_market_aux is not None:
+            consumer_zmq_market_aux.start(loop=loop)
         asyncio.create_task(consume_loop(queue, router))
+        asyncio.create_task(router.ui_flush_loop())
         asyncio.create_task(pipeline_health_loop())
         yield
 

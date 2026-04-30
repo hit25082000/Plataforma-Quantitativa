@@ -3,12 +3,17 @@
 import asyncio
 import json
 import logging
+import os
 import socket
+import time
 import uuid
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager, suppress
 from typing import TYPE_CHECKING, Any, AsyncGenerator, List, Optional, Protocol, cast
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -18,6 +23,8 @@ from agent_007_chat import chat_metrics, check_rate_limit, run_agent007_chat
 from config import AGENT007_WEIS_MODE, GEMINI_LIVE_MODEL, GOOGLE_API_KEY, VOICE_FUNCTIONS_ENABLED, VOICE_SESSION_MAX_DURATION_S, WS_PORT
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
+from message_router import canonical_symbol
+from vp_ocr_enrich import enrich_vp_overlay_payload
 from security_audit import security_audit_metrics
 from voice_realtime import create_realtime_session, execute_function_call, voice_metrics
 
@@ -25,11 +32,56 @@ if TYPE_CHECKING:
     from realtime_rag import RealtimeRagEngine
 
 logger = logging.getLogger(__name__)
+STARTED_AT = time.time()
+BUILD_TAG = "vp-runtime-debug-2026-04-27"
+OCR_OVERLAY_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
 
 # TCP engine SWITCH: ver ../docs/PORTS.md
 ENGINE_CONTROL_PORT = 5556
 CONNECT_TIMEOUT_S = 3
 RECV_TIMEOUT_S = 90  # SWITCH pode aguardar retries + recuperação de sessão no engine
+
+
+def _ocr_error_ts() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _sanitize_error_details(raw: Any) -> Any:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        compact = " ".join(raw.split())
+        return compact[:300] + ("..." if len(compact) > 300 else "")
+    if isinstance(raw, dict):
+        allowed = {"error", "message", "reason", "status", "code", "detail", "details"}
+        sanitized: dict[str, Any] = {}
+        for key in allowed:
+            if key in raw:
+                sanitized[key] = _sanitize_error_details(raw.get(key))
+        return sanitized or {"message": "downstream_error"}
+    if isinstance(raw, list):
+        return [_sanitize_error_details(item) for item in raw[:5]]
+    return _sanitize_error_details(str(raw))
+
+
+def _ocr_error_response(
+    *,
+    status_code: int,
+    endpoint: str,
+    error_code: str,
+    message: str,
+    details: Any = None,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status_code,
+        detail={
+            "endpoint": endpoint,
+            "error_code": error_code,
+            "message": message,
+            "ts": _ocr_error_ts(),
+            "details": _sanitize_error_details(details),
+        },
+    )
 
 
 def _exchange_to_bolsa(exchange: str) -> str:
@@ -43,10 +95,104 @@ def _exchange_to_bolsa(exchange: str) -> str:
     return "F"
 
 
+def _ocr_overlay_url(path: str) -> str:
+    return f"http://127.0.0.1:{OCR_OVERLAY_PORT}{path}"
+
+
+def _ocr_overlay_proxy_sync(method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    data_bytes = None
+    headers = {"Content-Type": "application/json"}
+    if payload is not None:
+        data_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    req = urllib.request.Request(
+        _ocr_overlay_url(path),
+        data=data_bytes,
+        headers=headers,
+        method=method.upper(),
+    )
+    with urllib.request.urlopen(req, timeout=4.0) as resp:
+        raw = resp.read().decode("utf-8")
+        return json.loads(raw) if raw else {"ok": True}
+
+
+async def _ocr_overlay_proxy(method: str, path: str, payload: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+    endpoint = f"/api/ocr-overlay{path.removeprefix('/api/ocr-overlay')}"
+    try:
+        return await asyncio.to_thread(_ocr_overlay_proxy_sync, method, path, payload)
+    except urllib.error.HTTPError as exc:
+        detail_bytes = b""
+        with suppress(Exception):
+            detail_bytes = exc.read()
+        detail = detail_bytes.decode("utf-8", errors="replace") if detail_bytes else ""
+        parsed_detail: Any = detail
+        try:
+            parsed_detail = json.loads(detail)
+        except Exception:  # noqa: BLE001
+            parsed_detail = detail
+        if exc.code in (400, 422):
+            raise _ocr_error_response(
+                status_code=400,
+                endpoint=endpoint,
+                error_code="OCR_INVALID_PAYLOAD",
+                message="Payload inválido para OCR overlay.",
+                details=parsed_detail,
+            ) from exc
+        if exc.code == 409:
+            raise _ocr_error_response(
+                status_code=409,
+                endpoint=endpoint,
+                error_code="OCR_INCONSISTENT_STATE",
+                message="Estado inconsistente no OCR overlay.",
+                details=parsed_detail,
+            ) from exc
+        if exc.code in (408, 504):
+            raise _ocr_error_response(
+                status_code=504,
+                endpoint=endpoint,
+                error_code="OCR_DOWNSTREAM_TIMEOUT",
+                message="Timeout no serviço OCR overlay.",
+                details=parsed_detail,
+            ) from exc
+        raise _ocr_error_response(
+            status_code=503,
+            endpoint=endpoint,
+            error_code="OCR_DOWNSTREAM_HTTP_ERROR",
+            message=f"Falha HTTP no serviço OCR overlay ({exc.code}).",
+            details=parsed_detail,
+        ) from exc
+    except TimeoutError as exc:
+        raise _ocr_error_response(
+            status_code=504,
+            endpoint=endpoint,
+            error_code="OCR_DOWNSTREAM_TIMEOUT",
+            message="Timeout no serviço OCR overlay.",
+            details=str(exc),
+        ) from exc
+    except socket.timeout as exc:
+        raise _ocr_error_response(
+            status_code=504,
+            endpoint=endpoint,
+            error_code="OCR_DOWNSTREAM_TIMEOUT",
+            message="Timeout no serviço OCR overlay.",
+            details=str(exc),
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise _ocr_error_response(
+            status_code=503,
+            endpoint=endpoint,
+            error_code="OCR_DOWNSTREAM_UNAVAILABLE",
+            message="Serviço OCR overlay indisponível.",
+            details=str(exc),
+        ) from exc
+
+
 # Shared state - initialized in main.py
 manager: Optional[ConnectionManager] = None
+vp_tape_manager: Optional[ConnectionManager] = None
+vp_overlay_manager: Optional[ConnectionManager] = None
 zmq_consumer: Optional["ConsumerLike"] = None
 zmq_consumer_sync: Optional["ConsumerLike"] = None
+zmq_consumer_market_aux: Optional["ConsumerLike"] = None
 agent007_engine: Optional[Agent007Engine] = None
 message_router: Optional[MessageRouter] = None
 market_queue: Optional[Any] = None  # asyncio.Queue[str]; evita import circular
@@ -62,6 +208,116 @@ class ConsumerLike(Protocol):
     def metrics(self) -> dict[str, int]: ...
 
 
+class VpSatoDemoRequest(BaseModel):
+    ticker: str = Field(default="DEMO")
+    base_price: float = Field(default=100000.0)
+    price_step: float = Field(default=5.0, gt=0)
+    levels: int = Field(default=72, ge=20, le=180)
+    seed: int = Field(default=0)
+
+
+def _value_area_bounds(levels: list[dict[str, Any]], poc_index: int) -> tuple[float, float]:
+    target = sum(float(row["total_vol"]) for row in levels) * 0.70
+    total = float(levels[poc_index]["total_vol"])
+    lo = hi = poc_index
+    while total < target and (lo > 0 or hi < len(levels) - 1):
+        down = float(levels[lo - 1]["total_vol"]) if lo > 0 else -1.0
+        up = float(levels[hi + 1]["total_vol"]) if hi < len(levels) - 1 else -1.0
+        if up >= down and hi < len(levels) - 1:
+            hi += 1
+            total += float(levels[hi]["total_vol"])
+        elif lo > 0:
+            lo -= 1
+            total += float(levels[lo]["total_vol"])
+        else:
+            break
+    return float(levels[hi]["price"]), float(levels[lo]["price"])
+
+
+def _build_vp_sato_demo_messages(req: VpSatoDemoRequest) -> list[dict[str, Any]]:
+    import math
+
+    count = int(req.levels)
+    center = count // 2
+    drift = (int(req.seed) % 9) - 4
+    main_center = center + drift
+    upper_center = max(0, min(count - 1, center - 18 + drift // 2))
+    lower_center = max(0, min(count - 1, center + 16 - drift // 2))
+    levels: list[dict[str, Any]] = []
+    for i in range(count):
+        price = float(req.base_price + (center - i) * req.price_step)
+        main = 920.0 * math.exp(-((i - main_center) ** 2) / (2 * 8.0**2))
+        upper = 310.0 * math.exp(-((i - upper_center) ** 2) / (2 * 5.0**2))
+        lower = 420.0 * math.exp(-((i - lower_center) ** 2) / (2 * 6.0**2))
+        wave = 45.0 * (1.0 + math.sin((i + req.seed) * 0.83))
+        total = int(max(8.0, main + upper + lower + wave))
+        ask_share = 0.58 if i < main_center else 0.42
+        ask = int(total * ask_share)
+        bid = total - ask
+        levels.append(
+            {
+                "price": price,
+                "total_vol": total,
+                "bid_vol": bid,
+                "ask_vol": ask,
+                "pct_of_max": 0.0,
+            }
+        )
+    max_vol = max(int(row["total_vol"]) for row in levels)
+    for row in levels:
+        row["pct_of_max"] = round(float(row["total_vol"]) / max_vol, 6)
+    poc_index = max(range(len(levels)), key=lambda idx: (levels[idx]["total_vol"], levels[idx]["price"]))
+    poc = float(levels[poc_index]["price"])
+    vah, val = _value_area_bounds(levels, poc_index)
+    total_vol = int(sum(int(row["total_vol"]) for row in levels))
+    ts = int(time.time() * 1000)
+    vp = {
+        "topic": "market",
+        "type": "volume_profile",
+        "ticker": req.ticker.strip().upper() or "DEMO",
+        "period": "manual",
+        "timestamp": ts,
+        "price_step": float(req.price_step),
+        "total_vol": total_vol,
+        "poc": poc,
+        "vah": vah,
+        "val": val,
+        "levels": levels,
+        "demo": True,
+    }
+    top3 = [
+        {
+            "player": 1000 + i + int(req.seed) % 7,
+            "price": poc,
+            "total_vol": max(1, int(max_vol * (0.72 - i * 0.16))),
+            "bid_vol": max(1, int(max_vol * (0.34 - i * 0.07))),
+            "ask_vol": max(1, int(max_vol * (0.38 - i * 0.09))),
+            "buy_absorption": max(0, int(max_vol * (0.05 - i * 0.01))),
+            "sell_absorption": max(0, int(max_vol * (0.04 - i * 0.01))),
+        }
+        for i in range(3)
+    ]
+    tape = {
+        "topic": "market",
+        "type": "tape_intelligence",
+        "ticker": vp["ticker"],
+        "timestamp": ts,
+        "poc_price": poc,
+        "vah_price": vah,
+        "val_price": val,
+        "poc_player": top3[0]["player"],
+        "val_buyer": 1088 + int(req.seed) % 5,
+        "vah_seller": 2020 + int(req.seed) % 5,
+        "poc_top3": top3,
+        "vah_top3": top3,
+        "val_top3": top3,
+        "val_holder_state": "ok",
+        "vah_holder_state": "ok",
+        "demo": True,
+    }
+    return [vp, tape]
+
+
 @asynccontextmanager
 async def _noop_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     yield
@@ -73,17 +329,23 @@ def init_app(
     agent007: Optional[Agent007Engine] = None,
     router: Optional[MessageRouter] = None,
     *,
+    volume_profile_connection_manager: Optional[ConnectionManager] = None,
+    vp_overlay_connection_manager: Optional[ConnectionManager] = None,
     rag_pipeline: Optional["RealtimeRagEngine"] = None,
     sync_consumer: Optional[ConsumerLike] = None,
+    zmq_market_aux: Optional[ConsumerLike] = None,
     market_queue_ref: Optional[Any] = None,
     market_ipc_mode: str = "zmq",
     fallback_event: Optional[dict[str, Any]] = None,
 ) -> None:
     """Initialize app with shared components (called from main.py)."""
-    global manager, zmq_consumer, zmq_consumer_sync, agent007_engine, message_router, market_queue, ipc_mode, ipc_fallback_event, rag_engine
+    global manager, vp_tape_manager, vp_overlay_manager, zmq_consumer, zmq_consumer_sync, zmq_consumer_market_aux, agent007_engine, message_router, market_queue, ipc_mode, ipc_fallback_event, rag_engine
     manager = connection_manager
+    vp_tape_manager = volume_profile_connection_manager
+    vp_overlay_manager = vp_overlay_connection_manager
     zmq_consumer = consumer
     zmq_consumer_sync = sync_consumer
+    zmq_consumer_market_aux = zmq_market_aux
     agent007_engine = agent007
     message_router = router
     rag_engine = rag_pipeline
@@ -172,12 +434,244 @@ def create_app(
         except WebSocketDisconnect:
             manager.disconnect(websocket)
 
+    @app.websocket("/ws/volume-profile")
+    async def ws_volume_profile(websocket: WebSocket) -> None:
+        """Apenas snapshots VP e T&T (enriquecidos) — overlay ou clientes leves sem /ws completo."""
+        if vp_tape_manager is None:
+            await websocket.close(code=1011, reason="Server not initialized")
+            return
+        symbol = (websocket.query_params.get("symbol") or "WINFUT").strip().upper()
+        await vp_tape_manager.connect(websocket)
+        if message_router is not None:
+            snap = message_router.latest_volume_profile_snapshot(symbol)
+            if snap is not None:
+                try:
+                    await websocket.send_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+                    logger.info(
+                        "[VP_WS] client_connected symbol=%s snapshot_total=%s poc=%s",
+                        symbol,
+                        snap.get("total_vol"),
+                        snap.get("poc"),
+                    )
+                except Exception:
+                    pass
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            vp_tape_manager.disconnect(websocket)
+
+    @app.get("/api/volume-profile/debug")
+    async def volume_profile_debug(symbol: str = "WINFUT") -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        snap = message_router.latest_volume_profile_snapshot(symbol)
+        counters = message_router.debug_counters()
+        now = time.time()
+        if snap is None:
+            return {
+                "ok": True,
+                "symbol": symbol,
+                "has_profile": False,
+                "snapshot": None,
+                "bins_count": 0,
+                "poc": None,
+                "vah": None,
+                "val": None,
+                "total_vol": 0,
+                "source": None,
+                "updated_at": None,
+                "age_sec": None,
+                **counters,
+            }
+        levels = snap.get("levels") or []
+        total_vol = snap.get("total_vol") or 0
+        updated_at = snap.get("updated_at")
+        age_sec = None
+        if isinstance(updated_at, (int, float)):
+            age_sec = round(max(0.0, now - float(updated_at)), 2)
+        return {
+            "ok": True,
+            "symbol": snap.get("ticker", symbol),
+            "has_profile": int(total_vol) > 0,
+            "snapshot": snap,
+            "bins_count": len(levels) if isinstance(levels, list) else 0,
+            "poc": snap.get("poc"),
+            "vah": snap.get("vah"),
+            "val": snap.get("val"),
+            "total_vol": total_vol,
+            "raw_symbol": snap.get("raw_ticker"),
+            "source": snap.get("source"),
+            "updated_at": updated_at,
+            "age_sec": age_sec,
+            **counters,
+        }
+
+    @app.post("/api/volume-profile/debug/inject-trade")
+    async def volume_profile_debug_inject_trade() -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        injected = message_router.inject_debug_trade("WINJ26", 125000, 10)
+        return {
+            "ok": True,
+            "injected": {"type": "trade", "ticker": "WINJ26", "price": 125000, "qty": 10},
+            "snapshot": message_router.latest_volume_profile_snapshot("WINFUT"),
+            "vp_event": injected,
+        }
+
+    @app.post("/api/volume-profile/debug/clear")
+    async def volume_profile_debug_clear(symbol: str = "WINFUT") -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        canon = canonical_symbol(symbol)
+        message_router.clear_volume_profile(canon)
+        return {"ok": True, "symbol": canon}
+
+    @app.get("/api/runtime/debug")
+    async def runtime_debug() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "pid": os.getpid(),
+            "host": socket.gethostname(),
+            "started_at": STARTED_AT,
+            "uptime_sec": round(time.time() - STARTED_AT, 2),
+            "build_tag": BUILD_TAG,
+        }
+
+    @app.get("/api/ocr-overlay/status")
+    async def ocr_overlay_status() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("GET", "/api/ocr-overlay/status")
+
+    @app.get("/api/ocr-overlay/debug")
+    async def ocr_overlay_debug() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("GET", "/api/ocr-overlay/debug")
+
+    @app.post("/api/ocr-overlay/recalibrate")
+    async def ocr_overlay_recalibrate() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/recalibrate")
+
+    @app.post("/api/ocr-overlay/freeze")
+    async def ocr_overlay_freeze() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/freeze")
+
+    @app.post("/api/ocr-overlay/unfreeze")
+    async def ocr_overlay_unfreeze() -> dict[str, Any]:
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/unfreeze")
+
+    @app.post("/api/ocr-overlay/manual-calibration")
+    async def ocr_overlay_manual_calibration(body: dict[str, Any]) -> dict[str, Any]:
+        points = body.get("points")
+        if not isinstance(points, list) or len(points) < 2:
+            raise _ocr_error_response(
+                status_code=400,
+                endpoint="/api/ocr-overlay/manual-calibration",
+                error_code="OCR_INVALID_PAYLOAD",
+                message="Payload inválido para calibração manual.",
+                details={"required": "points[] com pelo menos 2 itens"},
+            )
+        return await _ocr_overlay_proxy("POST", "/api/ocr-overlay/manual-calibration", payload=body)
+
+    @app.websocket("/ws/tape-intelligence")
+    async def ws_tape_intelligence(websocket: WebSocket) -> None:
+        """Alias dedicado para clientes focados apenas em Tape Intelligence."""
+        if vp_tape_manager is None:
+            await websocket.close(code=1011, reason="Server not initialized")
+            return
+        await vp_tape_manager.connect(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            vp_tape_manager.disconnect(websocket)
+
+    @app.websocket("/ws/vp-overlay")
+    async def ws_vp_overlay(websocket: WebSocket) -> None:
+        if vp_overlay_manager is None:
+            await websocket.close(code=1011, reason="Server not initialized")
+            return
+        symbol = (websocket.query_params.get("symbol") or "WINFUT").strip().upper()
+        await vp_overlay_manager.connect(websocket)
+        if message_router is not None:
+            snap = message_router.vp_overlay_last_snapshot(symbol)
+            if snap is not None:
+                try:
+                    snap_e = await asyncio.to_thread(enrich_vp_overlay_payload, snap)
+                    await websocket.send_text(
+                        json.dumps(snap_e, ensure_ascii=False, separators=(",", ":"))
+                    )
+                except Exception:
+                    pass
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            vp_overlay_manager.disconnect(websocket)
+
+    @app.get("/api/vp-overlay/debug")
+    async def vp_overlay_debug(symbol: str = "WINFUT") -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        raw = message_router.vp_overlay_debug_snapshot(symbol)
+        last = raw.get("last_vp_overlay")
+        if isinstance(last, dict):
+            raw = dict(raw)
+            raw["last_vp_overlay"] = await asyncio.to_thread(enrich_vp_overlay_payload, last)
+        return raw
+
+    @app.get("/api/vp-overlay/last")
+    async def vp_overlay_last(symbol: str = "WINFUT") -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        snap = message_router.vp_overlay_last_snapshot(symbol)
+        if isinstance(snap, dict):
+            snap = await asyncio.to_thread(enrich_vp_overlay_payload, snap)
+        return {"ok": True, "symbol": symbol, "snapshot": snap}
+
+    @app.post("/api/vp-overlay/reset")
+    async def vp_overlay_reset(symbol: str = "") -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        message_router.vp_overlay_reset(symbol.strip() or None)
+        return {"ok": True, "symbol": symbol or "*"}
+
+    @app.post("/api/vp-overlay/demo")
+    async def vp_overlay_demo() -> dict[str, Any]:
+        if message_router is None or vp_overlay_manager is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        import pathlib
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        path = root / "docs" / "contracts" / "fixtures" / "vp-overlay-demo.json"
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        snap = await message_router.vp_overlay_publish_demo_payload(payload)
+        return {"ok": True, "injected": snap.get("symbol") if isinstance(snap, dict) else None, "snapshot": snap}
+
+    @app.post("/api/vp-sato/demo")
+    async def vp_sato_demo(payload: VpSatoDemoRequest) -> dict[str, Any]:
+        if message_router is None:
+            raise HTTPException(status_code=503, detail="router not initialized")
+        messages = _build_vp_sato_demo_messages(payload)
+        for msg in messages:
+            await message_router.route(json.dumps(msg, ensure_ascii=False, separators=(",", ":")))
+        vp = messages[0]
+        return {
+            "ok": True,
+            "ticker": vp["ticker"],
+            "levels": len(vp["levels"]),
+            "poc": vp["poc"],
+            "vah": vp["vah"],
+            "val": vp["val"],
+            "total_vol": vp["total_vol"],
+        }
+
     @app.get("/health")
     async def health() -> dict:
         """Health check: liveness + métricas do pipeline quando inicializado via main."""
         out: dict[str, Any] = {
             "status": "ok",
             "clients": len(manager.active) if manager else 0,
+            "clients_volume_profile": len(vp_tape_manager.active) if vp_tape_manager else 0,
+            "clients_vp_overlay": len(vp_overlay_manager.active) if vp_overlay_manager else 0,
             "zmq": zmq_consumer.is_alive() if zmq_consumer else False,
             "ipc_mode": ipc_mode,
         }
@@ -195,12 +689,47 @@ def create_app(
             out["route_total"] = int(r["route_count_total"])
             out["throttled_dom"] = int(r["throttled_dom_count"])
             out["invalid_json"] = int(r["invalid_json_count"])
+            out["ui_aggregated_count"] = int(r.get("ui_aggregated_count", 0))
+            out["ui_flushed_count"] = int(r.get("ui_flushed_count", 0))
+            out["ui_replaced_count"] = int(r.get("ui_replaced_count", 0))
+            out["ui_trade_batched_count"] = int(r.get("ui_trade_batched_count", 0))
+            out["ui_skipped_due_no_clients"] = int(r.get("ui_skipped_due_no_clients", 0))
+            out["ui_flush_duration_ms"] = float(r.get("ui_flush_duration_ms", 0.0))
+            out["ui_flush_loop_lag_ms"] = float(r.get("ui_flush_loop_lag_ms", 0.0))
+            dbg = message_router.vp_overlay_debug_snapshot("WINFUT")
+            consolidator = dbg.get("consolidator") if isinstance(dbg, dict) else None
+            if isinstance(consolidator, dict):
+                out["vp_overlay_last_publish_age_ms"] = consolidator.get(
+                    "last_overlay_publish_age_ms"
+                )
+                out["vp_overlay_last_publish_age_sec"] = consolidator.get(
+                    "last_overlay_publish_age_sec"
+                )
+                out["vp_overlay_emit_count"] = consolidator.get("vp_overlay_emit_count")
+                out["vp_overlay_skipped_same_hash"] = consolidator.get(
+                    "vp_overlay_skipped_same_hash"
+                )
+                out["vp_overlay_vp_cache_size"] = consolidator.get("vp_cache_size")
+                out["vp_overlay_tape_cache_size"] = consolidator.get("tape_cache_size")
+        if manager is not None:
+            cm = manager.metrics()
+            out["connected_ws_clients"] = int(cm.get("connected_ws_clients", 0))
+            out["ui_client_queue_dropped"] = int(cm.get("ui_client_queue_dropped", 0))
+        if vp_overlay_manager is not None:
+            vom = vp_overlay_manager.metrics()
+            dk = next((k for k in vom if k.endswith("_queue_dropped")), None)
+            if dk:
+                out[dk] = int(vom.get(dk, 0))
         if zmq_consumer is not None:
             out["consumer_metrics_main"] = zmq_consumer.metrics()
             out["zmq_metrics_main"] = zmq_consumer.metrics()
         if zmq_consumer_sync is not None:
             out["consumer_metrics_sync"] = zmq_consumer_sync.metrics()
             out["zmq_metrics_sync"] = zmq_consumer_sync.metrics()
+        if zmq_consumer_market_aux is not None:
+            out["zmq_market_aux"] = zmq_consumer_market_aux.is_alive()
+            out["consumer_metrics_market_aux"] = zmq_consumer_market_aux.metrics()
+            out["zmq_metrics_market_aux"] = zmq_consumer_market_aux.metrics()
         if zmq_consumer is not None and zmq_consumer_sync is not None:
             m_main = zmq_consumer.metrics()
             m_sync = zmq_consumer_sync.metrics()

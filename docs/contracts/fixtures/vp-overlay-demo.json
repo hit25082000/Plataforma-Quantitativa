@@ -1,0 +1,116 @@
+{
+  "topic": "market",
+  "type": "vp_overlay",
+  "version": 1,
+  "symbol": "WINFUT",
+  "raw_ticker": "WINFUT · BMF",
+  "scope": "manual",
+  "sequence": 1,
+  "updated_at": 1714233600.0,
+  "poc": {
+    "price": 100500,
+    "player_id": 101,
+    "label": "POC 100500 — Agente Alfa",
+    "holder": {
+      "method": "total_volume",
+      "state": "ok",
+      "contracts": 4200,
+      "participation_pct": 38.5
+    },
+    "line_color": "#ff8c00"
+  },
+  "val": {
+    "price": 100000,
+    "player_id": 202,
+    "label": "VAL 100000 — passivo compra",
+    "holder": {
+      "method": "passive_buy_absorption",
+      "state": "ok",
+      "contracts": 1800,
+      "participation_pct": 44.0
+    },
+    "line_color": "#e53935"
+  },
+  "vah": {
+    "price": 101000,
+    "player_id": 303,
+    "label": "VAH 101000 — passivo venda",
+    "holder": {
+      "method": "passive_sell_absorption",
+      "state": "ok",
+      "contracts": 1650,
+      "participation_pct": 41.2
+    },
+    "line_color": "#e53935"
+  },
+  "levels": [
+    {
+      "price": 101000,
+      "total_vol": 3200,
+      "bid_vol": 900,
+      "ask_vol": 2300,
+      "pct_of_max": 1.0
+    },
+    {
+      "price": 100500,
+      "total_vol": 9100,
+      "bid_vol": 4800,
+      "ask_vol": 4300,
+      "pct_of_max": 1.0
+    },
+    {
+      "price": 100000,
+      "total_vol": 5400,
+      "bid_vol": 3100,
+      "ask_vol": 2300,
+      "pct_of_max": 0.59
+    }
+  ],
+  "top_player_avg_lines": [
+    {
+      "player_id": 101,
+      "mode": "total",
+      "avg_price": 100520,
+      "label": "T101",
+      "dashed": false
+    },
+    {
+      "player_id": 202,
+      "mode": "buy",
+      "avg_price": 100080,
+      "label": "B202",
+      "dashed": true
+    }
+  ],
+  "display": {
+    "overlay_enabled": true,
+    "poc_visible": true,
+    "val_vah_visible": true,
+    "labels_visible": true,
+    "histogram_visible": true,
+    "top_avg_visible": true,
+    "stretch_lines": false,
+    "max_avg_lines": 6,
+    "max_histogram_width_px": 220,
+    "max_visible_histogram_levels": 400
+  },
+  "health": {
+    "data_status": "ok",
+    "axis_stale_ms": 0,
+    "last_trade_age_ms": 12,
+    "last_overlay_publish_age_ms": 0,
+    "last_overlay_publish_age_sec": 0,
+    "overlay_age_state": "fresh",
+    "ocr_confidence": 0.92
+  },
+  "axis": {
+    "price_min": 99800,
+    "price_max": 101200,
+    "slope": -2.4,
+    "intercept": 340.0,
+    "confidence": 0.9,
+    "status": "ok",
+    "chart_bounds": { "left": 80, "top": 60, "right": 1180, "bottom": 720 }
+  },
+  "demo": true
+}

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { useMarketStore } from "../store/marketStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { isTauri } from "../utils/tauri";
@@ -91,13 +92,11 @@ export function useAlerts() {
     if (soundsEnabled && isTauri()) {
       const sound = getSoundForAlert(newAlert);
       const filename = sound === "wall" ? "wall.wav" : "breakout.wav";
-      import("@tauri-apps/api/core").then(({ invoke, convertFileSrc }) => {
-        invoke<string>("get_resource_path", { name: `sounds/${filename}` }).then((path) => {
-          const url = convertFileSrc(path);
-          const audio = new Audio(url);
-          audio.volume = volume;
-          audio.play().catch(() => {});
-        });
+      invoke<string>("get_resource_path", { name: `sounds/${filename}` }).then((path) => {
+        const url = convertFileSrc(path);
+        const audio = new Audio(url);
+        audio.volume = volume;
+        audio.play().catch(() => {});
       });
     } else if (soundsEnabled && !isTauri()) {
       const sound = getSoundForAlert(newAlert);

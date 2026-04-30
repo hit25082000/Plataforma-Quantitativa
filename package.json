@@ -8,6 +8,7 @@
     "dev2:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-dev2-health.ps1",
     "ipc:evidence": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-ipc-evidence.ps1",
     "security:scan-secrets": "python scripts/scan_secrets.py --staged",
-    "security:install-hooks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1"
+    "security:install-hooks": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-git-hooks.ps1",
+    "verify:vp-sato": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-vp-sato-correcao-v1.ps1"
   }
 }

@@ -1,0 +1,98 @@
+﻿{
+    "runner":  "verify-installer-readiness.ps1",
+    "overall_ok":  false,
+    "fail_on_warning":  false,
+    "counts":  {
+                   "ok":  14,
+                   "fail":  1,
+                   "warn":  0
+               },
+    "blockers":  [
+                     "preflight:overlay-sanity"
+                 ],
+    "warnings":  [
+
+                 ],
+    "generated_at_iso":  "2026-04-29T16:33:05.4278259-04:00",
+    "artifacts":  {
+                      "manifest":  "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\logs\\pre-release\\installer-readiness-20260429-163303\\report.manifest.json",
+                      "report_md":  "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\logs\\pre-release\\installer-readiness-20260429-163303\\report.md"
+                  },
+    "checks":  [
+                   {
+                       "check_id":  "preflight:overlay-sanity",
+                       "status":  "fail",
+                       "detail":  "run_ocr_overlay_prerelease_sanity.py reportou bloqueios (exit=2)"
+                   },
+                   {
+                       "check_id":  "presence:scripts/build-installer.ps1",
+                       "status":  "ok",
+                       "detail":  "script presente"
+                   },
+                   {
+                       "check_id":  "presence:scripts/sync-profit-ocr-to-tauri-resources.ps1",
+                       "status":  "ok",
+                       "detail":  "script presente"
+                   },
+                   {
+                       "check_id":  "presence:scripts/run_ocr_overlay_prerelease_sanity.py",
+                       "status":  "ok",
+                       "detail":  "script presente"
+                   },
+                   {
+                       "check_id":  "build-installer:sync-profit-ocr",
+                       "status":  "ok",
+                       "detail":  "sincronizacao OCR para Tauri resources"
+                   },
+                   {
+                       "check_id":  "build-installer:copy-engine",
+                       "status":  "ok",
+                       "detail":  "copia de engine.exe para resources"
+                   },
+                   {
+                       "check_id":  "build-installer:copy-distributor",
+                       "status":  "ok",
+                       "detail":  "copia de distributor.exe para resources"
+                   },
+                   {
+                       "check_id":  "build-installer:copy-ocr-service-exe",
+                       "status":  "ok",
+                       "detail":  "copia de profit_ocr_service.exe para resources"
+                   },
+                   {
+                       "check_id":  "build-installer:copy-profitdll64",
+                       "status":  "ok",
+                       "detail":  "copia/validacao de ProfitDLL64.dll"
+                   },
+                   {
+                       "check_id":  "bundle:resources/profit_ocr_service.py",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   },
+                   {
+                       "check_id":  "bundle:resources/ocr_overlay_audit.py",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   },
+                   {
+                       "check_id":  "bundle:resources/profit_ocr_service.exe",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   },
+                   {
+                       "check_id":  "bundle:resources/engine.exe",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   },
+                   {
+                       "check_id":  "bundle:resources/distributor.exe",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   },
+                   {
+                       "check_id":  "bundle:resources/ProfitDLL64.dll",
+                       "status":  "ok",
+                       "detail":  "entrada declarada em bundle.resources"
+                   }
+               ]
+}

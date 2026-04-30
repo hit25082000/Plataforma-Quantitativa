@@ -1,0 +1,87 @@
+{
+  "runner": "run_ovr_stab_field_qa.py",
+  "scope": "manual-assisted-field-qa",
+  "started_at_epoch_s": 1777494594.9033387,
+  "probe": {
+    "base_url": "http://127.0.0.1:8000",
+    "health_ok": false,
+    "debug_ok": false,
+    "status_ok": false,
+    "trace_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+    "trace_exists": false,
+    "trace_size_bytes": 0,
+    "latest_evidence_dirs": [
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-162929",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\vp-sato-performance-20260429-142306",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\vp-sato-performance-20260429-142240",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\vp-sato-performance-20260429-142131",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\vp-sato-performance-20260429-141850",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-150407",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-145816",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-145356",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-144520",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-143411",
+      "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\m9-rag-operational-evidence-20260424-143126"
+    ]
+  },
+  "tasks": [
+    {
+      "id": "OVR-STAB-QA-02",
+      "title": "Zoom/eixo vertical com transicao controlada",
+      "objective": "Verificar estados SUSPECT/RECALIBRATING/FROZEN em mudanca de escala.",
+      "ready_for_session": false,
+      "state": "blocked",
+      "blockers": [
+        "api_indisponivel: health/debug/status nao responderam",
+        "trace_ausente: C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+        "sessao_real_nao_confirmada: usar --assume-manual-ready para registrar sessao assistida"
+      ]
+    },
+    {
+      "id": "OVR-STAB-QA-03",
+      "title": "OCR ruim com degradacao controlada",
+      "objective": "Verificar preservacao de lastStableAxis com contraste/oclusao parcial.",
+      "ready_for_session": false,
+      "state": "blocked",
+      "blockers": [
+        "api_indisponivel: health/debug/status nao responderam",
+        "trace_ausente: C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+        "sessao_real_nao_confirmada: usar --assume-manual-ready para registrar sessao assistida"
+      ]
+    },
+    {
+      "id": "OVR-STAB-QA-04",
+      "title": "Multi-monitor e DPI",
+      "objective": "Validar bounds corretos em 100/125/150 e troca de monitor.",
+      "ready_for_session": false,
+      "state": "blocked",
+      "blockers": [
+        "api_indisponivel: health/debug/status nao responderam",
+        "trace_ausente: C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+        "sessao_real_nao_confirmada: usar --assume-manual-ready para registrar sessao assistida",
+        "requer_multi_monitor: executar em 100/125/150 com captura manual"
+      ]
+    },
+    {
+      "id": "OVR-STAB-QA-05",
+      "title": "Carga com muitos targets/histograma",
+      "objective": "Verificar responsividade sem crescimento de fila em stress operacional.",
+      "ready_for_session": false,
+      "state": "blocked",
+      "blockers": [
+        "api_indisponivel: health/debug/status nao responderam",
+        "trace_ausente: C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+        "sessao_real_nao_confirmada: usar --assume-manual-ready para registrar sessao assistida",
+        "requer_carga_real: validar throughput com VP/targets/histograma ativos"
+      ]
+    }
+  ],
+  "ready_count": 0,
+  "total_tasks": 4,
+  "artifacts": {
+    "summary_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-field-qa-20260429-162948\\summary.md",
+    "commands_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-field-qa-20260429-162948\\commands.md",
+    "qa_session_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-field-qa-20260429-162948\\qa_session.manifest.json"
+  }
+}

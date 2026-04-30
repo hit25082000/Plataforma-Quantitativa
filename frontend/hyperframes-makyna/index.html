@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Makyna Motion Frames</title>
+    <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+    <style>
+      :root {
+        --bg: #000;
+        --dot: rgba(108, 112, 112, 0.28);
+        --orange: #ff5a0a;
+        --orange-hot: #ff7416;
+        --orange-dim: rgba(255, 82, 8, 0.24);
+      }
+
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background: var(--bg);
+      }
+
+      [data-composition-id="makyna-system"] {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 50% 50%, rgba(255, 92, 12, 0.035), transparent 32%),
+          #000;
+      }
+
+      .dot-grid {
+        position: absolute;
+        inset: 3.8% 5.8% 3.8% 5.8%;
+        display: grid;
+        grid-template-columns: repeat(11, 1fr);
+        grid-template-rows: repeat(12, 1fr);
+        pointer-events: none;
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--dot);
+        justify-self: center;
+        align-self: center;
+      }
+
+      .stage {
+        position: absolute;
+        inset: 0;
+      }
+
+      .logo {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        width: 610px;
+        height: 390px;
+        margin-left: -305px;
+        margin-top: -195px;
+        transform-origin: center;
+      }
+
+      .segment {
+        position: absolute;
+        height: 44px;
+        border-radius: 8px 3px 8px 3px;
+        background: linear-gradient(180deg, var(--orange-hot), var(--orange));
+        box-shadow:
+          0 0 20px rgba(255, 90, 10, 0.58),
+          0 0 50px rgba(255, 90, 10, 0.2);
+        transform-origin: left center;
+        opacity: 0;
+        will-change: transform, opacity;
+      }
+
+      .segment::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border-radius: inherit;
+        background: linear-gradient(90deg, transparent, rgba(255, 184, 90, 0.18), transparent);
+        mix-blend-mode: screen;
+      }
+
+      .main-diagonal {
+        left: 92px;
+        top: 94px;
+        width: 452px;
+        transform: rotate(45deg) scaleX(0);
+      }
+
+      .left-stem {
+        left: 86px;
+        top: 208px;
+        width: 210px;
+        transform: rotate(90deg) scaleX(0);
+      }
+
+      .right-upper {
+        left: 418px;
+        top: 190px;
+        width: 245px;
+        transform: rotate(-45deg) scaleX(0);
+      }
+
+      .right-lower {
+        left: 512px;
+        top: 290px;
+        width: 136px;
+        transform: rotate(45deg) scaleX(0);
+      }
+
+      .seed {
+        position: absolute;
+        left: 23.6%;
+        top: 66.4%;
+        width: 14px;
+        height: 14px;
+        border-radius: 3px;
+        background: var(--orange);
+        box-shadow:
+          0 0 18px rgba(255, 90, 10, 0.9),
+          0 0 42px rgba(255, 90, 10, 0.32);
+        opacity: 0;
+      }
+
+      .scan-layer {
+        position: absolute;
+        inset: 0;
+        opacity: 0;
+        pointer-events: none;
+      }
+
+      .scan-line {
+        position: absolute;
+        left: -4%;
+        right: -4%;
+        top: 50%;
+        height: 3px;
+        margin-top: -1.5px;
+        transform: scaleX(0);
+        transform-origin: center center;
+        background: linear-gradient(90deg, transparent, rgba(255, 90, 10, 0.2), var(--orange-hot), rgba(255, 90, 10, 0.2), transparent);
+        box-shadow:
+          0 0 12px rgba(255, 90, 10, 0.92),
+          0 0 42px rgba(255, 90, 10, 0.58);
+      }
+
+      .ring {
+        position: absolute;
+        left: 50%;
+        top: 50%;
+        border: 2px solid var(--orange-dim);
+        border-radius: 50%;
+        opacity: 0;
+      }
+
+      .r1 { width: 280px; height: 280px; }
+      .r1 { margin-left: -140px; margin-top: -140px; }
+      .r2 { width: 410px; height: 410px; margin-left: -205px; margin-top: -205px; }
+      .r3 { width: 540px; height: 540px; margin-left: -270px; margin-top: -270px; }
+      .r4 { width: 675px; height: 675px; margin-left: -337.5px; margin-top: -337.5px; }
+      .r5 { width: 805px; height: 805px; margin-left: -402.5px; margin-top: -402.5px; }
+
+      .return-arrow {
+        position: absolute;
+        left: 72%;
+        top: 51.2%;
+        width: 165px;
+        height: 42px;
+        margin-top: -21px;
+        opacity: 0;
+      }
+
+      .return-arrow .dash {
+        position: absolute;
+        top: 18px;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--orange);
+        box-shadow: 0 0 13px rgba(255, 90, 10, 0.7);
+      }
+
+      .return-arrow .dash:nth-child(1) { left: 0; }
+      .return-arrow .dash:nth-child(2) { left: 24px; }
+      .return-arrow .dash:nth-child(3) { left: 48px; }
+      .return-arrow .dash:nth-child(4) { left: 72px; }
+      .return-arrow .dash:nth-child(5) { left: 96px; }
+
+      .return-arrow .head {
+        position: absolute;
+        right: 5px;
+        top: 5px;
+        width: 26px;
+        height: 26px;
+        border-top: 8px solid var(--orange);
+        border-right: 8px solid var(--orange);
+        transform: rotate(45deg);
+        box-shadow: 5px -5px 14px rgba(255, 90, 10, 0.3);
+      }
+    </style>
+  </head>
+  <body>
+    <div data-composition-id="makyna-system" data-width="1280" data-height="1280" data-start="0" data-duration="12" data-track-index="0">
+      <div class="dot-grid" aria-hidden="true"></div>
+      <div class="stage">
+        <div class="seed"></div>
+        <div class="scan-layer">
+          <div class="ring r1"></div>
+          <div class="ring r2"></div>
+          <div class="ring r3"></div>
+          <div class="ring r4"></div>
+          <div class="ring r5"></div>
+          <div class="scan-line"></div>
+        </div>
+        <div class="logo">
+          <div class="segment main-diagonal"></div>
+          <div class="segment left-stem"></div>
+          <div class="segment right-upper"></div>
+          <div class="segment right-lower"></div>
+        </div>
+        <div class="return-arrow">
+          <div class="dash"></div>
+          <div class="dash"></div>
+          <div class="dash"></div>
+          <div class="dash"></div>
+          <div class="dash"></div>
+          <div class="head"></div>
+        </div>
+      </div>
+
+      <script>
+        window.__timelines = window.__timelines || {};
+
+        const grid = document.querySelector(".dot-grid");
+        for (let i = 0; i < 132; i += 1) {
+          const dot = document.createElement("div");
+          dot.className = "dot";
+          grid.appendChild(dot);
+        }
+
+        const tl = gsap.timeline({ paused: true });
+
+        tl.set(".dot", { opacity: 1, scale: 1 }, 0);
+
+        tl.to(".seed", { opacity: 1, duration: 0.06, ease: "power2.out" }, 0.03);
+        tl.to(".seed", { scale: 1.18, duration: 0.07, yoyo: true, repeat: 1, ease: "sine.inOut" }, 0.08);
+
+        tl.to(".seed", { opacity: 0, duration: 0.04 }, 0.18);
+        tl.to(".main-diagonal", { opacity: 1, scaleX: 1, duration: 0.3, ease: "power3.out" }, 0.18);
+
+        tl.to(".right-lower", { opacity: 1, scaleX: 0.74, duration: 0.25, ease: "power2.out" }, 0.52);
+
+        tl.to(".left-stem", { opacity: 1, scaleX: 1, duration: 0.14, ease: "power2.out" }, 0.84);
+        tl.to(".right-upper", { opacity: 1, scaleX: 1, duration: 0.16, ease: "power2.out" }, 0.98);
+        tl.to(".right-lower", { scaleX: 1, duration: 0.12, ease: "power2.out" }, 1.16);
+
+        tl.fromTo(".logo", { scale: 0.98 }, { scale: 1, duration: 0.25, ease: "back.out(1.35)" }, 1.28);
+        tl.to(".segment", {
+          boxShadow: "0 0 24px rgba(255, 90, 10, 0.7), 0 0 64px rgba(255, 90, 10, 0.26)",
+          duration: 0.25,
+          ease: "sine.inOut"
+        }, 1.28);
+
+        tl.to(".logo", { scale: 1, duration: 0.4, ease: "none" }, 1.55);
+
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.08, ease: "none" }, 1.96);
+        tl.to(".scan-layer", { opacity: 1, duration: 0.08, ease: "power1.out" }, 2.2);
+        tl.fromTo(".scan-line", { scaleX: 0 }, { scaleX: 1, duration: 0.32, ease: "power2.out" }, 2.2);
+        tl.fromTo(".ring", { opacity: 0, scale: 0.82 }, { opacity: 0.72, scale: 1, duration: 0.48, stagger: 0.045, ease: "power2.out" }, 2.26);
+        tl.to(".logo", { scale: 1.025, duration: 0.24, yoyo: true, repeat: 1, ease: "sine.inOut" }, 2.38);
+        tl.to(".ring", { scale: 1.06, opacity: 0, duration: 0.32, stagger: 0.035, ease: "power1.in" }, 2.85);
+        tl.to(".scan-layer", { opacity: 0, duration: 0.12, ease: "power1.inOut" }, 3.13);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.22, ease: "sine.inOut" }, 3.2);
+        tl.to(".return-arrow", { opacity: 1, x: 18, duration: 0.18, ease: "power2.out" }, 3.43);
+        tl.fromTo(".return-arrow .dash", { opacity: 0, scale: 0.2 }, { opacity: 1, scale: 1, duration: 0.14, stagger: 0.035, ease: "power2.out" }, 3.45);
+        tl.fromTo(".return-arrow .head", { opacity: 0, x: -8 }, { opacity: 1, x: 0, duration: 0.16, ease: "power2.out" }, 3.63);
+        tl.to(".logo", { opacity: 0.88, duration: 0.18, yoyo: true, repeat: 1, ease: "sine.inOut" }, 3.61);
+        tl.to(".return-arrow", { opacity: 0, x: 48, duration: 0.2, ease: "power2.in" }, 3.87);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.1, ease: "sine.inOut" }, 3.98);
+
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.08, ease: "none" }, 4.1);
+        tl.to(".scan-layer", { opacity: 1, duration: 0.08, ease: "power1.out" }, 4.35);
+        tl.fromTo(".scan-line", { scaleX: 0 }, { scaleX: 1, duration: 0.32, ease: "power2.out" }, 4.35);
+        tl.fromTo(".ring", { opacity: 0, scale: 0.82 }, { opacity: 0.72, scale: 1, duration: 0.48, stagger: 0.045, ease: "power2.out" }, 4.41);
+        tl.to(".logo", { scale: 1.025, duration: 0.24, yoyo: true, repeat: 1, ease: "sine.inOut" }, 4.53);
+        tl.to(".ring", { scale: 1.06, opacity: 0, duration: 0.32, stagger: 0.035, ease: "power1.in" }, 5.0);
+        tl.to(".scan-layer", { opacity: 0, duration: 0.12, ease: "power1.inOut" }, 5.28);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.22, ease: "sine.inOut" }, 5.35);
+        tl.to(".return-arrow", { opacity: 1, x: 18, duration: 0.18, ease: "power2.out" }, 5.58);
+        tl.fromTo(".return-arrow .dash", { opacity: 0, scale: 0.2 }, { opacity: 1, scale: 1, duration: 0.14, stagger: 0.035, ease: "power2.out" }, 5.6);
+        tl.fromTo(".return-arrow .head", { opacity: 0, x: -8 }, { opacity: 1, x: 0, duration: 0.16, ease: "power2.out" }, 5.78);
+        tl.to(".logo", { opacity: 0.88, duration: 0.18, yoyo: true, repeat: 1, ease: "sine.inOut" }, 5.76);
+        tl.to(".return-arrow", { opacity: 0, x: 48, duration: 0.2, ease: "power2.in" }, 6.02);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.1, ease: "sine.inOut" }, 6.13);
+
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.08, ease: "none" }, 6.25);
+        tl.to(".scan-layer", { opacity: 1, duration: 0.08, ease: "power1.out" }, 6.5);
+        tl.fromTo(".scan-line", { scaleX: 0 }, { scaleX: 1, duration: 0.32, ease: "power2.out" }, 6.5);
+        tl.fromTo(".ring", { opacity: 0, scale: 0.82 }, { opacity: 0.72, scale: 1, duration: 0.48, stagger: 0.045, ease: "power2.out" }, 6.56);
+        tl.to(".logo", { scale: 1.025, duration: 0.24, yoyo: true, repeat: 1, ease: "sine.inOut" }, 6.68);
+        tl.to(".ring", { scale: 1.06, opacity: 0, duration: 0.32, stagger: 0.035, ease: "power1.in" }, 7.15);
+        tl.to(".scan-layer", { opacity: 0, duration: 0.12, ease: "power1.inOut" }, 7.43);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.22, ease: "sine.inOut" }, 7.5);
+        tl.to(".return-arrow", { opacity: 1, x: 18, duration: 0.18, ease: "power2.out" }, 7.73);
+        tl.fromTo(".return-arrow .dash", { opacity: 0, scale: 0.2 }, { opacity: 1, scale: 1, duration: 0.14, stagger: 0.035, ease: "power2.out" }, 7.75);
+        tl.fromTo(".return-arrow .head", { opacity: 0, x: -8 }, { opacity: 1, x: 0, duration: 0.16, ease: "power2.out" }, 7.93);
+        tl.to(".logo", { opacity: 0.88, duration: 0.18, yoyo: true, repeat: 1, ease: "sine.inOut" }, 7.91);
+        tl.to(".return-arrow", { opacity: 0, x: 48, duration: 0.2, ease: "power2.in" }, 8.17);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.1, ease: "sine.inOut" }, 8.28);
+
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.08, ease: "none" }, 8.4);
+        tl.to(".scan-layer", { opacity: 1, duration: 0.08, ease: "power1.out" }, 8.65);
+        tl.fromTo(".scan-line", { scaleX: 0 }, { scaleX: 1, duration: 0.32, ease: "power2.out" }, 8.65);
+        tl.fromTo(".ring", { opacity: 0, scale: 0.82 }, { opacity: 0.72, scale: 1, duration: 0.48, stagger: 0.045, ease: "power2.out" }, 8.71);
+        tl.to(".logo", { scale: 1.025, duration: 0.24, yoyo: true, repeat: 1, ease: "sine.inOut" }, 8.83);
+        tl.to(".ring", { scale: 1.06, opacity: 0, duration: 0.32, stagger: 0.035, ease: "power1.in" }, 9.3);
+        tl.to(".scan-layer", { opacity: 0, duration: 0.12, ease: "power1.inOut" }, 9.58);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.22, ease: "sine.inOut" }, 9.65);
+        tl.to(".return-arrow", { opacity: 1, x: 18, duration: 0.18, ease: "power2.out" }, 9.88);
+        tl.fromTo(".return-arrow .dash", { opacity: 0, scale: 0.2 }, { opacity: 1, scale: 1, duration: 0.14, stagger: 0.035, ease: "power2.out" }, 9.9);
+        tl.fromTo(".return-arrow .head", { opacity: 0, x: -8 }, { opacity: 1, x: 0, duration: 0.16, ease: "power2.out" }, 10.08);
+        tl.to(".logo", { opacity: 0.88, duration: 0.18, yoyo: true, repeat: 1, ease: "sine.inOut" }, 10.06);
+        tl.to(".return-arrow", { opacity: 0, x: 48, duration: 0.2, ease: "power2.in" }, 10.32);
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.1, ease: "sine.inOut" }, 10.43);
+
+        tl.to(".logo", { scale: 1, opacity: 1, duration: 0.12, ease: "none" }, 10.58);
+        tl.to(".segment", {
+          boxShadow: "0 0 34px rgba(255, 112, 18, 0.95), 0 0 92px rgba(255, 90, 10, 0.36)",
+          duration: 0.2,
+          ease: "power2.out"
+        }, 10.76);
+        tl.to(".logo", { scale: 1.04, duration: 0.32, ease: "power3.out" }, 10.9);
+        tl.to(".logo", { scale: 0.82, opacity: 0, duration: 0.58, ease: "power3.inOut" }, 11.35);
+        tl.to(".dot", { opacity: 0, duration: 0.28, stagger: 0.001, ease: "power1.in" }, 11.52);
+
+        window.__timelines["makyna-system"] = tl;
+      </script>
+    </div>
+  </body>
+</html>

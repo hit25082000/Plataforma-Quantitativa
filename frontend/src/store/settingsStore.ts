@@ -7,6 +7,8 @@ export interface AppSettings {
   volume: number;
   minimizeToTray: boolean;
   startWithWindows: boolean;
+  showVolumeProfileOverlay: boolean;
+  showTapeIntelligenceOverlay: boolean;
 }
 
 const defaultSettings: AppSettings = {
@@ -15,6 +17,8 @@ const defaultSettings: AppSettings = {
   volume: 80,
   minimizeToTray: true,
   startWithWindows: false,
+  showVolumeProfileOverlay: true,
+  showTapeIntelligenceOverlay: true,
 };
 
 interface SettingsStore extends AppSettings {
@@ -23,6 +27,8 @@ interface SettingsStore extends AppSettings {
   setVolume: (v: number) => void;
   setMinimizeToTray: (v: boolean) => void;
   setStartWithWindows: (v: boolean) => void;
+  setShowVolumeProfileOverlay: (v: boolean) => void;
+  setShowTapeIntelligenceOverlay: (v: boolean) => void;
 }
 
 export const useSettingsStore = create<SettingsStore>()(
@@ -34,6 +40,8 @@ export const useSettingsStore = create<SettingsStore>()(
       setVolume: (v) => set({ volume: Math.max(0, Math.min(100, v)) }),
       setMinimizeToTray: (v) => set({ minimizeToTray: v }),
       setStartWithWindows: (v) => set({ startWithWindows: v }),
+      setShowVolumeProfileOverlay: (v) => set({ showVolumeProfileOverlay: v }),
+      setShowTapeIntelligenceOverlay: (v) => set({ showTapeIntelligenceOverlay: v }),
     }),
     { name: "plataforma-settings" }
   )

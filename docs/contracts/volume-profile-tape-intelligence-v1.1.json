@@ -1,0 +1,112 @@
+{
+  "version": "1.1.0",
+  "generated_at": "2026-04-25",
+  "topics": [
+    {
+      "topic": "market",
+      "type": "volume_profile",
+      "required": [
+        "topic",
+        "type",
+        "ticker",
+        "period",
+        "timestamp",
+        "price_step",
+        "total_vol",
+        "poc",
+        "vah",
+        "val",
+        "levels"
+      ],
+      "properties": {
+        "topic": { "type": "string", "const": "market" },
+        "type": { "type": "string", "const": "volume_profile" },
+        "ticker": { "type": "string", "minLength": 1 },
+        "period": { "type": "string", "enum": ["day", "week", "manual"] },
+        "timestamp": { "type": "integer", "minimum": 0 },
+        "price_step": { "type": "integer", "minimum": 1 },
+        "total_vol": { "type": "integer", "minimum": 0 },
+        "poc": { "type": "number" },
+        "vah": { "type": "number" },
+        "val": { "type": "number" },
+        "poc_y": { "type": "number" },
+        "vah_y": { "type": "number" },
+        "val_y": { "type": "number" },
+        "levels": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["price", "total_vol", "bid_vol", "ask_vol", "pct_of_max"],
+            "properties": {
+              "price": { "type": "number" },
+              "total_vol": { "type": "integer", "minimum": 0 },
+              "bid_vol": { "type": "integer", "minimum": 0 },
+              "ask_vol": { "type": "integer", "minimum": 0 },
+              "pct_of_max": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+              "y": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "topic": "market",
+      "type": "tape_intelligence",
+      "required": [
+        "topic",
+        "type",
+        "ticker",
+        "timestamp",
+        "poc_price",
+        "vah_price",
+        "val_price",
+        "poc_player",
+        "val_buyer",
+        "vah_seller",
+        "poc_top3",
+        "vah_top3",
+        "val_top3"
+      ],
+      "properties": {
+        "topic": { "type": "string", "const": "market" },
+        "type": { "type": "string", "const": "tape_intelligence" },
+        "ticker": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "integer", "minimum": 0 },
+        "poc_price": { "type": "number" },
+        "vah_price": { "type": "number" },
+        "val_price": { "type": "number" },
+        "poc_player": { "type": "integer" },
+        "val_buyer": { "type": "integer" },
+        "vah_seller": { "type": "integer" },
+        "poc_player_name": { "type": "string" },
+        "val_buyer_name": { "type": "string" },
+        "vah_seller_name": { "type": "string" },
+        "poc_y": { "type": "number" },
+        "vah_y": { "type": "number" },
+        "val_y": { "type": "number" },
+        "poc_top3": { "$ref": "#/definitions/ranking" },
+        "vah_top3": { "$ref": "#/definitions/ranking" },
+        "val_top3": { "$ref": "#/definitions/ranking" }
+      }
+    }
+  ],
+  "definitions": {
+    "ranking": {
+      "type": "array",
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["player", "price", "total_vol", "bid_vol", "ask_vol"],
+        "properties": {
+          "player": { "type": "integer" },
+          "player_id": { "type": "integer" },
+          "player_name": { "type": "string" },
+          "price": { "type": "number" },
+          "total_vol": { "type": "integer", "minimum": 0 },
+          "bid_vol": { "type": "integer", "minimum": 0 },
+          "ask_vol": { "type": "integer", "minimum": 0 }
+        }
+      }
+    }
+  }
+}

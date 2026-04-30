@@ -13,6 +13,8 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 POLL_SLEEP_S = 0.0005
+MMAP_LOOP_BATCH_MAX = 128
+MMAP_LOOP_BATCH_FLUSH_S = 0.008
 
 
 def _crc16_ccitt(data: bytes, init: int = 0xFFFF) -> int:
@@ -185,6 +187,7 @@ class MmapConsumer:
         msg_type = self._message_type(raw)
         is_dom = msg_type == "dom_snapshot"
         is_trade_like = msg_type in ("trade", "flow_inversion")
+        is_vp_ti = msg_type in ("volume_profile", "tape_intelligence")
         if is_dom and self._dom_soft_limit > 0 and self._queue.qsize() >= self._dom_soft_limit:
             self._dropped_count += 1
             return
@@ -194,7 +197,7 @@ class MmapConsumer:
             if is_dom:
                 self._dropped_count += 1
                 return
-            if is_trade_like and self._evict_one_dom_snapshot():
+            if (is_trade_like or is_vp_ti) and self._evict_one_dom_snapshot():
                 try:
                     self._queue.put_nowait(raw)
                     self._rescued_trades += 1
@@ -202,6 +205,24 @@ class MmapConsumer:
                 except asyncio.QueueFull:
                     pass
             logger.warning("Market queue full, discarding non-dom message")
+
+    def _put_trade_raw(self, raw: str) -> None:
+        """Fast path for SHM trade payloads (avoids JSON parse on event loop)."""
+        try:
+            self._queue.put_nowait(raw)
+        except asyncio.QueueFull:
+            if self._evict_one_dom_snapshot():
+                try:
+                    self._queue.put_nowait(raw)
+                    self._rescued_trades += 1
+                    return
+                except asyncio.QueueFull:
+                    pass
+            logger.warning("Market queue full, discarding trade message")
+
+    def _put_trade_batch(self, batch: list[str]) -> None:
+        for raw in batch:
+            self._put_trade_raw(raw)
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
         self._loop = loop
@@ -284,6 +305,8 @@ class MmapConsumer:
             return
         assert self._header is not None
         loop = self._loop
+        pending: list[str] = []
+        last_flush = time.monotonic()
         try:
             while not self._stop_event.is_set():
                 assert self._shm is not None
@@ -352,12 +375,27 @@ class MmapConsumer:
                     "ts": self._iso_ts(int(trade.trade_epoch_ms)),
                 }
                 raw = json.dumps(payload)
-                if loop is not None:
-                    loop.call_soon_threadsafe(self._put_msg, raw)
-                else:
-                    self._put_msg(raw)
+                pending.append(raw)
+                now = time.monotonic()
+                should_flush = (
+                    len(pending) >= MMAP_LOOP_BATCH_MAX
+                    or (now - last_flush) >= MMAP_LOOP_BATCH_FLUSH_S
+                )
+                if should_flush:
+                    batch = pending
+                    pending = []
+                    last_flush = now
+                    if loop is not None:
+                        loop.call_soon_threadsafe(self._put_trade_batch, batch)
+                    else:
+                        self._put_trade_batch(batch)
                 self._next_seq += 1
         finally:
+            if pending:
+                if loop is not None:
+                    loop.call_soon_threadsafe(self._put_trade_batch, pending)
+                else:
+                    self._put_trade_batch(pending)
             if self._shm is not None:
                 self._shm.close()
                 self._shm = None

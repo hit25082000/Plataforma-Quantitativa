@@ -2,6 +2,8 @@
 #include "alert_types.h"
 #include "hft_tuning.h"
 #include "profit_types.h"
+#include "tape_intelligence.h"
+#include <algorithm>
 #include <cctype>
 #include <cstdlib>
 #include <chrono>
@@ -72,6 +74,108 @@ std::string resolve_with_cache(
     }
     return resolved;
 }
+
+void enrich_tape_intelligence_agent_names(
+    nlohmann::json& ti,
+    const std::function<std::string(int32_t)>& agent_name_resolver,
+    std::unordered_map<int32_t, std::string>& agent_name_cache,
+    std::mutex& agent_cache_mutex)
+{
+    if (!agent_name_resolver) return;
+    auto resolve = [&](int32_t id) {
+        return resolve_with_cache(id, agent_name_resolver, agent_name_cache, agent_cache_mutex);
+    };
+    if (ti.contains("poc_player")) {
+        const int32_t id = ti["poc_player"].get<int32_t>();
+        ti["poc_player_name"] = resolve(id);
+    }
+    if (ti.contains("val_buyer")) {
+        const int32_t id = ti["val_buyer"].get<int32_t>();
+        ti["val_buyer_name"] = resolve(id);
+    }
+    if (ti.contains("vah_seller")) {
+        const int32_t id = ti["vah_seller"].get<int32_t>();
+        ti["vah_seller_name"] = resolve(id);
+    }
+    for (const char* arr_key : {"poc_top3", "vah_top3", "val_top3"}) {
+        if (!ti.contains(arr_key) || !ti[arr_key].is_array()) continue;
+        for (auto& row : ti[arr_key]) {
+            if (!row.contains("player")) continue;
+            const int32_t pid = row["player"].get<int32_t>();
+            row["player_id"] = pid;
+            row["player_name"] = resolve(pid);
+        }
+    }
+    if (ti.contains("top_player_avg_lines") && ti["top_player_avg_lines"].is_array()) {
+        for (auto& row : ti["top_player_avg_lines"]) {
+            if (!row.is_object() || !row.contains("player_id")) continue;
+            const int32_t pid = row["player_id"].get<int32_t>();
+            row["player_name"] = resolve(pid);
+        }
+    }
+}
+
+tape_intelligence::TopAvgRankMode parse_top_avg_rank_mode_env() {
+    const char* v = std::getenv("TAPE_TOP_AVG_RANK_MODE");
+    std::string raw;
+    if (!v || !*v) {
+        raw = "total";
+    } else {
+        raw.assign(v);
+        for (char& c : raw)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        while (!raw.empty() && raw.front() == ' ')
+            raw.erase(raw.begin());
+        while (!raw.empty() && raw.back() == ' ')
+            raw.pop_back();
+    }
+    if (raw == "buy" || raw == "buy_volume" || raw == "top_buy_volume") {
+        return tape_intelligence::TopAvgRankMode::TopBuyVolume;
+    }
+    if (raw == "sell" || raw == "sell_volume" || raw == "top_sell_volume") {
+        return tape_intelligence::TopAvgRankMode::TopSellVolume;
+    }
+    if (raw == "net" || raw == "net_volume" || raw == "top_net_volume") {
+        return tape_intelligence::TopAvgRankMode::TopNetVolume;
+    }
+    return tape_intelligence::TopAvgRankMode::TopTotalVolume;
+}
+
+size_t read_env_uz(const char* name, size_t default_value) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return default_value;
+    try {
+        unsigned long long x = std::stoull(std::string(v));
+        return static_cast<size_t>(x);
+    } catch (...) {
+        return default_value;
+    }
+}
+
+bool parse_volume_profile_period(const std::string& raw, volume_profile::Period& out) {
+    std::string s;
+    s.reserve(raw.size());
+    for (char c : raw) {
+        if (c == '\r' || c == '\n' || c == '\t') continue;
+        s.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+    }
+    while (!s.empty() && s.front() == ' ') s.erase(s.begin());
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    if (s == "day" || s == "dia") {
+        out = volume_profile::Period::Day;
+        return true;
+    }
+    if (s == "week" || s == "semana") {
+        out = volume_profile::Period::Week;
+        return true;
+    }
+    if (s == "manual") {
+        out = volume_profile::Period::Manual;
+        return true;
+    }
+    return false;
+}
+
 } // namespace
 
 ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
@@ -97,7 +201,19 @@ ZmqPublisher::ZmqPublisher(event_bus::EventQueue& queue,
 {
     dom_snapshot_publish_min_ms_ =
         read_env_int64_ms("DOM_SNAPSHOT_PUBLISH_MIN_MS", 100);
+    volume_profile_publish_min_ms_ =
+        read_env_int64_ms("VOLUME_PROFILE_PUBLISH_MIN_MS", 100);
+    tape_intelligence_publish_min_ms_ =
+        read_env_int64_ms("TAPE_INTELLIGENCE_PUBLISH_MIN_MS", 200);
     volume_profile_.set_ticker(ticker_);
+    tape_intelligence_.set_ticker(ticker_);
+    tape_intelligence_.set_top_player_avg_config(
+        parse_top_avg_rank_mode_env(),
+        std::max<size_t>(1u, read_env_uz("TAPE_TOP_AVG_MAX_LINES", 6)),
+        static_cast<uint64_t>(
+            std::max<long long>(
+                0LL,
+                static_cast<long long>(read_env_uz("TAPE_TOP_AVG_MIN_CONTRACTS", 1)))));
     shm_enabled_ = read_env_bool("SHM_ENABLED", false);
     if (shm_enabled_) {
         shm_writer_ = std::make_unique<shared_memory_ipc::SharedMemoryRingWriter>(
@@ -130,6 +246,11 @@ void ZmqPublisher::set_ticker(const std::string& t) {
     ticker_ = t;
     reconciler_.reset();
     volume_profile_.set_ticker(t);
+    tape_intelligence_.set_ticker(t);
+    last_volume_profile_pub_ms_ = 0;
+    last_vp_anchor_valid_ = false;
+    last_tape_intelligence_pub_ms_ = 0;
+    last_ti_anchor_valid_ = false;
     {
         std::lock_guard<std::mutex> lock(agent_cache_mutex_);
         agent_name_cache_.clear();
@@ -139,6 +260,25 @@ void ZmqPublisher::set_ticker(const std::string& t) {
 
 void ZmqPublisher::reset_volume_profile() {
     volume_profile_.reset();
+}
+
+std::string ZmqPublisher::apply_volume_profile_period_name(const std::string& name) {
+    volume_profile::Period p;
+    if (!parse_volume_profile_period(name, p)) {
+        return "ERR: use day, week or manual for VP period";
+    }
+    if (volume_profile_.period() == p) {
+        return {};
+    }
+    with_processing_paused([&]() {
+        volume_profile_.set_period(p);
+        tape_intelligence_.reset();
+        last_volume_profile_pub_ms_ = 0;
+        last_vp_anchor_valid_ = false;
+        last_tape_intelligence_pub_ms_ = 0;
+        last_ti_anchor_valid_ = false;
+    });
+    return {};
 }
 
 void ZmqPublisher::with_processing_paused(const std::function<void()>& fn) {
@@ -197,6 +337,12 @@ void ZmqPublisher::run() {
                     }
                 }
                 auto vp_msg = volume_profile_.on_trade(e);
+                const nlohmann::json vp_snapshot = volume_profile_.build_payload();
+                auto ti_msg = tape_intelligence_.on_trade(
+                    e,
+                    vp_snapshot.value("poc", 0),
+                    vp_snapshot.value("vah", 0),
+                    vp_snapshot.value("val", 0));
                 trade_proc_.process(e);
                 if (count < 3) {
                     std::cerr << "[ZmqPublisher] Trade event: ticker=" << e.ticker
@@ -213,7 +359,7 @@ void ZmqPublisher::run() {
                     if (e.trade_type == 2) {
                         auto it = acc.by_agent.find(e.buy_agent);
                         if (it != acc.by_agent.end()) astats = it->second;
-                    } else if (e.trade_type == 3) {
+                    } else if (e.trade_type == profit::TRADE_TYPE_SELL_AGGRESSION) {
                         auto it = acc.by_agent.find(e.sell_agent);
                         if (it != acc.by_agent.end()) astats = it->second;
                     }
@@ -266,8 +412,66 @@ void ZmqPublisher::run() {
                 zmq::message_t msg(j.dump());
                 pub.send(msg, zmq::send_flags::none);
                 if (vp_msg) {
-                    zmq::message_t vp_out(vp_msg->dump());
-                    pub.send(vp_out, zmq::send_flags::none);
+                    const int64_t poc = vp_snapshot.value("poc", 0);
+                    const int64_t vah = vp_snapshot.value("vah", 0);
+                    const int64_t val = vp_snapshot.value("val", 0);
+                    const bool anchor_changed =
+                        !last_vp_anchor_valid_ ||
+                        poc != last_vp_poc_ ||
+                        vah != last_vp_vah_ ||
+                        val != last_vp_val_;
+                    const int64_t now_vp_ms = steady_now_ms();
+                    const bool allow_vp_zmq =
+                        volume_profile_publish_min_ms_ <= 0 ||
+                        last_volume_profile_pub_ms_ == 0 ||
+                        (now_vp_ms - last_volume_profile_pub_ms_ >=
+                         volume_profile_publish_min_ms_) ||
+                        anchor_changed;
+                    if (allow_vp_zmq) {
+                        last_volume_profile_pub_ms_ = now_vp_ms;
+                        last_vp_poc_ = poc;
+                        last_vp_vah_ = vah;
+                        last_vp_val_ = val;
+                        last_vp_anchor_valid_ = true;
+                        zmq::message_t vp_out(vp_msg->dump());
+                        pub.send(vp_out, zmq::send_flags::none);
+                    } else {
+                        volume_profile_throttle_skips_ += 1;
+                    }
+                }
+                if (ti_msg) {
+                    const int64_t poc = vp_snapshot.value("poc", 0);
+                    const int64_t vah = vp_snapshot.value("vah", 0);
+                    const int64_t val = vp_snapshot.value("val", 0);
+                    const bool anchor_changed =
+                        !last_ti_anchor_valid_ ||
+                        poc != last_ti_poc_ ||
+                        vah != last_ti_vah_ ||
+                        val != last_ti_val_;
+                    const int64_t now_ti_ms = steady_now_ms();
+                    const bool allow_ti_zmq =
+                        tape_intelligence_publish_min_ms_ <= 0 ||
+                        last_tape_intelligence_pub_ms_ == 0 ||
+                        (now_ti_ms - last_tape_intelligence_pub_ms_ >=
+                         tape_intelligence_publish_min_ms_) ||
+                        anchor_changed;
+                    if (allow_ti_zmq) {
+                        last_tape_intelligence_pub_ms_ = now_ti_ms;
+                        last_ti_poc_ = poc;
+                        last_ti_vah_ = vah;
+                        last_ti_val_ = val;
+                        last_ti_anchor_valid_ = true;
+                        nlohmann::json ti_body = *ti_msg;
+                        enrich_tape_intelligence_agent_names(
+                            ti_body,
+                            agent_name_resolver_,
+                            agent_name_cache_,
+                            agent_cache_mutex_);
+                        zmq::message_t ti_out(ti_body.dump());
+                        pub.send(ti_out, zmq::send_flags::none);
+                    } else {
+                        tape_intelligence_throttle_skips_ += 1;
+                    }
                 }
                 if (alert_bus_ && dispatcher_) {
                     rules::Alert alert;
@@ -403,8 +607,11 @@ void ZmqPublisher::run() {
                 << " realtime_trades_received=" << rstats.realtime_trades_received
                 << " edits_applied=" << rstats.edits_applied
                 << " duplicates_ignored=" << rstats.duplicates_ignored
+                << " reconciler_seen=" << reconciler_.seen_size()
                 << " reconcile_errors=" << rstats.reconcile_errors
                 << " dom_snapshot_skipped=" << dom_snapshot_throttle_skips_
+                << " volume_profile_skipped=" << volume_profile_throttle_skips_
+                << " tape_intelligence_skipped=" << tape_intelligence_throttle_skips_
                 << " shm_enabled=" << (shm_writer_ ? 1 : 0)
                 << " shm_write_seq=" << shm_stats.write_seq
                 << " shm_dropped=" << shm_stats.dropped

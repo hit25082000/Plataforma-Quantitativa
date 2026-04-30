@@ -76,6 +76,11 @@ void AssetController::stop() {
     }
 }
 
+void AssetController::set_vp_period_handler(std::function<std::string(const std::string& period)> h) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    vp_period_handler_ = std::move(h);
+}
+
 bool AssetController::poll_switch(SwitchRequest& out) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (!pending_.has_value()) return false;
@@ -155,6 +160,44 @@ void AssetController::listener_loop(uint16_t port) {
 
         std::string line;
         if (!read_line(client, line)) {
+            close_sock(client);
+            continue;
+        }
+
+        if (line.rfind("VP_PERIOD", 0) == 0) {
+            const char* k = "VP_PERIOD";
+            size_t tab = line.find('\t');
+            if (tab == std::string::npos || tab + 1 > line.size()) {
+                const char* e = "ERR: VP_PERIOD needs tab and day|week|manual\n";
+                write_all(client, e, std::strlen(e));
+                close_sock(client);
+                continue;
+            }
+            std::string per = line.substr(tab + 1);
+            while (!per.empty() && (per.back() == '\r' || per.back() == ' ')) per.pop_back();
+            while (!per.empty() && (per.front() == ' ' || per.front() == '\t')) per.erase(per.begin());
+            std::string resp;
+            {
+                std::lock_guard<std::mutex> lk(mtx_);
+                if (!vp_period_handler_) {
+                    resp = "ERR: VP period handler not set\n";
+                } else {
+                    try {
+                        resp = vp_period_handler_(per);
+                    } catch (const std::exception& e) {
+                        resp = std::string("ERR: ") + e.what() + "\n";
+                    } catch (...) {
+                        resp = "ERR: VP period handler failed\n";
+                    }
+                }
+            }
+            if (resp.empty()) {
+                const char* ok = "OK\n";
+                write_all(client, ok, std::strlen(ok));
+            } else {
+                if (resp.back() != '\n') resp += '\n';
+                write_all(client, resp.c_str(), resp.size());
+            }
             close_sock(client);
             continue;
         }

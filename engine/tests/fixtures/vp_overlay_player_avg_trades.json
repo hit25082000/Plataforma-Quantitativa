@@ -1,0 +1,44 @@
+{
+  "name": "vp_overlay_player_avg_notional",
+  "description": "Player 11: buy 10 @ 100000 (notional 1e6), sell 5 @ 99950 (notional 499750). buy_avg=100000, sell_avg=99950, total_avg=(1e6+499750)/15=99983.33...",
+  "price_step": 5,
+  "anchor_prices": { "poc_price": 100000, "vah_price": 100050, "val_price": 99950 },
+  "min_contracts": 3,
+  "max_lines": 4,
+  "trades": [
+    {
+      "ticker": "WINFUT",
+      "price": 100000,
+      "qty": 10,
+      "trade_type": "buy_aggression",
+      "buy_agent": 11,
+      "sell_agent": 99
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 99950,
+      "qty": 5,
+      "trade_type": "sell_aggression",
+      "buy_agent": 88,
+      "sell_agent": 11
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 100000,
+      "qty": 2,
+      "trade_type": "buy_aggression",
+      "buy_agent": 22,
+      "sell_agent": 99,
+      "note": "player 22 below min_contracts if isolated"
+    }
+  ],
+  "assertions": {
+    "player": 11,
+    "buy_qty": 10,
+    "sell_qty": 5,
+    "total_qty": 15,
+    "buy_avg_price": 100000,
+    "sell_avg_price": 99950,
+    "total_avg_price": 99983.3333333333
+  }
+}

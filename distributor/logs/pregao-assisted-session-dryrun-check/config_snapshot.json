@@ -1,0 +1,30 @@
+{
+  "platform": {
+    "system": "Windows",
+    "release": "11",
+    "version": "10.0.26200",
+    "python": "3.13.1 (tags/v3.13.1:0671451, Dec  3 2024, 19:06:28) [MSC v.1942 64 bit (AMD64)]"
+  },
+  "session": {
+    "duration_sec": 60,
+    "dry_run": true,
+    "trace_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ocr_overlay_trace.jsonl",
+    "trace_exists": false,
+    "trace_size_bytes": 0
+  },
+  "env": {
+    "PQ_OCR_TRACE_PATH": "",
+    "PQ_PROFIT_DLL_PATH": "",
+    "PROFIT_TICKER": "",
+    "PROFIT_BOLSA": "",
+    "SHM_ENABLED": "",
+    "SHM_MAPPING_NAME": "",
+    "SHM_SIZE_MB": ""
+  },
+  "scripts_presence": {
+    "scripts\\run_ovr_stab_field_qa.py": true,
+    "scripts\\collect_ocr_overlay_trace_60s.py": true,
+    "scripts\\run_m6_m7_evidence.py": true,
+    "scripts\\run-m6-m7-evidence.ps1": true
+  }
+}

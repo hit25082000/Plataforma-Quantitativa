@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { applyMarketConfigToStore } from "../utils/hydrateMarketFromConfig";
 import { isTauri } from "../utils/tauri";
+import { useSettingsStore } from "../store/settingsStore";
 
 export type StartupStatus =
   | "idle"
@@ -37,23 +38,30 @@ const SWITCH_RETRY_MS = 2000;
 const SWITCH_MAX_ATTEMPTS = 15;
 const RESPAWN_EVERY_ATTEMPTS = 3;
 
+interface SwitchRetryResult {
+  success: boolean;
+  message: string;
+}
+
 async function setActiveAssetWithRetry(
   ticker: string,
   exchange: string,
   cancelled: () => boolean,
   spawnEngineIfNotListening: boolean = false,
-): Promise<void> {
+): Promise<SwitchRetryResult> {
+  let lastMessage = "";
   for (let i = 0; i < SWITCH_MAX_ATTEMPTS; i++) {
-    if (cancelled()) return;
+    if (cancelled()) return { success: false, message: "cancelled" };
     if (i > 0) await new Promise((r) => setTimeout(r, SWITCH_RETRY_MS));
     try {
       const result = await invoke<{ success: boolean; message: string }>(
         "set_active_asset",
         { ticker, exchange },
       );
-      if (result.success) return;
-      if (!isEngineNotListening(result.message)) return;
+      lastMessage = result.message || `set_active_asset falhou (${ticker} ${exchange})`;
+      if (result.success) return { success: true, message: lastMessage };
       if (
+        isEngineNotListening(result.message) &&
         spawnEngineIfNotListening &&
         (i === 0 || i % RESPAWN_EVERY_ATTEMPTS === 0)
       ) {
@@ -64,10 +72,16 @@ async function setActiveAssetWithRetry(
         }
         await new Promise((r) => setTimeout(r, 5000));
       }
-    } catch {
-      // retry
+    } catch (e) {
+      lastMessage = String(e);
     }
   }
+  return {
+    success: false,
+    message:
+      lastMessage ||
+      `Não foi possível ativar ${ticker} ${exchange} no engine após ${SWITCH_MAX_ATTEMPTS} tentativas.`,
+  };
 }
 
 export function useTauriStartup() {
@@ -106,12 +120,25 @@ export function useTauriStartup() {
           selected_exchange?: string | null;
           renko_brick_points?: number | null;
           ifr_series?: string | null;
+          vp_period?: string | null;
+          show_volume_profile_overlay?: boolean | null;
+          show_tape_intelligence_overlay?: boolean | null;
         }>("read_config");
         if (cancelled) return;
 
         const ticker = (cfg.selected_ticker ?? "WINFUT").trim();
         const exchange = (cfg.selected_exchange ?? "BMF").trim();
         const ifrMode = applyMarketConfigToStore(cfg);
+        if (typeof cfg.show_volume_profile_overlay === "boolean") {
+          useSettingsStore
+            .getState()
+            .setShowVolumeProfileOverlay(cfg.show_volume_profile_overlay);
+        }
+        if (typeof cfg.show_tape_intelligence_overlay === "boolean") {
+          useSettingsStore
+            .getState()
+            .setShowTapeIntelligenceOverlay(cfg.show_tape_intelligence_overlay);
+        }
 
         const keyOk = (cfg.profit_activation_key ?? "").trim().length > 0;
         const userOk = (cfg.profit_user ?? "").trim().length > 0;
@@ -128,29 +155,24 @@ export function useTauriStartup() {
         // Credenciais ok: a UI não deve mais pedir configuração.
         setConfigNeeded(false);
 
-        const ok = await invoke<boolean>("check_health");
+        setStatus("starting");
+        await invoke("spawn_engine");
+        if (cancelled) return;
+        await invoke("spawn_distributor");
         if (cancelled) return;
 
-        let healthOk = ok;
-        if (!ok) {
-          setStatus("starting");
-          await invoke("spawn_engine");
+        let healthOk = false;
+        const timeout = 45000;
+        const pollInterval = 500;
+        const start = Date.now();
+        while (Date.now() - start < timeout) {
           if (cancelled) return;
-          await invoke("spawn_distributor");
-          if (cancelled) return;
-
-          const timeout = 30000;
-          const pollInterval = 500;
-          const start = Date.now();
-          while (Date.now() - start < timeout) {
-            if (cancelled) return;
-            const healthy = await invoke<boolean>("check_health");
-            if (healthy) {
-              healthOk = true;
-              break;
-            }
-            await new Promise((r) => setTimeout(r, pollInterval));
+          const healthy = await invoke<boolean>("check_health");
+          if (healthy) {
+            healthOk = true;
+            break;
           }
+          await new Promise((r) => setTimeout(r, pollInterval));
         }
 
         if (cancelled) return;
@@ -163,18 +185,23 @@ export function useTauriStartup() {
           return;
         }
 
-        // Mesmo quando o distributor já estava de pé, garantimos que o engine receba o ativo selecionado
-        // (principalmente após "reiniciar serviços" ou salvar credenciais).
-        setStatus("ready");
         if (ticker && exchange) {
           await new Promise((r) => setTimeout(r, 1000));
           if (cancelled) return;
-          await setActiveAssetWithRetry(
+          const active = await setActiveAssetWithRetry(
             ticker,
             exchange,
             () => cancelled,
             true,
           );
+          if (cancelled) return;
+          if (!active.success) {
+            setStatus("error");
+            setError(
+              `Engine não ativou ${ticker} ${exchange}: ${active.message}. Use "Reiniciar serviços" nas Configurações após confirmar Profit aberto e logado.`,
+            );
+            return;
+          }
         }
         if (!cancelled) {
           try {
@@ -184,7 +211,16 @@ export function useTauriStartup() {
           } catch {
             // distributor pode ainda não estar pronto; usuário pode re-selecionar na barra
           }
+          const vp = (cfg.vp_period ?? "day").trim().toLowerCase();
+          if (vp === "day" || vp === "week" || vp === "manual") {
+            try {
+              await invoke("set_vp_period", { period: vp });
+            } catch {
+              // engine pode ainda nao escutar 5556; settings grava o mesmo periodo
+            }
+          }
         }
+        if (!cancelled) setStatus("ready");
       } catch (e) {
         if (cancelled) return;
         setStatus("error");

@@ -1,0 +1,9 @@
+{
+  "base_url": "http://127.0.0.1:8000",
+  "health_ok": false,
+  "debug_ok": false,
+  "status_ok": false,
+  "health": {},
+  "debug": {},
+  "status": {}
+}

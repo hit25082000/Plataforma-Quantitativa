@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
@@ -33,6 +34,13 @@ except ImportError as e:
     print(f"[OCR] Dependência ausente: {e}")
     print("Execute: pip install -r requirements_ocr.txt")
     sys.exit(1)
+
+from ocr_overlay_audit import (
+    OcrOverlayAuditTrail,
+    build_frame_record,
+    build_session_metadata,
+    resolve_trace_path,
+)
 
 
 def _enable_dpi_awareness() -> None:
@@ -128,6 +136,29 @@ except ValueError:
     AXIS_BLEND_BETA = 0.52
 AXIS_BLEND_BETA = min(1.0, max(0.01, AXIS_BLEND_BETA))
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
+LINE_Y_DEADBAND_PX = float(os.environ.get("PQ_OVERLAY_LINE_DEADBAND_PX", "1.5"))
+AXIS_MAX_BAD_FRAMES = int(os.environ.get("PQ_OCR_AXIS_MAX_BAD_FRAMES", "8"))
+OCR_TRACE_PATH = resolve_trace_path((os.environ.get("PQ_OCR_TRACE_PATH") or "").strip())
+OCR_SYMBOL = (os.environ.get("PQ_OCR_SYMBOL") or "WINFUT").strip().upper()
+TRACE_SESSION_ID = (os.environ.get("PQ_OCR_TRACE_SESSION_ID") or "").strip() or f"ocr-{int(time.time() * 1000)}"
+AXIS_DELTA_SMALL_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_SMALL_PX", "2.0"))
+AXIS_DELTA_MEDIUM_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_MEDIUM_PX", "8.0"))
+AXIS_DELTA_LARGE_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_LARGE_PX", "20.0"))
+AXIS_CONFIRM_SMALL_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_SMALL_FRAMES", "1"))
+AXIS_CONFIRM_MEDIUM_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_MEDIUM_FRAMES", "3"))
+AXIS_CONFIRM_LARGE_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_LARGE_FRAMES", "8"))
+AXIS_MIN_CONFIDENCE = float(os.environ.get("PQ_OCR_AXIS_MIN_CONFIDENCE", "0.45"))
+AXIS_MAX_RESIDUAL_PX = float(os.environ.get("PQ_OCR_AXIS_MAX_RESIDUAL_PX", "2.6"))
+AXIS_MAX_ERROR_PX = float(os.environ.get("PQ_OCR_AXIS_MAX_ERROR_PX", "6.2"))
+try:
+    WS_PUBLISH_MIN_MS = int(os.environ.get("PQ_OCR_WS_PUBLISH_MIN_MS", "100"))
+except ValueError:
+    WS_PUBLISH_MIN_MS = 100
+WS_PUBLISH_MIN_MS = max(100, WS_PUBLISH_MIN_MS)
+MAX_AXIS_LABELS = max(4, int(os.environ.get("PQ_OCR_MAX_AXIS_LABELS", "18")))
+MAX_RENDER_LINES = max(1, int(os.environ.get("PQ_OCR_MAX_RENDER_LINES", "64")))
+HISTOGRAM_COMPRESSED_PX = max(1.0, float(os.environ.get("PQ_OCR_HISTOGRAM_COMPRESSED_PX", "4.0")))
+HISTOGRAM_COALESCE_Y_PX = max(2.0, float(os.environ.get("PQ_OCR_HISTOGRAM_COALESCE_Y_PX", "4.0")))
 
 
 def line_color_for_label(label: str, idx: int) -> str:
@@ -145,6 +176,8 @@ state: Dict[str, Any] = {
     "targets": [],
     "positions": [],
     "chart_rect": None,
+    "axis_labels": None,
+    "axis": None,
     "y_min": None,
     "y_max": None,
     "lines": [],
@@ -156,22 +189,309 @@ state: Dict[str, Any] = {
     "analysis_sample": None,
     "axis_deltas": None,
     "axis_diagnostics": None,
+    "axis_status": "CALIBRATING",
+    "axis_source": "none",
+    "axis_bad_frames": 0,
+    "axis_pending_count": 0,
+    "axis_pending_candidate": None,
+    "axis_confidence": 0.0,
+    "axis_residual_px": 0.0,
+    "axis_max_error_px": 0.0,
+    "frame_seq": 0,
+    "last_frame": None,
+    "last_ws_emit_ts": 0.0,
+    "last_ws_visual_hash": "",
+    "last_render_hash": "",
+    "last_render_targets_hash": "",
 }
 clients: List[WebSocket] = []
 service_started_at = time.monotonic()
 first_ok_logged = False
+ocr_frame_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+render_frame_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
+AUDIT_TRAIL = OcrOverlayAuditTrail(
+    trace_path=OCR_TRACE_PATH,
+    session_metadata=build_session_metadata(
+        session_id=TRACE_SESSION_ID,
+        symbol=OCR_SYMBOL,
+        refresh_ms=REFRESH_MS,
+    ),
+)
+
+
+def _drop_put_latest(queue: asyncio.Queue, item: Any) -> None:
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        try:
+            queue.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        with contextlib.suppress(asyncio.QueueFull):
+            queue.put_nowait(item)
+
+
+def _iso_utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _append_trace_line(record: dict[str, Any]) -> None:
+    if not OCR_TRACE_PATH:
+        return
+    try:
+        AUDIT_TRAIL.append(record)
+    except Exception:
+        pass
+
+
+def _build_frame_debug(
+    *,
+    seq: int,
+    window: Optional[dict[str, Any]],
+    chart: Optional[dict[str, Any]],
+    labels: List[Dict[str, float]],
+    diagnostics: Optional[dict[str, Any]],
+    axis_fit: Optional[dict[str, float]],
+    axis: Optional[dict[str, float]],
+    lines: List[Dict[str, Any]],
+    analysis_sample: Optional[Dict[str, Any]],
+    status: str,
+) -> dict[str, Any]:
+    visible_lines = [ln for ln in lines if str(ln.get("status") or "").lower() == "visible"]
+    out_of_bounds_count = sum(1 for ln in lines if bool(ln.get("out_of_bounds")))
+    chart_bounds = None
+    if isinstance(chart, dict):
+        chart_bounds = {
+            "left": chart.get("left"),
+            "top": chart.get("top"),
+            "right": (chart.get("left", 0) + chart.get("width", 0)),
+            "bottom": (chart.get("top", 0) + chart.get("height", 0)),
+            "width": chart.get("width"),
+            "height": chart.get("height"),
+        }
+    return {
+        "session_id": TRACE_SESSION_ID,
+        "seq": seq,
+        "ts": _iso_utc_now(),
+        "status": status,
+        "window": window,
+        "chart_rect": chart,
+        "labels_count": len(labels),
+        "axis_diagnostics": diagnostics,
+        "axis_fit": axis_fit,
+        "axis": axis,
+        "axis_status": axis_manager.status,
+        "axis_source": state.get("axis_source"),
+        "bad_frames": axis_manager.bad_frames,
+        "pending_count": axis_manager.pending_count,
+        "line_count": len(lines),
+        "lines": lines,
+        "render_indicators": {
+            "line_count_total": len(lines),
+            "line_count_visible": len(visible_lines),
+            "line_count_out_of_bounds": out_of_bounds_count,
+            "chart_bounds": chart_bounds,
+        },
+        "analysis_roi": state.get("analysis_roi"),
+        "analysis_sample": analysis_sample,
+    }
+
+
+def _api_ok(endpoint: str, **data: Any) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "endpoint": endpoint,
+        "meta": {
+            "ts": _iso_utc_now(),
+            "status": str(state.get("status") or ""),
+            "axis_status": str(state.get("axis_status") or ""),
+            "axis_source": str(state.get("axis_source") or ""),
+            "frame_seq": int(state.get("frame_seq") or 0),
+            "last_update": float(state.get("last_update") or 0.0),
+        },
+        "data": data,
+    }
+
+
+def _api_error(endpoint: str, code: str, message: str, **details: Any) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "endpoint": endpoint,
+        "error": {
+            "code": code,
+            "message": message,
+            "details": details,
+        },
+        "meta": {
+            "ts": _iso_utc_now(),
+            "status": str(state.get("status") or ""),
+            "axis_status": str(state.get("axis_status") or ""),
+            "axis_source": str(state.get("axis_source") or ""),
+            "bad_frames": int(state.get("axis_bad_frames") or 0),
+            "pending_count": int(state.get("axis_pending_count") or 0),
+            "frame_seq": int(state.get("frame_seq") or 0),
+        },
+    }
+
+
+def _normalize_targets(targets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    normalized: List[Dict[str, Any]] = []
+    for idx, target in enumerate(targets):
+        normalized.append(
+            {
+                "id": idx,
+                "value": float(target.get("value", 0.0)),
+                "label": str(target.get("label") or ""),
+            }
+        )
+    return normalized
+
+
+def _build_overlay_update_data() -> dict[str, Any]:
+    axis_locked = bool(
+        state.get("status") == "ok"
+        and isinstance(state.get("axis_labels"), list)
+        and len(state.get("axis_labels") or []) >= 2
+    )
+    targets = _normalize_targets(state.get("targets") or [])
+    chart_rect = state.get("chart_rect")
+    line_block = {
+        "items": state.get("lines") or [],
+        "count": len(state.get("lines") or []),
+        "target_count": len(targets),
+        "visual_limits": {
+            "chart_top": chart_rect.get("top") if isinstance(chart_rect, dict) else None,
+            "chart_bottom": (
+                chart_rect.get("top", 0) + chart_rect.get("height", 0)
+                if isinstance(chart_rect, dict)
+                else None
+            ),
+            "y_min": state.get("y_min"),
+            "y_max": state.get("y_max"),
+        },
+    }
+    histogram_block = {
+        "axis_deltas": state.get("axis_deltas"),
+        "axis_diagnostics": state.get("axis_diagnostics"),
+    }
+    status_block = {
+        "state": state.get("status"),
+        "axis_locked": axis_locked,
+        "analysis_roi": state.get("analysis_roi"),
+        "analysis_sample": state.get("analysis_sample"),
+        "timestamp": state.get("last_update"),
+    }
+    axis_block = {
+        "axis": state.get("axis"),
+        "regression": state.get("axis"),
+        "axis_labels": state.get("axis_labels"),
+        "ocr_labels": state.get("axis_labels"),
+        "labels_count": len(state.get("axis_labels") or []),
+        "axis_status": state.get("axis_status"),
+        "axis_source": state.get("axis_source"),
+        "confidence": float(state.get("axis_confidence") or (1.0 if axis_locked else 0.0)),
+        "residual_px": float(state.get("axis_residual_px") or 0.0),
+        "max_error_px": float(state.get("axis_max_error_px") or 0.0),
+        "bad_frames": int(state.get("axis_bad_frames") or 0),
+        "pending_count": int(state.get("axis_pending_count") or 0),
+        "pending_candidate": state.get("axis_pending_candidate"),
+    }
+    debug_visual = {
+        "ocr_labels": state.get("axis_labels"),
+        "regression": state.get("axis"),
+        "analysis_roi": state.get("analysis_roi"),
+        "chart_bounds": {
+            "left": chart_rect.get("left") if isinstance(chart_rect, dict) else None,
+            "top": chart_rect.get("top") if isinstance(chart_rect, dict) else None,
+            "right": (
+                chart_rect.get("left", 0) + chart_rect.get("width", 0)
+                if isinstance(chart_rect, dict)
+                else None
+            ),
+            "bottom": (
+                chart_rect.get("top", 0) + chart_rect.get("height", 0)
+                if isinstance(chart_rect, dict)
+                else None
+            ),
+            "width": chart_rect.get("width") if isinstance(chart_rect, dict) else None,
+            "height": chart_rect.get("height") if isinstance(chart_rect, dict) else None,
+        },
+    }
+    structured_block = {
+        "status": status_block,
+        "axis": axis_block,
+        "lines": line_block,
+        "histogram": histogram_block,
+        "debug_visual": debug_visual,
+        "overlay_target": targets,
+    }
+    return {
+        # Contrato legado top-level (consumidores antigos)
+        "status": status_block["state"],
+        "axis_locked": status_block["axis_locked"],
+        "lines": line_block["items"],
+        "y_min": line_block["visual_limits"]["y_min"],
+        "y_max": line_block["visual_limits"]["y_max"],
+        "target_count": line_block["target_count"],
+        "line_count": line_block["count"],
+        "chart_rect": state.get("chart_rect"),
+        "axis_deltas": histogram_block["axis_deltas"],
+        "axis_diagnostics": histogram_block["axis_diagnostics"],
+        "analysis_roi": status_block["analysis_roi"],
+        "analysis_sample": status_block["analysis_sample"],
+        "ts": status_block["timestamp"],
+        # Contrato estruturado (novo)
+        "structured": structured_block,
+        # Compatibilidade com contratos anteriores
+        "overlay_target": targets,
+        "axis_status": axis_block["axis_status"],
+        "axis_source": axis_block["axis_source"],
+        "confidence": axis_block["confidence"],
+        "residual_px": axis_block["residual_px"],
+        "max_error_px": axis_block["max_error_px"],
+        "bad_frames": axis_block["bad_frames"],
+        "pending_count": axis_block["pending_count"],
+        "pending_candidate": axis_block["pending_candidate"],
+    }
+
+
+def _should_publish_overlay_update(payload_data: dict[str, Any]) -> bool:
+    now_ms = int(time.time() * 1000.0)
+    structured = payload_data.get("structured") if isinstance(payload_data.get("structured"), dict) else {}
+    visual_fingerprint = {
+        "status": payload_data.get("status"),
+        "lines": payload_data.get("lines"),
+        "axis_deltas": payload_data.get("axis_deltas"),
+        "axis_diagnostics": payload_data.get("axis_diagnostics"),
+        "overlay_target": payload_data.get("overlay_target"),
+        "structured": structured,
+    }
+    payload_hash = json.dumps(visual_fingerprint, sort_keys=True, separators=(",", ":"))
+    last_hash = str(state.get("last_ws_visual_hash") or "")
+    last_emit_ts = int(state.get("last_ws_emit_ts") or 0)
+    has_change = payload_hash != last_hash
+    throttle_elapsed = (now_ms - last_emit_ts) >= WS_PUBLISH_MIN_MS
+    if has_change and throttle_elapsed:
+        state["last_ws_visual_hash"] = payload_hash
+        state["last_ws_emit_ts"] = now_ms
+        return True
+    return False
 
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     configure_tesseract_cmd()
     state["dpi_scale"] = get_dpi_scale()
-    task = asyncio.create_task(ocr_loop())
+    ocr_task = asyncio.create_task(ocr_loop())
+    render_task = asyncio.create_task(render_loop())
+    publish_task = asyncio.create_task(publish_loop())
     try:
         yield
     finally:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        for task in (ocr_task, render_task, publish_task):
+            task.cancel()
+        for task in (ocr_task, render_task, publish_task):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 app = FastAPI(title="Profit OCR Service", lifespan=_lifespan)
@@ -208,6 +528,15 @@ class AnalysisRoiBody(BaseModel):
     rect: Optional[AnalysisRoiRect] = None
 
 
+class ManualAxisPoint(BaseModel):
+    value: float
+    y_screen: float
+
+
+class ManualAxisBody(BaseModel):
+    points: List[ManualAxisPoint]
+
+
 def _targets_from_ws_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
     raw = msg.get("targets")
     if isinstance(raw, list) and raw:
@@ -230,6 +559,7 @@ def _targets_from_ws_message(msg: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _apply_targets(targets: List[Dict[str, Any]]) -> None:
     state["targets"] = targets
     state["positions"] = [t["value"] for t in targets]
+    state["last_render_targets_hash"] = json.dumps(_normalize_targets(targets), sort_keys=True, separators=(",", ":"))
 
 
 def get_dpi_scale() -> float:
@@ -345,6 +675,35 @@ def parse_number(text: str) -> Optional[float]:
         return None
 
 
+def _tick_aligned(value: float, tick_size: float) -> bool:
+    if tick_size <= 0:
+        return True
+    scaled = value / tick_size
+    return abs(scaled - round(scaled)) <= 1e-6
+
+
+def parse_price_label(text: str, symbol: str = OCR_SYMBOL) -> Optional[float]:
+    """
+    Parser conservador de preço por ativo.
+    Filtra faixa plausível e aderência ao tick para reduzir falsos positivos de OCR.
+    """
+    value = parse_number(text)
+    if value is None:
+        return None
+    profiles = {
+        "WINFUT": {"min": 50000.0, "max": 500000.0, "tick": 5.0},
+        "WDOFUT": {"min": 1000.0, "max": 20000.0, "tick": 0.5},
+    }
+    profile = profiles.get((symbol or "").upper())
+    if profile is None:
+        return value
+    if value < profile["min"] or value > profile["max"]:
+        return None
+    if not _tick_aligned(value, float(profile["tick"])):
+        return None
+    return value
+
+
 def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
     ax_w = max(70, int(chart["width"] * Y_AXIS_FRAC))
     left = chart["left"] + chart["width"] - ax_w
@@ -375,7 +734,7 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
             conf = int(data["conf"][i]) if str(data["conf"][i]).strip() else -1
             if conf < MIN_CONF or not word:
                 continue
-            val = parse_number(word)
+            val = parse_price_label(word)
             if val is None:
                 continue
             y_orig = (data["top"][i] + data["height"][i] / 2) / scale
@@ -475,10 +834,47 @@ def fit_value_axis(labels: List[Dict[str, float]]) -> Optional[Dict[str, float]]
     intercepts = sorted(lb["value"] - slope * lb["y_screen"] for lb in labels)
     intercept = intercepts[len(intercepts) // 2]
     value_per_px = abs(slope)
-    return {"slope": slope, "intercept": intercept, "value_per_px": value_per_px}
+    if value_per_px < 1e-9:
+        return None
+
+    residuals = [abs(lb["value"] - (slope * lb["y_screen"] + intercept)) / value_per_px for lb in labels]
+    sorted_res = sorted(residuals)
+    p75 = sorted_res[int(len(sorted_res) * 0.75)] if sorted_res else 0.0
+    inlier_limit = max(2.5, p75 * 1.8)
+    inliers = [lb for lb in labels if abs(lb["value"] - (slope * lb["y_screen"] + intercept)) / value_per_px <= inlier_limit]
+    if len(inliers) >= 2:
+        ys = [float(lb["y_screen"]) for lb in inliers]
+        vs = [float(lb["value"]) for lb in inliers]
+        y_mean = sum(ys) / len(ys)
+        v_mean = sum(vs) / len(vs)
+        den = sum((y - y_mean) ** 2 for y in ys)
+        if den > 1e-9:
+            slope_refit = sum((y - y_mean) * (v - v_mean) for y, v in zip(ys, vs)) / den
+            if abs(slope_refit) > 1e-9:
+                slope = slope_refit
+                intercept = v_mean - slope * y_mean
+                value_per_px = abs(slope)
+                inliers = [lb for lb in labels if abs(lb["value"] - (slope * lb["y_screen"] + intercept)) / value_per_px <= inlier_limit]
+
+    residual_px = 0.0
+    max_error_px = 0.0
+    if labels:
+        errs = [abs(lb["value"] - (slope * lb["y_screen"] + intercept)) / value_per_px for lb in labels]
+        residual_px = sum(errs) / len(errs)
+        max_error_px = max(errs)
+    confidence = max(0.0, min(1.0, (len(inliers) / max(1, len(labels))) * (1.0 / (1.0 + residual_px + max_error_px * 0.2))))
+    return {
+        "slope": slope,
+        "intercept": intercept,
+        "value_per_px": value_per_px,
+        "residual_px": residual_px,
+        "max_error_px": max_error_px,
+        "confidence": confidence,
+        "inliers_count": len(inliers),
+    }
 
 
-def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str, float]], Dict[str, Any]]:
+def sanitize_axis_labels(labels: List[Dict[str, float]], symbol: str = OCR_SYMBOL) -> tuple[List[Dict[str, float]], Dict[str, Any]]:
     """
     Mantém labels coerentes com um eixo de preço monotónico.
     1) monotonicidade (y crescente -> value decrescente)
@@ -488,9 +884,34 @@ def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str,
         return labels, {"raw_labels": len(labels), "kept_labels": len(labels), "rejected": 0}
 
     by_y = sorted(labels, key=lambda x: x["y_screen"])
-    kept = [by_y[0]]
+    tick_size = 0.0
+    if (symbol or "").upper() == "WINFUT":
+        tick_size = 5.0
+    elif (symbol or "").upper() == "WDOFUT":
+        tick_size = 0.5
+
+    deduped: List[Dict[str, float]] = []
+    dedupe_rejects = 0
+    for lb in by_y:
+        if deduped and abs(lb["y_screen"] - deduped[-1]["y_screen"]) < 4:
+            dedupe_rejects += 1
+            continue
+        if tick_size > 0 and not _tick_aligned(float(lb["value"]), tick_size):
+            dedupe_rejects += 1
+            continue
+        deduped.append(lb)
+
+    if len(deduped) < 2:
+        return deduped, {
+            "raw_labels": len(labels),
+            "kept_labels": len(deduped),
+            "rejected": len(labels) - len(deduped),
+            "rejected_dedupe_or_tick": dedupe_rejects,
+        }
+
+    kept = [deduped[0]]
     monotonic_rejects = 0
-    for lb in by_y[1:]:
+    for lb in deduped[1:]:
         prev = kept[-1]
         dy = lb["y_screen"] - prev["y_screen"]
         dv = lb["value"] - prev["value"]
@@ -503,10 +924,11 @@ def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str,
         kept.append(lb)
 
     if len(kept) < 2:
-        return by_y[:2], {
+        return deduped[:2], {
             "raw_labels": len(labels),
-            "kept_labels": min(2, len(by_y)),
-            "rejected": len(labels) - min(2, len(by_y)),
+            "kept_labels": min(2, len(deduped)),
+            "rejected": len(labels) - min(2, len(deduped)),
+            "rejected_dedupe_or_tick": dedupe_rejects,
             "rejected_monotonic": monotonic_rejects,
             "rejected_slope_outlier": 0,
         }
@@ -523,6 +945,7 @@ def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str,
             "raw_labels": len(labels),
             "kept_labels": len(kept),
             "rejected": len(labels) - len(kept),
+            "rejected_dedupe_or_tick": dedupe_rejects,
             "rejected_monotonic": monotonic_rejects,
             "rejected_slope_outlier": 0,
         }
@@ -556,11 +979,63 @@ def sanitize_axis_labels(labels: List[Dict[str, float]]) -> tuple[List[Dict[str,
         "raw_labels": len(labels),
         "kept_labels": len(filtered),
         "rejected": len(labels) - len(filtered),
+        "rejected_dedupe_or_tick": dedupe_rejects,
         "rejected_monotonic": monotonic_rejects,
         "rejected_slope_outlier": slope_rejects,
         "segment_slope_median": median,
         "segment_slope_mad": mad,
     }
+
+
+def build_axis_candidate(labels: List[Dict[str, float]], diagnostics: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
+    fit = fit_value_axis(labels)
+    if fit is None:
+        return None
+    vals = [float(lb["value"]) for lb in labels]
+    ys = [float(lb["y_screen"]) for lb in labels]
+    return {
+        "slope": float(fit["slope"]),
+        "intercept": float(fit["intercept"]),
+        "value_per_px": float(fit["value_per_px"]),
+        "residual_px": float(fit.get("residual_px", 0.0)),
+        "max_error_px": float(fit.get("max_error_px", 0.0)),
+        "confidence": float(fit.get("confidence", 0.0)),
+        "labels_count": len(labels),
+        "inliers_count": int(fit.get("inliers_count", 0)),
+        "tick_valid": bool((diagnostics or {}).get("rejected_dedupe_or_tick", 0) == 0),
+        "monotonic_valid": bool((diagnostics or {}).get("rejected_monotonic", 0) == 0),
+        "value_min": min(vals) if vals else None,
+        "value_max": max(vals) if vals else None,
+        "y_min": min(ys) if ys else None,
+        "y_max": max(ys) if ys else None,
+    }
+
+
+def axis_delta_px(candidate: Dict[str, Any], last_stable: Dict[str, float]) -> float:
+    slope_new = float(candidate.get("slope") or 0.0)
+    slope_old = float(last_stable.get("slope") or 0.0)
+    if abs(slope_new) < 1e-9 or abs(slope_old) < 1e-9:
+        return math.inf
+    v_mid = (float(candidate.get("value_min") or 0.0) + float(candidate.get("value_max") or 0.0)) / 2.0
+    y_new = (v_mid - float(candidate.get("intercept") or 0.0)) / slope_new
+    y_old = (v_mid - float(last_stable.get("intercept") or 0.0)) / slope_old
+    return abs(y_new - y_old)
+
+
+def is_candidate_valid(candidate: Dict[str, Any]) -> bool:
+    if int(candidate.get("labels_count") or 0) < 2:
+        return False
+    if not bool(candidate.get("tick_valid", True)):
+        return False
+    if not bool(candidate.get("monotonic_valid", True)):
+        return False
+    if float(candidate.get("confidence") or 0.0) < AXIS_MIN_CONFIDENCE:
+        return False
+    if float(candidate.get("residual_px") or 0.0) > AXIS_MAX_RESIDUAL_PX:
+        return False
+    if float(candidate.get("max_error_px") or 0.0) > AXIS_MAX_ERROR_PX:
+        return False
+    return True
 
 
 def compute_axis_deltas(labels: List[Dict[str, float]]) -> Optional[Dict[str, Any]]:
@@ -584,11 +1059,38 @@ def compute_axis_deltas(labels: List[Dict[str, float]]) -> Optional[Dict[str, An
                 "value_per_px_segment": value_per_px_segment,
             }
         )
+    coalesced_intervals = intervals
+    compressed_scale = False
+    if intervals:
+        mean_abs_y_delta = sum(abs(float(it["y_delta"])) for it in intervals) / len(intervals)
+        compressed_scale = mean_abs_y_delta <= HISTOGRAM_COMPRESSED_PX
+        if compressed_scale:
+            coalesced_intervals = []
+            bucket: Dict[str, float] = {"i": 0.0, "value_delta": 0.0, "y_delta": 0.0}
+            bucket_first = 0
+            for idx, interval in enumerate(intervals):
+                if bucket["y_delta"] == 0.0:
+                    bucket_first = idx
+                bucket["value_delta"] += float(interval["value_delta"])
+                bucket["y_delta"] += float(interval["y_delta"])
+                if abs(bucket["y_delta"]) >= HISTOGRAM_COALESCE_Y_PX or idx == len(intervals) - 1:
+                    y_delta = float(bucket["y_delta"])
+                    coalesced_intervals.append(
+                        {
+                            "i": bucket_first,
+                            "value_delta": float(bucket["value_delta"]),
+                            "y_delta": y_delta,
+                            "value_per_px_segment": abs(float(bucket["value_delta"]) / y_delta) if abs(y_delta) > 1e-9 else math.inf,
+                        }
+                    )
+                    bucket = {"i": 0.0, "value_delta": 0.0, "y_delta": 0.0}
     return {
         "delta_first_last_value": float(last["value"] - first["value"]),
         "delta_first_last_y": float(last["y_screen"] - first["y_screen"]),
         "delta_intervals": intervals,
+        "delta_intervals_coalesced": coalesced_intervals,
         "labels_count": len(by_y),
+        "compressed_scale": compressed_scale,
     }
 
 
@@ -620,6 +1122,135 @@ def blend_axis_with_hysteresis(new_axis: Dict[str, float]) -> Dict[str, float]:
     blended["value_per_px"] = abs(blended["slope"])
     state["_axis_ema"] = blended
     return blended
+
+
+class StableAxisManager:
+    def __init__(self) -> None:
+        self.last_stable_axis: Optional[Dict[str, float]] = None
+        self.pending_candidate: Optional[Dict[str, Any]] = None
+        self.pending_count = 0
+        self.bad_frames = 0
+        self.status = "CALIBRATING"
+        self.manual_locked = False
+        self.frozen = False
+
+    def freeze(self) -> None:
+        self.frozen = True
+        self.status = "FROZEN"
+
+    def unfreeze(self) -> None:
+        self.frozen = False
+        self.bad_frames = 0
+        self.pending_candidate = None
+        self.pending_count = 0
+        self.status = "RECALIBRATING" if self.last_stable_axis is not None else "CALIBRATING"
+
+    def set_manual_axis(self, axis: Dict[str, float]) -> Dict[str, float]:
+        self.last_stable_axis = axis
+        self.pending_candidate = None
+        self.pending_count = 0
+        self.manual_locked = True
+        self.frozen = False
+        self.bad_frames = 0
+        self.status = "MANUAL_LOCKED"
+        return axis
+
+    def clear_manual_axis(self) -> None:
+        self.manual_locked = False
+        self.bad_frames = 0
+        self.pending_candidate = None
+        self.pending_count = 0
+        self.status = "RECALIBRATING" if self.last_stable_axis is not None else "CALIBRATING"
+
+    def _required_confirm_frames(self, delta_px: float) -> int:
+        if delta_px <= AXIS_DELTA_SMALL_PX:
+            return max(1, AXIS_CONFIRM_SMALL_FRAMES)
+        if delta_px <= AXIS_DELTA_MEDIUM_PX:
+            return max(1, AXIS_CONFIRM_MEDIUM_FRAMES)
+        if delta_px <= AXIS_DELTA_LARGE_PX:
+            return max(1, AXIS_CONFIRM_MEDIUM_FRAMES + 1)
+        return max(8, AXIS_CONFIRM_LARGE_FRAMES)
+
+    def feed(self, candidate: Optional[Dict[str, Any]]) -> Optional[Dict[str, float]]:
+        if self.manual_locked and self.last_stable_axis is not None:
+            self.status = "MANUAL_LOCKED"
+            return self.last_stable_axis
+        if self.frozen and self.last_stable_axis is not None:
+            self.status = "FROZEN"
+            return self.last_stable_axis
+        if candidate is None or not is_candidate_valid(candidate):
+            self.bad_frames += 1
+            self.pending_candidate = None
+            self.pending_count = 0
+            if self.last_stable_axis is not None:
+                self.status = "FROZEN" if self.bad_frames >= AXIS_MAX_BAD_FRAMES else "SUSPECT"
+                return self.last_stable_axis
+            self.status = "CALIBRATING"
+            return None
+        self.bad_frames = 0
+        axis_fit = {
+            "slope": float(candidate["slope"]),
+            "intercept": float(candidate["intercept"]),
+            "value_per_px": float(candidate.get("value_per_px") or abs(float(candidate["slope"]))),
+        }
+        if self.last_stable_axis is None:
+            axis = blend_axis_with_hysteresis(axis_fit)
+            self.last_stable_axis = axis
+            self.pending_candidate = None
+            self.pending_count = 0
+            self.status = "STABLE"
+            return axis
+
+        delta_px = axis_delta_px(candidate, self.last_stable_axis)
+        required = self._required_confirm_frames(delta_px)
+        if required <= 1:
+            axis = blend_axis_with_hysteresis(axis_fit)
+            self.last_stable_axis = axis
+            self.pending_candidate = None
+            self.pending_count = 0
+            self.status = "STABLE"
+            return axis
+
+        if self.pending_candidate is None:
+            self.pending_candidate = candidate
+            self.pending_count = 1
+        else:
+            pending_delta = axis_delta_px(candidate, self.pending_candidate)
+            if pending_delta <= AXIS_DELTA_SMALL_PX:
+                self.pending_count += 1
+                self.pending_candidate = candidate
+            else:
+                self.pending_candidate = candidate
+                self.pending_count = 1
+
+        if self.pending_count < required:
+            self.status = "RECALIBRATING" if self.last_stable_axis is not None else "SUSPECT"
+            return self.last_stable_axis
+
+        axis = blend_axis_with_hysteresis(axis_fit)
+        self.last_stable_axis = axis
+        self.pending_candidate = None
+        self.pending_count = 0
+        self.status = "STABLE"
+        return axis
+
+
+axis_manager = StableAxisManager()
+
+
+def _build_axis_from_manual_points(points: List[ManualAxisPoint]) -> Optional[Dict[str, float]]:
+    if len(points) < 2:
+        return None
+    p0 = points[0]
+    p1 = points[1]
+    dy = float(p1.y_screen) - float(p0.y_screen)
+    if abs(dy) < 1e-6:
+        return None
+    slope = (float(p1.value) - float(p0.value)) / dy
+    if abs(slope) < 1e-9:
+        return None
+    intercept = float(p0.value) - slope * float(p0.y_screen)
+    return {"slope": slope, "intercept": intercept, "value_per_px": abs(slope)}
 
 
 def value_to_y_hybrid(value: float, labels: List[Dict[str, float]], axis: Dict[str, float]) -> int:
@@ -700,32 +1331,114 @@ def apply_line_y_smoothing(
     if state.get("_smooth_key") != tk:
         state["_line_y_smooth"] = {}
         state["_smooth_key"] = tk
-    ema: Dict[int, float] = state.setdefault("_line_y_smooth", {})
+    ema: Dict[str, float] = state.setdefault("_line_y_smooth", {})
     alpha = min(1.0, max(0.01, LINE_Y_SMOOTH_ALPHA))
     chart = state.get("chart_rect") if isinstance(state.get("chart_rect"), dict) else {}
     ch = float(chart.get("height") or 0)
     snap_px = max(float(LINE_Y_SNAP_PX), (ch * 0.025) if ch > 0 else float(LINE_Y_SNAP_PX))
+    deadband_px = max(0.0, LINE_Y_DEADBAND_PX)
     for idx, ln in enumerate(lines):
         y = float(ln["y_screen"])
-        prev = ema.get(idx)
+        line_id = f"{idx}:{str(ln.get('label') or '').strip().lower()}:{round(float(ln.get('value') or 0.0), 4)}"
+        prev = ema.get(line_id)
         if prev is None:
-            ema[idx] = y
+            ema[line_id] = y
+        elif abs(y - prev) <= deadband_px:
+            ema[line_id] = prev
         elif abs(y - prev) >= snap_px:
-            ema[idx] = y
+            ema[line_id] = y
         else:
-            ema[idx] = alpha * y + (1.0 - alpha) * prev
-        ln["y_screen"] = int(round(ema[idx]))
+            ema[line_id] = alpha * y + (1.0 - alpha) * prev
+        ln["y_screen"] = int(round(ema[line_id]))
+
+
+def _build_render_context(frame: Dict[str, Any]) -> Dict[str, Any]:
+    chart = frame.get("chart_rect")
+    axis = frame.get("axis")
+    labels = frame.get("labels") or []
+    if not isinstance(chart, dict) or not isinstance(axis, dict) or len(labels) < 2:
+        return {"lines": [], "status": frame.get("status", "render_skipped")}
+    targets = state.get("targets") or []
+    if len(targets) > MAX_RENDER_LINES:
+        targets = targets[:MAX_RENDER_LINES]
+    vals = [lb["value"] for lb in labels]
+    v_axis_min = min(vals)
+    v_axis_max = max(vals)
+    lines = []
+    chart_top = float(chart["top"])
+    chart_bottom = float(chart["top"] + chart["height"])
+    for idx, t in enumerate(targets):
+        pos = float(t["value"])
+        y_screen = value_to_y_hybrid(pos, labels, axis)
+        # Preço fora do intervalo visível no eixo OCR: não usar y híbrido
+        # (oscila com blend_axis_with_hysteresis) + clamp geométrico — fixa na borda
+        # estável. Eixo Profit: y cresce para baixo, valor decresce (topo = maior preço).
+        if pos > v_axis_max:
+            clamped_y = int(round(chart_top))
+            oob = True
+            line_status = "clamped_top"
+        elif pos < v_axis_min:
+            clamped_y = int(round(chart_bottom))
+            oob = True
+            line_status = "clamped_bottom"
+        else:
+            clamped_y = int(round(max(chart_top, min(float(y_screen), chart_bottom))))
+            oob = float(y_screen) != float(clamped_y)
+            line_status = "visible" if not oob else (
+                "clamped_top" if clamped_y <= int(round(chart_top)) else "clamped_bottom"
+            )
+        lbl = str(t.get("label") or "")
+        lines.append(
+            {
+                "value": pos,
+                "y_screen": clamped_y,
+                "color": line_color_for_label(lbl, idx),
+                "chart_left": chart.get("left"),
+                "chart_right": chart.get("left", 0) + chart.get("width", 0),
+                "label": lbl,
+                "out_of_bounds": oob,
+                "status": line_status,
+            }
+        )
+    apply_line_y_smoothing(lines, targets)
+    return {"lines": lines, "status": "ok"}
+
+
+def _should_skip_render(frame: Dict[str, Any]) -> bool:
+    render_fingerprint = json.dumps(
+        {
+            "status": frame.get("status"),
+            "axis_status": frame.get("axis_status"),
+            "axis_source": frame.get("axis_source"),
+            "axis": frame.get("axis"),
+            "chart_rect": frame.get("chart_rect"),
+            "labels": frame.get("labels"),
+            "targets_hash": state.get("last_render_targets_hash"),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if render_fingerprint == str(state.get("last_render_hash") or ""):
+        return True
+    state["last_render_hash"] = render_fingerprint
+    return False
 
 
 async def ocr_loop():
     global first_ok_logged
     while True:
+        state["frame_seq"] = int(state.get("frame_seq") or 0) + 1
+        seq = int(state["frame_seq"])
         t0 = time.monotonic()
+        frame_debug: dict[str, Any] = {"seq": seq, "ts": _iso_utc_now()}
+        frame_ctx: dict[str, Any] = {"seq": seq}
         try:
             window = resolve_profit_window(t0)
             if not window:
                 state["status"] = "window_not_found"
                 state["lines"] = []
+                state["axis_labels"] = None
+                state["axis"] = None
             else:
                 chart = {
                     "left": window["left"],
@@ -735,17 +1448,45 @@ async def ocr_loop():
                 }
                 state["chart_rect"] = chart
                 labels_raw = extract_y_axis(chart)
+                if len(labels_raw) > MAX_AXIS_LABELS:
+                    labels_raw = labels_raw[:MAX_AXIS_LABELS]
                 labels, diagnostics = sanitize_axis_labels(labels_raw)
                 state["axis_diagnostics"] = diagnostics
+                frame_ctx["chart_rect"] = chart
+                frame_ctx["labels"] = labels
+                frame_debug["window"] = window
+                frame_debug["chart_rect"] = chart
+                frame_debug["labels"] = labels
+                frame_debug["axis_diagnostics"] = diagnostics
 
                 if len(labels) >= 2:
                     state["axis_deltas"] = compute_axis_deltas(labels)
-                    axis_fit = fit_value_axis(labels)
-                    axis = blend_axis_with_hysteresis(axis_fit) if axis_fit is not None else None
+                    axis_candidate = build_axis_candidate(labels, diagnostics)
+                    frame_debug["axis_fit"] = axis_candidate
+                    axis = axis_manager.feed(axis_candidate)
                     if axis is None:
                         state["status"] = "ocr_axis_fit_failed"
                         state["lines"] = []
+                        state["axis_labels"] = None
+                        state["axis"] = None
                     else:
+                        state["axis_labels"] = [
+                            {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
+                            for lb in labels
+                        ]
+                        state["axis"] = {
+                            "slope": float(axis["slope"]),
+                            "intercept": float(axis["intercept"]),
+                            "value_per_px": float(axis.get("value_per_px", abs(float(axis["slope"])))),
+                        }
+                        state["axis_status"] = axis_manager.status
+                        state["axis_source"] = "ocr"
+                        state["axis_bad_frames"] = axis_manager.bad_frames
+                        state["axis_pending_count"] = axis_manager.pending_count
+                        state["axis_pending_candidate"] = axis_manager.pending_candidate
+                        state["axis_confidence"] = float((axis_candidate or {}).get("confidence") or 0.0)
+                        state["axis_residual_px"] = float((axis_candidate or {}).get("residual_px") or 0.0)
+                        state["axis_max_error_px"] = float((axis_candidate or {}).get("max_error_px") or 0.0)
                         vals = [lb["value"] for lb in labels]
                         v_axis_min = min(vals)
                         v_axis_max = max(vals)
@@ -756,51 +1497,36 @@ async def ocr_loop():
                             first_ok_logged = True
                             elapsed_ms = int((time.monotonic() - service_started_at) * 1000)
                             print(f"[overlay-latency] ocr_first_ok elapsed_ms={elapsed_ms}")
-                        lines = []
-                        chart_top = float(chart["top"])
-                        chart_bottom = float(chart["top"] + chart["height"])
-                        for idx, t in enumerate(state["targets"]):
-                            pos = float(t["value"])
-                            y_screen = value_to_y_hybrid(pos, labels, axis)
-                            # Preço fora do intervalo visível no eixo OCR: não usar y híbrido
-                            # (oscila com blend_axis_with_hysteresis) + clamp geométrico — fixa na borda
-                            # estável. Eixo Profit: y cresce para baixo, valor decresce (topo = maior preço).
-                            if pos > v_axis_max:
-                                clamped_y = int(round(chart_top))
-                                oob = True
-                            elif pos < v_axis_min:
-                                clamped_y = int(round(chart_bottom))
-                                oob = True
-                            else:
-                                clamped_y = int(
-                                    round(max(chart_top, min(float(y_screen), chart_bottom)))
-                                )
-                                oob = float(y_screen) != float(clamped_y)
-                            lbl = str(t.get("label") or "")
-                            lines.append(
-                                {
-                                    "value": pos,
-                                    "y_screen": clamped_y,
-                                    "color": line_color_for_label(lbl, idx),
-                                    "chart_left": window["left"],
-                                    "chart_right": window["right"],
-                                    "label": lbl,
-                                    "out_of_bounds": oob,
-                                }
-                            )
-                        apply_line_y_smoothing(lines, state["targets"])
-                        state["lines"] = lines
+                        frame_ctx["axis"] = state.get("axis")
+                        frame_ctx["status"] = state["status"]
                 else:
                     state["axis_deltas"] = None
+                    if axis_manager.last_stable_axis is None:
+                        state["axis_labels"] = None
+                        state["axis"] = None
+                    else:
+                        axis = axis_manager.feed(None)
+                        state["axis"] = axis
+                        state["axis_status"] = axis_manager.status
+                        state["axis_source"] = "last_stable"
+                        state["axis_bad_frames"] = axis_manager.bad_frames
+                        state["axis_pending_count"] = axis_manager.pending_count
+                        state["axis_pending_candidate"] = axis_manager.pending_candidate
                     elapsed_svc = time.monotonic() - service_started_at
                     if len(labels) == 0 and elapsed_svc < AXIS_WARMUP_SECS:
                         state["status"] = "ocr_axis_warming"
                     else:
                         state["status"] = f"ocr_insufficient_labels:{len(labels)}"
                     state["lines"] = []
+                    frame_ctx["axis"] = state.get("axis")
+                    frame_ctx["status"] = state["status"]
         except Exception as exc:
             state["status"] = f"error: {exc}"
             state["lines"] = []
+            state["axis_labels"] = None
+            state["axis"] = None
+            frame_debug["error"] = str(exc)
+            frame_ctx["status"] = state["status"]
 
         state["last_update"] = time.time()
 
@@ -820,36 +1546,67 @@ async def ocr_loop():
         else:
             state["analysis_sample"] = None
 
-        if clients:
-            payload = json.dumps(
-                {
-                    "type": "overlay_update",
-                    "data": {
-                        "lines": state["lines"],
-                        "status": state["status"],
-                        "y_min": state["y_min"],
-                        "y_max": state["y_max"],
-                        "chart_rect": state["chart_rect"],
-                        "axis_deltas": state.get("axis_deltas"),
-                        "axis_diagnostics": state.get("axis_diagnostics"),
-                        "analysis_roi": state.get("analysis_roi"),
-                        "analysis_sample": analysis_sample,
-                        "ts": state["last_update"],
-                    },
-                }
-            )
-            dead: List[WebSocket] = []
-            for ws in clients:
-                try:
-                    await ws.send_text(payload)
-                except Exception:
-                    dead.append(ws)
-            for ws in dead:
-                if ws in clients:
-                    clients.remove(ws)
+        frame_debug["status"] = state["status"]
+        frame_debug["axis"] = state.get("axis")
+        frame_debug["axis_status"] = state.get("axis_status")
+        frame_debug["axis_source"] = state.get("axis_source")
+        frame_debug["bad_frames"] = state.get("axis_bad_frames")
+        frame_debug["pending_count"] = state.get("axis_pending_count")
+        frame_debug["pending_candidate"] = state.get("axis_pending_candidate")
+        frame_debug["confidence"] = state.get("axis_confidence")
+        frame_debug["residual_px"] = state.get("axis_residual_px")
+        frame_debug["max_error_px"] = state.get("axis_max_error_px")
+        frame_debug["analysis_sample"] = state.get("analysis_sample")
+        frame_debug["lines"] = state.get("lines") or frame_debug.get("lines", [])
+        state["last_frame"] = frame_debug
+        audit_record = build_frame_record(
+            session_id=TRACE_SESSION_ID,
+            seq=seq,
+            status=str(state.get("status") or ""),
+            labels=frame_debug.get("labels"),
+            axis_fit=frame_debug.get("axis_fit"),
+            axis=state.get("axis"),
+            lines=state.get("lines") or frame_debug.get("lines", []),
+        )
+        _append_trace_line(audit_record)
+        frame_ctx["axis_status"] = state.get("axis_status")
+        frame_ctx["axis_source"] = state.get("axis_source")
+        _drop_put_latest(ocr_frame_queue, frame_ctx)
 
         elapsed = time.monotonic() - t0
         await asyncio.sleep(max(0.0, REFRESH_MS / 1000 - elapsed))
+
+
+async def render_loop():
+    while True:
+        frame = await ocr_frame_queue.get()
+        if _should_skip_render(frame):
+            continue
+        render = _build_render_context(frame)
+        state["lines"] = render["lines"]
+        if render.get("status"):
+            state["status"] = str(render["status"])
+        _drop_put_latest(render_frame_queue, {"status": state.get("status"), "ts": state.get("last_update")})
+
+
+async def publish_loop():
+    while True:
+        await render_frame_queue.get()
+        if not clients:
+            continue
+        payload_data = _build_overlay_update_data()
+        if not _should_publish_overlay_update(payload_data):
+            continue
+        payload = json.dumps({"type": "overlay_update", "data": payload_data})
+        dead: List[WebSocket] = []
+        for ws in clients:
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            if ws in clients:
+                clients.remove(ws)
 
 
 @app.websocket("/ws")
@@ -860,16 +1617,7 @@ async def ws_endpoint(websocket: WebSocket):
         json.dumps(
             {
                 "type": "overlay_update",
-                "data": {
-                    "lines": state["lines"],
-                    "status": state["status"],
-                    "y_min": state["y_min"],
-                    "y_max": state["y_max"],
-                    "axis_deltas": state.get("axis_deltas"),
-                    "axis_diagnostics": state.get("axis_diagnostics"),
-                    "analysis_roi": state.get("analysis_roi"),
-                    "analysis_sample": state.get("analysis_sample"),
-                },
+                "data": _build_overlay_update_data(),
             }
         )
     )
@@ -895,7 +1643,7 @@ async def set_positions(body: PositionsUpdate):
         _apply_targets(
             [{"value": float(p), "label": ""} for p in body.positions]
         )
-    return {"ok": True, "targets": state["targets"], "positions": state["positions"]}
+    return _api_ok("positions", targets=state["targets"], positions=state["positions"])
 
 
 @app.post("/analysis_roi")
@@ -910,25 +1658,219 @@ async def set_analysis_roi(body: AnalysisRoiBody):
             "width": max(1, int(body.rect.width)),
             "height": max(1, int(body.rect.height)),
         }
-    return {"ok": True, "analysis_roi": state["analysis_roi"]}
+    return _api_ok("analysis_roi", analysis_roi=state["analysis_roi"])
+
+
+@app.post("/recalibrate")
+async def recalibrate_axis():
+    """Invalida EMA do eixo e suavização de Y; próxima leitura reancora ao frame atual."""
+    state.pop("_axis_ema", None)
+    state.pop("_axis_jump_count", None)
+    state.pop("_line_y_smooth", None)
+    state.pop("_smooth_key", None)
+    axis_manager.last_stable_axis = None
+    axis_manager.bad_frames = 0
+    axis_manager.clear_manual_axis()
+    axis_manager.status = "RECALIBRATING"
+    state["axis_pending_count"] = 0
+    state["axis_pending_candidate"] = None
+    state["axis_confidence"] = 0.0
+    state["axis_residual_px"] = 0.0
+    state["axis_max_error_px"] = 0.0
+    return _api_ok(
+        "recalibrate",
+        message="axis_and_line_smoothing_reset",
+        axis_status=axis_manager.status,
+        axis_source=state.get("axis_source"),
+        bad_frames=state.get("axis_bad_frames"),
+    )
+
+
+@app.post("/api/ocr-overlay/recalibrate")
+async def recalibrate_axis_api():
+    return await recalibrate_axis()
+
+
+@app.post("/freeze")
+async def freeze_axis():
+    axis_manager.freeze()
+    return _api_ok(
+        "freeze",
+        message="axis_frozen",
+        axis_status=axis_manager.status,
+        axis_source=state.get("axis_source"),
+        bad_frames=state.get("axis_bad_frames"),
+    )
+
+
+@app.post("/api/ocr-overlay/freeze")
+async def freeze_axis_api():
+    return await freeze_axis()
+
+
+@app.post("/unfreeze")
+async def unfreeze_axis():
+    axis_manager.unfreeze()
+    return _api_ok(
+        "unfreeze",
+        message="axis_unfrozen",
+        axis_status=axis_manager.status,
+        axis_source=state.get("axis_source"),
+        bad_frames=state.get("axis_bad_frames"),
+    )
+
+
+@app.post("/api/ocr-overlay/unfreeze")
+async def unfreeze_axis_api():
+    return await unfreeze_axis()
+
+
+@app.post("/manual_calibration")
+async def manual_calibration(body: ManualAxisBody):
+    axis = _build_axis_from_manual_points(body.points)
+    if axis is None:
+        raw_points = [{"value": float(p.value), "y_screen": float(p.y_screen)} for p in body.points]
+        return _api_error(
+            "manual_calibration",
+            "manual_axis_invalid_points",
+            "manual_calibration_requires_two_distinct_points",
+            points_count=len(body.points),
+            points_preview=raw_points[:2],
+        )
+    state.pop("_axis_ema", None)
+    state.pop("_axis_jump_count", None)
+    state.pop("_line_y_smooth", None)
+    state.pop("_smooth_key", None)
+    axis_manager.set_manual_axis(axis)
+    state["axis"] = {
+        "slope": float(axis["slope"]),
+        "intercept": float(axis["intercept"]),
+        "value_per_px": float(axis["value_per_px"]),
+    }
+    state["axis_status"] = axis_manager.status
+    state["axis_source"] = "manual"
+    state["axis_bad_frames"] = axis_manager.bad_frames
+    state["axis_pending_count"] = axis_manager.pending_count
+    state["axis_pending_candidate"] = axis_manager.pending_candidate
+    state["axis_confidence"] = 1.0
+    state["axis_residual_px"] = 0.0
+    state["axis_max_error_px"] = 0.0
+    return _api_ok(
+        "manual_calibration",
+        message="manual_axis_applied",
+        axis_status=axis_manager.status,
+        axis_source=state.get("axis_source"),
+        bad_frames=state.get("axis_bad_frames"),
+    )
+
+
+@app.post("/api/ocr-overlay/manual-calibration")
+async def manual_calibration_api(body: ManualAxisBody):
+    return await manual_calibration(body)
+
+
+@app.get("/debug")
+async def get_debug():
+    try:
+        overlay_update = _build_overlay_update_data()
+        return _api_ok(
+            "debug",
+            status=state["status"],
+            last_frame=state.get("last_frame"),
+            axis_status=state.get("axis_status"),
+            axis_source=state.get("axis_source"),
+            bad_frames=state.get("axis_bad_frames"),
+            pending_count=state.get("axis_pending_count"),
+            pending_candidate=state.get("axis_pending_candidate"),
+            confidence=state.get("axis_confidence"),
+            residual_px=state.get("axis_residual_px"),
+            max_error_px=state.get("axis_max_error_px"),
+            axis=state.get("axis"),
+            chart_rect=state.get("chart_rect"),
+            axis_labels=state.get("axis_labels"),
+            axis_diagnostics=state.get("axis_diagnostics"),
+            analysis_roi=state.get("analysis_roi"),
+            analysis_sample=state.get("analysis_sample"),
+            debug_visual=overlay_update.get("debug_visual"),
+            overlay_update=overlay_update,
+        )
+    except Exception as exc:
+        return _api_error(
+            "debug",
+            "debug_payload_build_failed",
+            "failed_to_build_debug_payload",
+            exception=str(exc),
+            has_last_frame=state.get("last_frame") is not None,
+        )
+
+
+@app.get("/api/ocr-overlay/debug")
+async def get_debug_api():
+    return await get_debug()
 
 
 @app.get("/status")
 async def get_status():
-    return {
-        "status": state["status"],
-        "targets": state["targets"],
-        "positions": state["positions"],
-        "lines": state["lines"],
-        "y_min": state["y_min"],
-        "y_max": state["y_max"],
-        "axis_deltas": state.get("axis_deltas"),
-        "axis_diagnostics": state.get("axis_diagnostics"),
-        "dpi_scale": state["dpi_scale"],
-        "last_update": state["last_update"],
-        "analysis_roi": state.get("analysis_roi"),
-        "analysis_sample": state.get("analysis_sample"),
-    }
+    try:
+        overlay_update = _build_overlay_update_data()
+        return _api_ok(
+            "status",
+            status=state["status"],
+            targets=state["targets"],
+            positions=state["positions"],
+            lines=state["lines"],
+            y_min=state["y_min"],
+            y_max=state["y_max"],
+            chart_rect=state.get("chart_rect"),
+            axis_labels=state.get("axis_labels"),
+            axis=state.get("axis"),
+            axis_deltas=state.get("axis_deltas"),
+            axis_diagnostics=state.get("axis_diagnostics"),
+            axis_status=state.get("axis_status"),
+            axis_source=state.get("axis_source"),
+            bad_frames=state.get("axis_bad_frames"),
+            pending_count=state.get("axis_pending_count"),
+            pending_candidate=state.get("axis_pending_candidate"),
+            confidence=state.get("axis_confidence"),
+            residual_px=state.get("axis_residual_px"),
+            max_error_px=state.get("axis_max_error_px"),
+            dpi_scale=state["dpi_scale"],
+            last_update=state["last_update"],
+            analysis_roi=state.get("analysis_roi"),
+            analysis_sample=state.get("analysis_sample"),
+            debug_visual=overlay_update.get("debug_visual"),
+            overlay_update=overlay_update,
+        )
+    except Exception as exc:
+        return _api_error(
+            "status",
+            "status_payload_build_failed",
+            "failed_to_build_status_payload",
+            exception=str(exc),
+            targets_count=len(state.get("targets") or []),
+            lines_count=len(state.get("lines") or []),
+        )
+
+
+@app.get("/api/ocr-overlay/status")
+async def get_status_api():
+    return await get_status()
+
+
+@app.get("/config")
+async def get_config():
+    return _api_ok(
+        "config",
+        refresh_ms=REFRESH_MS,
+        ws_publish_min_ms=WS_PUBLISH_MIN_MS,
+        axis_max_bad_frames=AXIS_MAX_BAD_FRAMES,
+        line_y_smooth_alpha=LINE_Y_SMOOTH_ALPHA,
+        line_y_snap_px=LINE_Y_SNAP_PX,
+        line_y_deadband_px=LINE_Y_DEADBAND_PX,
+        axis_blend_beta=AXIS_BLEND_BETA,
+        axis_warmup_secs=AXIS_WARMUP_SECS,
+        min_conf=MIN_CONF,
+    )
 
 
 if __name__ == "__main__":

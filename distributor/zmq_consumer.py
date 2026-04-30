@@ -5,7 +5,8 @@ import json
 import logging
 import os
 import threading
-from typing import Optional
+import time
+from typing import FrozenSet, Optional
 from urllib.parse import urlparse
 
 import zmq
@@ -30,6 +31,8 @@ class ZmqConsumer:
         queue: asyncio.Queue[str],
         dom_soft_limit_pct: int = 70,
         allowed_ips_raw: Optional[str] = None,
+        *,
+        market_type_allowlist: Optional[FrozenSet[str]] = None,
     ) -> None:
         self._address = address
         self._queue = queue
@@ -49,6 +52,17 @@ class ZmqConsumer:
             if allowed_ips_raw is not None
             else os.environ.get("ZMQ_ALLOWED_IPS", "").strip() or None
         )
+        self._market_type_allowlist: Optional[FrozenSet[str]] = market_type_allowlist
+
+    @staticmethod
+    def _topic_and_type(raw: str) -> tuple[str, str]:
+        try:
+            msg = json.loads(raw)
+            if isinstance(msg, dict):
+                return str(msg.get("topic", "")), str(msg.get("type", ""))
+        except json.JSONDecodeError:
+            pass
+        return "", ""
 
     @staticmethod
     def _message_type(raw: str) -> str:
@@ -109,9 +123,21 @@ class ZmqConsumer:
 
     def _put_msg(self, raw: str) -> None:
         """Put message in queue with trade-preserving drop policy."""
-        msg_type = self._message_type(raw)
+        if self._market_type_allowlist is not None:
+            topic, typ = self._topic_and_type(raw)
+            if topic == "alert":
+                msg_type = typ or "alert"
+            elif topic == "market":
+                if typ not in self._market_type_allowlist:
+                    return
+                msg_type = typ
+            else:
+                return
+        else:
+            msg_type = self._message_type(raw)
         is_dom = msg_type == "dom_snapshot"
         is_trade_like = msg_type in ("trade", "flow_inversion")
+        is_vp_ti = msg_type in ("volume_profile", "tape_intelligence")
         is_low_priority = self._is_low_priority_type(msg_type)
 
         # Prevent queue growth into runaway latency: drop low-priority frames early.
@@ -153,7 +179,7 @@ class ZmqConsumer:
                         self._dropped_low_priority,
                     )
                 return
-            if is_trade_like and self._evict_one_dom_snapshot():
+            if (is_trade_like or is_vp_ti) and self._evict_one_dom_snapshot():
                 try:
                     self._queue.put_nowait(raw)
                     self._rescued_trades += 1
@@ -188,39 +214,71 @@ class ZmqConsumer:
             logger.error("ZMQ egress bloqueado por ZMQ_ALLOWED_IPS: %s", exc)
             return False
 
+    def _allow_raw_fast(self, raw: str) -> bool:
+        """Fast pre-filter in socket thread to avoid flooding the event loop."""
+        if self._market_type_allowlist is None:
+            return True
+        # Accept alert frames without expensive JSON parse.
+        if '"topic":"alert"' in raw or '"topic": "alert"' in raw:
+            return True
+        if '"topic":"market"' not in raw and '"topic": "market"' not in raw:
+            return False
+        for typ in self._market_type_allowlist:
+            token_compact = f'"type":"{typ}"'
+            token_spaced = f'"type": "{typ}"'
+            if token_compact in raw or token_spaced in raw:
+                return True
+        return False
+
     def _run(self) -> None:
-        """Loop in dedicated thread: receive from ZMQ, push to queue."""
+        """Loop in dedicated thread: receive from ZMQ, push to queue; reconecta se a ligacao cair."""
         if not self._check_egress_allowlist():
             logger.error("ZMQ consumer aborted: endpoint bloqueado por allowlist (ZMQ_ALLOWED_IPS).")
             return
 
-        ctx = zmq.Context()
-        sock = ctx.socket(zmq.SUB)
-        sock.setsockopt(zmq.RCVTIMEO, RCVTIMEO_MS)
-        try:
-            sock.connect(self._address)
-            sock.setsockopt_string(zmq.SUBSCRIBE, "")  # subscribe to all
-        except zmq.ZMQError as e:
-            logger.error("ZMQ connect failed: %s", e)
-            sock.close()
-            ctx.term()
-            return
-
-        try:
-            loop = self._loop
-            while not self._stop_event.is_set():
-                try:
-                    raw = sock.recv_string()
-                    if loop is not None:
-                        loop.call_soon_threadsafe(self._put_msg, raw)
-                    else:
-                        self._put_msg(raw)
-                except zmq.Again:
-                    continue
-                except zmq.ZMQError as e:
-                    logger.warning("ZMQ recv error: %s", e)
+        loop = self._loop
+        reconnect_s = 0.5
+        max_reconnect_s = 20.0
+        while not self._stop_event.is_set():
+            ctx = zmq.Context()
+            sock = ctx.socket(zmq.SUB)
+            sock.setsockopt(zmq.RCVTIMEO, RCVTIMEO_MS)
+            try:
+                sock.connect(self._address)
+                sock.setsockopt_string(zmq.SUBSCRIBE, "")  # subscribe to all
+            except zmq.ZMQError as e:
+                logger.error("ZMQ connect failed: %s", e)
+                sock.close()
+                ctx.term()
+                if self._stop_event.is_set():
                     break
-        finally:
-            sock.close()
-            ctx.term()
-            logger.info("ZMQ consumer stopped")
+                time.sleep(min(reconnect_s, max_reconnect_s))
+                reconnect_s = min(reconnect_s * 1.4, max_reconnect_s)
+                continue
+
+            reconnect_s = 0.5
+            try:
+                while not self._stop_event.is_set():
+                    try:
+                        raw = sock.recv_string()
+                        if not self._allow_raw_fast(raw):
+                            continue
+                        if loop is not None:
+                            loop.call_soon_threadsafe(self._put_msg, raw)
+                        else:
+                            self._put_msg(raw)
+                    except zmq.Again:
+                        continue
+                    except zmq.ZMQError as e:
+                        logger.warning("ZMQ recv error: %s", e)
+                        break
+            finally:
+                sock.close()
+                ctx.term()
+
+            if not self._stop_event.is_set():
+                logger.info("ZMQ desligado de %s; reconexao em %.1fs", self._address, reconnect_s)
+                time.sleep(reconnect_s)
+                reconnect_s = min(reconnect_s * 1.4, max_reconnect_s)
+
+        logger.info("ZMQ consumer stopped")

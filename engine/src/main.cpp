@@ -387,12 +387,15 @@ int main(int argc, char* argv[]) {
     }
 
     asset_controller::AssetController asset_ctrl;
+    asset_ctrl.set_vp_period_handler([&pub](const std::string& per) {
+        return pub.apply_volume_profile_period_name(per);
+    });
     asset_ctrl.start(5556);
 
     mock_feed::MockFeed mock_feed(queue);
 
     std::cout << "Engine running. ZMQ at " << config::zmq_address << std::endl;
-    std::cout << "Asset control on 127.0.0.1:5556 (SWITCH\\tTICKER\\tBOLSA)" << std::endl;
+    std::cout << "Asset control on 127.0.0.1:5556 (SWITCH\\tTICKER\\tBOLSA; VP_PERIOD\\tday|week|manual)" << std::endl;
     if (live_subscription_active) {
         std::cout << "Subscribed to " << ticker << " " << bolsa << std::endl;
     } else {

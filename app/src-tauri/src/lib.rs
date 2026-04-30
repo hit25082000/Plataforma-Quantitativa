@@ -15,6 +15,7 @@ pub fn run() {
             commands::spawn_distributor,
             commands::kill_services,
             commands::check_health,
+            commands::get_distributor_health,
             commands::get_config_path,
             commands::read_config,
             commands::write_config,
@@ -25,6 +26,7 @@ pub fn run() {
             commands::sync_renko_brick_to_distributor,
             commands::set_ifr_series,
             commands::sync_ifr_series_to_distributor,
+            commands::set_vp_period,
             commands::open_log_folder,
             commands::create_widget_window,
             commands::open_profit_overlay,
@@ -37,6 +39,10 @@ pub fn run() {
             commands::agent007_chat_invoke,
             commands::collect_diagnostics_bundle,
             commands::get_ocr_runtime_port,
+            commands::recalibrate_profit_ocr,
+            commands::freeze_profit_ocr,
+            commands::unfreeze_profit_ocr,
+            commands::manual_calibrate_profit_ocr,
         ])
         .setup(|app| {
             shared_memory_ipc::start_reader(app.handle().clone());
@@ -65,18 +71,27 @@ pub fn run() {
                     let _ = commands::persist_widget_windows(handle).await;
                 });
                 // Kill engine
-                if let Ok(mut engine) = app_handle.state::<commands::ChildProcesses>().engine.lock() {
+                if let Ok(mut engine) = app_handle.state::<commands::ChildProcesses>().engine.lock()
+                {
                     if let Some(mut child) = engine.take() {
                         let _ = child.kill();
                     }
                 }
                 // Kill distributor
-                if let Ok(mut dist) = app_handle.state::<commands::ChildProcesses>().distributor.lock() {
+                if let Ok(mut dist) = app_handle
+                    .state::<commands::ChildProcesses>()
+                    .distributor
+                    .lock()
+                {
                     if let Some(mut child) = dist.take() {
                         let _ = child.kill();
                     }
                 }
-                if let Ok(mut ocr) = app_handle.state::<commands::ChildProcesses>().profit_ocr.lock() {
+                if let Ok(mut ocr) = app_handle
+                    .state::<commands::ChildProcesses>()
+                    .profit_ocr
+                    .lock()
+                {
                     if let Some(mut child) = ocr.take() {
                         let _ = child.kill();
                     }

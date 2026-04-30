@@ -237,6 +237,11 @@ try {
 
     # Start distributor (Python) so WS :8000 is up when Vite/Tauri load (evita ECONNREFUSED no proxy)
     Write-Host "=== Iniciando distributor (em background) ===" -ForegroundColor Cyan
+    if ([string]::IsNullOrWhiteSpace($env:SHM_ENABLED)) { $env:SHM_ENABLED = "1" }
+    if ([string]::IsNullOrWhiteSpace($env:IPC_MODE)) { $env:IPC_MODE = "shm" }
+    if ([string]::IsNullOrWhiteSpace($env:SHM_FALLBACK_PROBE_TIMEOUT_MS)) {
+        $env:SHM_FALLBACK_PROBE_TIMEOUT_MS = "120000"
+    }
     $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
     Start-Sleep -Milliseconds 1200
 

@@ -1,0 +1,92 @@
+{
+  "runner": "run_overlay_stability_pipeline.py",
+  "started_at_epoch_s": 1777494786.5496016,
+  "finished_at_epoch_s": 1777494812.579155,
+  "overall_ok": false,
+  "steps": [
+    {
+      "id": "ovr_stab_qa_evidence",
+      "script": "scripts/run_ovr_stab_qa_evidence.py",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\scripts\\run_ovr_stab_qa_evidence.py",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_qa_evidence"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 12.665,
+      "status": "ok",
+      "step_dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_qa_evidence",
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_qa_evidence\\stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_qa_evidence\\stderr.log",
+      "manifest_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_qa_evidence\\summary.manifest.json",
+      "manifest_found": true,
+      "manifest_parse_error": "",
+      "manifest_overall_ok": true
+    },
+    {
+      "id": "ovr_stab_field_qa",
+      "script": "scripts/run_ovr_stab_field_qa.py",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\scripts\\run_ovr_stab_field_qa.py",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_field_qa"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 6.553,
+      "status": "fail",
+      "step_dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_field_qa",
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_field_qa\\stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_field_qa\\stderr.log",
+      "manifest_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ovr_stab_field_qa\\qa_session.manifest.json",
+      "manifest_found": true,
+      "manifest_parse_error": "",
+      "manifest_overall_ok": false
+    },
+    {
+      "id": "ocr_overlay_prerelease_sanity",
+      "script": "scripts/run_ocr_overlay_prerelease_sanity.py",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\scripts\\run_ocr_overlay_prerelease_sanity.py",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ocr_overlay_prerelease_sanity"
+      ],
+      "exit_code": 2,
+      "elapsed_s": 0.236,
+      "status": "fail",
+      "step_dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ocr_overlay_prerelease_sanity",
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ocr_overlay_prerelease_sanity\\stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ocr_overlay_prerelease_sanity\\stderr.log",
+      "manifest_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\ocr_overlay_prerelease_sanity\\report.manifest.json",
+      "manifest_found": false,
+      "manifest_parse_error": "",
+      "manifest_overall_ok": false
+    },
+    {
+      "id": "overlay_ws_stress_regression",
+      "script": "scripts/run_overlay_ws_stress_regression.py",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\scripts\\run_overlay_ws_stress_regression.py",
+        "--out-dir",
+        "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\overlay_ws_stress_regression"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 6.52,
+      "status": "ok",
+      "step_dir": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\overlay_ws_stress_regression",
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\overlay_ws_stress_regression\\stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\overlay_ws_stress_regression\\stderr.log",
+      "manifest_path": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\steps\\overlay_ws_stress_regression\\summary.manifest.json",
+      "manifest_found": true,
+      "manifest_parse_error": "",
+      "manifest_overall_ok": true
+    }
+  ],
+  "artifacts": {
+    "pipeline_report_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\pipeline_report.md",
+    "pipeline_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163306\\pipeline_manifest.json"
+  }
+}

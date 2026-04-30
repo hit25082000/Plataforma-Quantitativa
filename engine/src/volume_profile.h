@@ -21,8 +21,9 @@ enum class Period {
 struct LevelAcc {
     uint64_t bid_vol = 0;
     uint64_t ask_vol = 0;
+    uint64_t neutral_vol = 0;
 
-    uint64_t total() const { return bid_vol + ask_vol; }
+    uint64_t total() const { return bid_vol + ask_vol + neutral_vol; }
 };
 
 struct LevelSnapshot {
@@ -30,6 +31,7 @@ struct LevelSnapshot {
     uint64_t total_vol = 0;
     uint64_t bid_vol = 0;
     uint64_t ask_vol = 0;
+    uint64_t neutral_vol = 0;
     double   pct_of_max = 0.0;
 };
 

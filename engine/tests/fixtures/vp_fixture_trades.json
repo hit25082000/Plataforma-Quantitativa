@@ -1,0 +1,41 @@
+{
+  "name": "vp_tie_reset_and_value_area",
+  "price_step": 5,
+  "period": "day",
+  "trades": [
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 100.0,
+      "qty": 30,
+      "trade_type": "buy_aggression"
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 105.0,
+      "qty": 30,
+      "trade_type": "sell_aggression"
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 110.0,
+      "qty": 10,
+      "trade_type": "buy_aggression"
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-26",
+      "price": 115.0,
+      "qty": 15,
+      "trade_type": "buy_aggression"
+    }
+  ],
+  "assertions": {
+    "tie_break_highest_price_on_first_day": 105.0,
+    "value_area_rule": "vah >= poc >= val",
+    "reset_on_trade_date_change": true,
+    "total_vol_after_reset": 15
+  }
+}

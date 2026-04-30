@@ -1,5 +1,6 @@
 """Stats logger: append CSV lines for alert, trade, flow_inversion."""
 
+import atexit
 import csv
 import logging
 import os
@@ -26,6 +27,7 @@ class StatsLogger:
         self._flush_every_ms = int(os.environ.get("STATS_FLUSH_EVERY_MS", "1000"))
         self._rows_since_flush = 0
         self._last_flush_ms = int(time.monotonic() * 1000)
+        atexit.register(self.close)
 
     def _ensure_file(self) -> None:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -108,3 +110,14 @@ class StatsLogger:
                 self._writer.writerow(self._row(msg))
                 self._rows_since_flush += 1
                 self._maybe_flush()
+
+    def close(self) -> None:
+        if self._file_handle is None:
+            return
+        try:
+            self._file_handle.flush()
+            self._file_handle.close()
+        except Exception:
+            pass
+        self._file_handle = None
+        self._writer = None

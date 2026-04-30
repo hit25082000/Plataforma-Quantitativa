@@ -12,7 +12,7 @@ ZMQ_SYNC_ADDRESS = "tcp://localhost:5557"
 IPC_MODE = (os.environ.get("IPC_MODE") or "zmq").strip().lower()
 SHM_MAPPING_NAME = (os.environ.get("SHM_MAPPING_NAME") or "Local\\PQMarketDataV1").strip()
 SHM_SIZE_MB = int(os.environ.get("SHM_SIZE_MB", "64"))
-SHM_FALLBACK_PROBE_TIMEOUT_MS = int(os.environ.get("SHM_FALLBACK_PROBE_TIMEOUT_MS", "3000"))
+SHM_FALLBACK_PROBE_TIMEOUT_MS = int(os.environ.get("SHM_FALLBACK_PROBE_TIMEOUT_MS", "90000"))
 SHM_FALLBACK_PROBE_INTERVAL_MS = int(os.environ.get("SHM_FALLBACK_PROBE_INTERVAL_MS", "200"))
 WS_PORT = int(os.environ.get("WS_PORT", "8000"))
 WS_HOST = "127.0.0.1"  # apenas localhost (single machine)
@@ -25,6 +25,9 @@ MARKET_QUEUE_DOM_SOFT_LIMIT_PCT = int(
 )
 ROUTER_METRICS_LOG_EVERY_MS = int(os.environ.get("ROUTER_METRICS_LOG_EVERY_MS", "5000"))
 BROKER_SNAPSHOT_EVERY_MS = int(os.environ.get("BROKER_SNAPSHOT_EVERY_MS", "1000"))
+UI_SNAPSHOT_INTERVAL_MS = int(os.environ.get("UI_SNAPSHOT_INTERVAL_MS", "50"))
+UI_TRADE_BATCH_MAX_ITEMS = int(os.environ.get("UI_TRADE_BATCH_MAX_ITEMS", "200"))
+UI_CLIENT_QUEUE_MAXSIZE = int(os.environ.get("UI_CLIENT_QUEUE_MAXSIZE", "1"))
 
 # Agente 007 (ver distributor/agent_007.py)
 _weis_mode = (os.environ.get("AGENT007_WEIS_MODE") or "proxy").strip().lower()

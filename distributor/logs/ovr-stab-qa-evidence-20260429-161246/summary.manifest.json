@@ -1,0 +1,115 @@
+{
+  "started_at_epoch_s": 1777493567.0011427,
+  "finished_at_epoch_s": 1777493581.7965696,
+  "overall_ok": true,
+  "runner": "run_ovr_stab_qa_evidence.py",
+  "scope": "local-tests-no-profit-session",
+  "results": [
+    {
+      "id": "qa_axis_overlay_contract",
+      "ovr": [
+        "OVR-STAB-QA-01",
+        "OVR-STAB-QA-03",
+        "OVR-STAB-OBS-09"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "elapsed_s": 3.684,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_axis_overlay_contract.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_axis_overlay_contract.stderr.log",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "-m",
+        "unittest",
+        "distributor.tests.test_profit_ocr_service"
+      ]
+    },
+    {
+      "id": "qa_overlay_proxy_endpoints",
+      "ovr": [
+        "OVR-STAB-QA-02",
+        "OVR-STAB-OBS-09"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "elapsed_s": 10.586,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_overlay_proxy_endpoints.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_overlay_proxy_endpoints.stderr.log",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "-m",
+        "unittest",
+        "distributor.tests.test_websocket_vp_overlay_endpoints"
+      ]
+    },
+    {
+      "id": "qa_enrich_overlay_axis_health",
+      "ovr": [
+        "OVR-STAB-QA-01",
+        "OVR-STAB-QA-05",
+        "OVR-STAB-OBS-09"
+      ],
+      "ok": true,
+      "exit_code": 0,
+      "elapsed_s": 0.517,
+      "stdout_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_enrich_overlay_axis_health.stdout.log",
+      "stderr_log": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\qa_enrich_overlay_axis_health.stderr.log",
+      "command": [
+        "C:\\Python313\\python.exe",
+        "-m",
+        "unittest",
+        "distributor.tests.test_vp_ocr_enrich"
+      ]
+    }
+  ],
+  "ovr_status": {
+    "OVR-STAB-QA-01": {
+      "state": "partial-done",
+      "coverage": "local-tests-mocked",
+      "suites": [
+        "qa_axis_overlay_contract",
+        "qa_enrich_overlay_axis_health"
+      ]
+    },
+    "OVR-STAB-QA-02": {
+      "state": "partial-done",
+      "coverage": "local-tests-mocked",
+      "suites": [
+        "qa_overlay_proxy_endpoints"
+      ]
+    },
+    "OVR-STAB-QA-03": {
+      "state": "partial-done",
+      "coverage": "local-tests-mocked",
+      "suites": [
+        "qa_axis_overlay_contract"
+      ]
+    },
+    "OVR-STAB-QA-04": {
+      "state": "not-covered",
+      "coverage": "none",
+      "suites": []
+    },
+    "OVR-STAB-QA-05": {
+      "state": "partial-done",
+      "coverage": "local-tests-mocked",
+      "suites": [
+        "qa_enrich_overlay_axis_health"
+      ]
+    },
+    "OVR-STAB-OBS-09": {
+      "state": "partial-done",
+      "coverage": "local-tests-mocked",
+      "suites": [
+        "qa_axis_overlay_contract",
+        "qa_overlay_proxy_endpoints",
+        "qa_enrich_overlay_axis_health"
+      ]
+    }
+  },
+  "artifacts": {
+    "summary_csv": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\summary.csv",
+    "summary_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\summary.md",
+    "summary_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\ovr-stab-qa-evidence-20260429-161246\\summary.manifest.json"
+  }
+}

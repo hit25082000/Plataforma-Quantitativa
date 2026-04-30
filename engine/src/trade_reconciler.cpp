@@ -40,6 +40,8 @@ TradeReconciler::ApplyResult TradeReconciler::apply(const event_bus::TradeEvent&
     auto it = seen_.find(out.key);
     if (it == seen_.end()) {
         seen_.emplace(out.key, incoming);
+        seen_order_.push_back(out.key);
+        prune_seen_if_needed();
         out.accepted = true;
         if (out.is_edit) stats_.edits_applied++;
         return out;
@@ -59,7 +61,16 @@ TradeReconciler::ApplyResult TradeReconciler::apply(const event_bus::TradeEvent&
 
 void TradeReconciler::reset() {
     seen_.clear();
+    seen_order_.clear();
     stats_ = Stats{};
+}
+
+void TradeReconciler::prune_seen_if_needed() {
+    while (seen_order_.size() > kMaxSeen) {
+        const std::string evict = std::move(seen_order_.front());
+        seen_order_.pop_front();
+        seen_.erase(evict);
+    }
 }
 
 std::string TradeReconciler::make_key(const event_bus::TradeEvent& ev) const {

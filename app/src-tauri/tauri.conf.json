@@ -83,6 +83,7 @@
     },
     "resources": [
       "resources/profit_ocr_service.py",
+      "resources/ocr_overlay_audit.py",
       "resources/profit_ocr_service.exe",
       "resources/engine.exe",
       "resources/distributor.exe",

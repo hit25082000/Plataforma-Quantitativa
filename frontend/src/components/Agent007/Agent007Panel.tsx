@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { distributorApiBase } from "../../config/distributorApi";
 import { useMarketStore } from "../../store/marketStore";
 import { formatPrice } from "../../utils/formatters";
@@ -39,7 +40,6 @@ export function Agent007Panel() {
     const payload = nextLines.map((m) => ({ role: m.role, content: m.content }));
     try {
       if (isTauri()) {
-        const { invoke } = await import("@tauri-apps/api/core");
         const data = await invoke<{
           ok: boolean;
           reply?: string;

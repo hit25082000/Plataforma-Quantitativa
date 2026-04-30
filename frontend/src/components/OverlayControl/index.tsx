@@ -32,6 +32,7 @@ export default function OverlayControl() {
   } = useProfitOverlay();
 
   const [newValue, setNewValue] = useState("");
+  const [manualValueHint, setManualValueHint] = useState<string | null>(null);
   const [roiFeedback, setRoiFeedback] = useState<string | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const lastRoiKeyRef = useRef<string | null>(null);
@@ -44,16 +45,25 @@ export default function OverlayControl() {
 
   const handleAdd = () => {
     const val = parseFloat(newValue.replace(",", "."));
-    if (!isNaN(val)) {
-      addPosition(val);
-      setNewValue("");
-      inputRef.current?.focus();
+    if (isNaN(val)) {
+      setManualValueHint("Informe um preço numérico válido.");
+      return;
     }
+    if (!Number.isFinite(val) || val <= 0) {
+      setManualValueHint("O preço manual deve ser maior que zero.");
+      return;
+    }
+    addPosition(val);
+    setNewValue("");
+    setManualValueHint(null);
+    inputRef.current?.focus();
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter") handleAdd();
   };
+  const parsedManualValue = parseFloat(newValue.replace(",", "."));
+  const canAddManualValue = Number.isFinite(parsedManualValue) && parsedManualValue > 0;
 
   const statusColor = activating ? "#FFB800" : overlayStatusColor(status);
   const statusText = activating
@@ -237,14 +247,28 @@ export default function OverlayControl() {
           step={POSITION_STEP}
           placeholder="Ex: 100"
           value={newValue}
-          onChange={(e) => setNewValue(e.target.value)}
+          onChange={(e) => {
+            setNewValue(e.target.value);
+            if (manualValueHint) setManualValueHint(null);
+          }}
           onKeyDown={handleKeyDown}
           style={styles.addInput}
         />
-        <button type="button" onClick={handleAdd} style={styles.addBtn}>
+        <button
+          type="button"
+          disabled={!canAddManualValue}
+          onClick={handleAdd}
+          style={{
+            ...styles.addBtn,
+            opacity: canAddManualValue ? 1 : 0.45,
+            cursor: canAddManualValue ? "pointer" : "not-allowed",
+          }}
+          title={canAddManualValue ? undefined : "Digite um preço manual válido (> 0)"}
+        >
           + Adicionar
         </button>
       </div>
+      {manualValueHint ? <div style={styles.warnHint}>{manualValueHint}</div> : null}
     </div>
   );
 }

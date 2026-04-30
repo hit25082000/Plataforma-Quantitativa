@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/vp-overlay-v1.json",
+  "title": "vp_overlay",
+  "version": "1.0.0",
+  "type": "object",
+  "required": [
+    "topic",
+    "type",
+    "version",
+    "symbol",
+    "scope",
+    "sequence",
+    "updated_at",
+    "poc",
+    "val",
+    "vah",
+    "levels",
+    "top_player_avg_lines",
+    "display",
+    "health"
+  ],
+  "properties": {
+    "topic": { "type": "string", "const": "market" },
+    "type": { "type": "string", "const": "vp_overlay" },
+    "version": { "type": "integer", "const": 1 },
+    "symbol": { "type": "string", "minLength": 1 },
+    "scope": { "type": "string", "enum": ["session", "day", "week", "manual"] },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "updated_at": { "type": "number" },
+    "poc": { "$ref": "#/$defs/anchor" },
+    "val": { "$ref": "#/$defs/anchor" },
+    "vah": { "$ref": "#/$defs/anchor" },
+    "levels": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["price", "total_vol"],
+        "properties": {
+          "price": { "type": "number" },
+          "total_vol": { "type": "integer", "minimum": 0 },
+          "bid_vol": { "type": "integer", "minimum": 0 },
+          "ask_vol": { "type": "integer", "minimum": 0 },
+          "pct_of_max": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      }
+    },
+    "top_player_avg_lines": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/player_avg_line" }
+    },
+    "display": { "$ref": "#/$defs/display" },
+    "health": { "$ref": "#/$defs/health" },
+    "axis": { "$ref": "#/$defs/axis" },
+    "raw_ticker": { "type": "string" },
+    "demo": { "type": "boolean" }
+  },
+  "$defs": {
+    "anchor": {
+      "type": "object",
+      "required": ["price", "player_id", "label"],
+      "properties": {
+        "price": { "type": "number" },
+        "player_id": { "type": "integer" },
+        "label": { "type": "string" },
+        "holder": { "$ref": "#/$defs/holder" },
+        "y": { "type": "number" },
+        "line_color": { "type": "string" }
+      }
+    },
+    "holder": {
+      "type": "object",
+      "required": ["method", "state"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": [
+            "total_volume",
+            "passive_buy_absorption",
+            "passive_sell_absorption",
+            "unconfirmed"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": ["ok", "low_confidence", "unconfirmed"]
+        },
+        "contracts": { "type": "integer", "minimum": 0 },
+        "participation_pct": { "type": "number", "minimum": 0, "maximum": 100 }
+      }
+    },
+    "player_avg_line": {
+      "type": "object",
+      "required": ["player_id", "mode", "avg_price", "label"],
+      "properties": {
+        "player_id": { "type": "integer" },
+        "mode": {
+          "type": "string",
+          "enum": ["total", "buy", "sell", "net"]
+        },
+        "avg_price": { "type": "number" },
+        "label": { "type": "string" },
+        "dashed": { "type": "boolean" }
+      }
+    },
+    "display": {
+      "type": "object",
+      "required": [
+        "overlay_enabled",
+        "poc_visible",
+        "val_vah_visible",
+        "labels_visible",
+        "histogram_visible",
+        "top_avg_visible",
+        "max_avg_lines",
+        "max_histogram_width_px"
+      ],
+      "properties": {
+        "overlay_enabled": { "type": "boolean" },
+        "poc_visible": { "type": "boolean" },
+        "val_vah_visible": { "type": "boolean" },
+        "labels_visible": { "type": "boolean" },
+        "histogram_visible": { "type": "boolean" },
+        "top_avg_visible": { "type": "boolean" },
+        "stretch_lines": { "type": "boolean" },
+        "max_avg_lines": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "max_histogram_width_px": { "type": "integer", "minimum": 0, "maximum": 2048 },
+        "max_visible_histogram_levels": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["data_status"],
+      "properties": {
+        "data_status": {
+          "type": "string",
+          "enum": ["ok", "degraded", "stale", "missing_vp", "missing_tape"]
+        },
+        "axis_stale_ms": { "type": "integer", "minimum": 0 },
+        "last_trade_age_ms": { "type": "integer", "minimum": 0 },
+        "last_overlay_publish_age_ms": { "type": "integer", "minimum": 0 },
+        "last_overlay_publish_age_sec": { "type": "number", "minimum": 0 },
+        "overlay_age_state": { "type": "string", "enum": ["fresh", "stale", "missing"] },
+        "ocr_confidence": { "type": "number", "minimum": 0, "maximum": 1 }
+      }
+    },
+    "axis": {
+      "type": "object",
+      "properties": {
+        "price_min": { "type": "number" },
+        "price_max": { "type": "number" },
+        "slope": { "type": "number" },
+        "intercept": { "type": "number" },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "status": {
+          "type": "string",
+          "enum": ["ok", "stale", "low_confidence", "window_not_found", "axis_not_found"]
+        },
+        "chart_bounds": {
+          "type": "object",
+          "properties": {
+            "left": { "type": "number" },
+            "top": { "type": "number" },
+            "right": { "type": "number" },
+            "bottom": { "type": "number" }
+          }
+        }
+      }
+    }
+  }
+}

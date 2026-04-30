@@ -1,0 +1,93 @@
+{
+  "name": "vp_overlay_passive_absorption_holders",
+  "description": "VAL: venda agressora na regiao da VAL absorvida por comprador passivo dominante. VAH: compra agressora na regiao da VAH absorvida por vendedor passivo dominante. POC: maior volume total na regiao da POC.",
+  "price_step": 5,
+  "region_ticks": { "poc": 0, "val": 2, "vah": 2 },
+  "anchor_prices": {
+    "poc_price": 100000,
+    "vah_price": 100050,
+    "val_price": 99950
+  },
+  "trades": [
+    {
+      "ticker": "WINFUT",
+      "price": 100000,
+      "qty": 500,
+      "trade_type": "buy_aggression",
+      "buy_agent": 7001,
+      "sell_agent": 8001,
+      "note": "POC region — volume total player 7001"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 100000,
+      "qty": 200,
+      "trade_type": "buy_aggression",
+      "buy_agent": 7002,
+      "sell_agent": 8002,
+      "note": "POC — segundo player"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 99950,
+      "qty": 120,
+      "trade_type": "sell_aggression",
+      "buy_agent": 5001,
+      "sell_agent": 9001,
+      "note": "VAL center — buy_absorption +120 em 5001"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 99945,
+      "qty": 80,
+      "trade_type": "sell_aggression",
+      "buy_agent": 5001,
+      "sell_agent": 9002,
+      "note": "VAL region tick -1 — +80 buy_absorption 5001"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 99950,
+      "qty": 50,
+      "trade_type": "sell_aggression",
+      "buy_agent": 5002,
+      "sell_agent": 9003,
+      "note": "VAL — competidor passivo menor"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 100050,
+      "qty": 90,
+      "trade_type": "buy_aggression",
+      "buy_agent": 6001,
+      "sell_agent": 4001,
+      "note": "VAH center — sell_absorption +90 em 4001"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 100055,
+      "qty": 110,
+      "trade_type": "buy_aggression",
+      "buy_agent": 6002,
+      "sell_agent": 4001,
+      "note": "VAH region +1 — +110 sell_absorption 4001"
+    },
+    {
+      "ticker": "WINFUT",
+      "price": 100050,
+      "qty": 40,
+      "trade_type": "buy_aggression",
+      "buy_agent": 6003,
+      "sell_agent": 4002,
+      "note": "VAH — competidor passivo menor"
+    }
+  ],
+  "assertions": {
+    "poc_player": 7001,
+    "val_buyer": 5001,
+    "vah_seller": 4001,
+    "val_buy_absorption_total": 200,
+    "vah_sell_absorption_total": 200,
+    "top3_limit": 3
+  }
+}

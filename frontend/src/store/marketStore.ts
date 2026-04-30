@@ -8,6 +8,7 @@ import type {
   FlowInversionMessage,
   MacdSignalMessage,
   VolumeProfileMessage,
+  TapeIntelligenceMessage,
   SyncMessage,
   TradeMessage,
   WallAddMessage,
@@ -188,6 +189,12 @@ interface MarketStore {
   volumeProfile: VolumeProfileMessage | null;
   updateVolumeProfile: (msg: VolumeProfileMessage) => void;
 
+  tapeIntelligence: TapeIntelligenceMessage | null;
+  updateTapeIntelligence: (msg: TapeIntelligenceMessage) => void;
+
+  vpOverlay: import("../types/messages").VpOverlayMessage | null;
+  updateVpOverlay: (msg: import("../types/messages").VpOverlayMessage) => void;
+
   inSync: boolean;
   syncVariations: Record<string, number>;
   updateSync: (msg: SyncMessage) => void;
@@ -270,6 +277,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       dailyClose: 0,
       dailyVolume: 0,
       volumeProfile: null,
+      vpOverlay: null,
       inSync: true,
       syncVariations: {},
       flowInversions: [],
@@ -280,6 +288,7 @@ export const useMarketStore = create<MarketStore>((set) => ({
       ifrLoadingMessage: "",
       streamingTicker: "",
       lastMarketEventTs: null,
+      overlayLastUpdateTs: null,
     }),
 
   alerts: [],
@@ -463,6 +472,23 @@ export const useMarketStore = create<MarketStore>((set) => ({
       volumeProfile: msg,
       streamingTicker: msg.ticker,
       lastMarketEventTs: normalizeEventTs(msg.timestamp),
+    }),
+
+  tapeIntelligence: null,
+  updateTapeIntelligence: (msg) =>
+    set({
+      tapeIntelligence: msg,
+      streamingTicker: msg.ticker,
+      lastMarketEventTs: normalizeEventTs(msg.timestamp),
+    }),
+
+  vpOverlay: null,
+  updateVpOverlay: (msg) =>
+    set({
+      vpOverlay: msg,
+      streamingTicker: msg.symbol,
+      lastMarketEventTs: normalizeEventTs(msg.updated_at),
+      overlayLastUpdateTs: normalizeEventTs(msg.updated_at),
     }),
 
   inSync: true,

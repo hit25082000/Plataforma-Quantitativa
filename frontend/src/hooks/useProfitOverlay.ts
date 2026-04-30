@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { OCR_WS_URL, ocrWsUrlFromPort } from "../config/ocrPort";
 import { useMarketStore } from "../store/marketStore";
+import type { VolumeProfileMessage } from "../types/messages";
 import {
   computeAgentAggressorVwap,
   findUbsAgentId,
@@ -12,6 +13,7 @@ import {
   topBuyerByVolFin,
   topSellerByVolFin,
 } from "../utils/agentVolume";
+import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
 
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
@@ -53,6 +55,30 @@ export function overlayLineColorForLabel(label: string, index: number): string {
 }
 
 const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["ubs", "best_bid", "best_ask"];
+
+function normalizeSymbol(symbol?: string | null): string {
+  if (!symbol) return "";
+  const s = symbol.trim().toUpperCase();
+  const base = s.split("·")[0]?.trim() ?? s;
+  if (base === "WIN" || base === "WINFUT" || /^WIN[A-Z]\d{2}$/i.test(base)) return "WINFUT";
+  if (base === "IND" || base === "INDFUT" || /^IND[A-Z]\d{2}$/i.test(base)) return "INDFUT";
+  return base;
+}
+
+function buildVolumeProfileTargets(vp: VolumeProfileMessage | null): OverlayTarget[] {
+  if (!vp || !Number.isFinite(vp.total_vol) || vp.total_vol <= 0) return [];
+  const out: OverlayTarget[] = [];
+  if (typeof vp.poc === "number" && Number.isFinite(vp.poc)) {
+    out.push({ value: vp.poc, label: "VP POC" });
+  }
+  if (typeof vp.vah === "number" && Number.isFinite(vp.vah)) {
+    out.push({ value: vp.vah, label: "VP VAH" });
+  }
+  if (typeof vp.val === "number" && Number.isFinite(vp.val)) {
+    out.push({ value: vp.val, label: "VP VAL" });
+  }
+  return out;
+}
 
 function debugOverlayLog(
   runId: string,
@@ -235,6 +261,8 @@ export function useProfitOverlay() {
   const agentSellFinancial = useMarketStore((s) => s.agentSellFinancial);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
   const agentNames = useMarketStore((s) => s.agentNames);
+  const volumeProfile = useMarketStore((s) => s.volumeProfile);
+  const selectedTicker = useMarketStore((s) => s.selectedTicker);
   useEffect(() => {
     targetsRef.current = state.targets;
   }, [state.targets]);
@@ -482,8 +510,9 @@ export function useProfitOverlay() {
   }, [selectedMetricIds]);
 
   const mergeTargets = useCallback(
-    (metrics: OverlayTarget[], manuals: OverlayTarget[]): OverlayTarget[] => [
+    (metrics: OverlayTarget[], vp: OverlayTarget[], manuals: OverlayTarget[]): OverlayTarget[] => [
       ...metrics,
+      ...vp,
       ...manuals,
     ],
     [],
@@ -533,19 +562,20 @@ export function useProfitOverlay() {
       ws.onmessage = (ev) => {
         try {
           const msg = JSON.parse(ev.data);
-          if (msg.type === "overlay_update") {
+          const parsed = parseOverlayUpdatePayload(msg);
+          if (parsed) {
             // #region agent log
             debugOverlayLog("pre-fix", "H6", "useProfitOverlay.ts:513", "ocr_overlay_update", {
-              status: msg.data?.status ?? "",
-              lineCount: Array.isArray(msg.data?.lines) ? msg.data.lines.length : 0,
-              yMin: msg.data?.y_min ?? null,
-              yMax: msg.data?.y_max ?? null,
-              axisKeptLabels: msg.data?.axis_diagnostics?.kept_labels ?? null,
-              axisRejected: msg.data?.axis_diagnostics?.rejected ?? null,
+              status: parsed.status,
+              lineCount: parsed.lines.length,
+              yMin: parsed.yMin,
+              yMax: parsed.yMax,
+              axisKeptLabels: parsed.axisDiagnostics?.kept_labels ?? null,
+              axisRejected: parsed.axisDiagnostics?.rejected ?? null,
             });
             // #endregion
             if (
-              msg.data?.status === "ok" &&
+              parsed.status === "ok" &&
               !firstOverlayLoggedRef.current &&
               openStartMsRef.current != null
             ) {
@@ -555,16 +585,14 @@ export function useProfitOverlay() {
             }
             setState((prev) => ({
               ...prev,
-              status: msg.data.status,
-              lines: msg.data.lines ?? [],
-              y_min: msg.data.y_min ?? null,
-              y_max: msg.data.y_max ?? null,
-              axis_deltas: msg.data.axis_deltas ?? null,
-              axis_diagnostics: msg.data.axis_diagnostics ?? null,
-              analysisRoi:
-                (msg.data.analysis_roi as OcrAnalysisRoi | null | undefined) ?? null,
-              analysisSample:
-                (msg.data.analysis_sample as OcrAnalysisSample | null | undefined) ?? null,
+              status: parsed.status,
+              lines: parsed.lines,
+              y_min: parsed.yMin,
+              y_max: parsed.yMax,
+              axis_deltas: parsed.axisDeltas,
+              axis_diagnostics: parsed.axisDiagnostics,
+              analysisRoi: (parsed.analysisRoi as OcrAnalysisRoi | null | undefined) ?? null,
+              analysisSample: (parsed.analysisSample as OcrAnalysisSample | null | undefined) ?? null,
             }));
           }
         } catch {
@@ -726,8 +754,17 @@ export function useProfitOverlay() {
       connectWs();
       autoDynamicDefaultsRef.current = true;
       const metrics = buildMetricTargets();
+      const selected = normalizeSymbol(selectedTicker);
+      const incoming = normalizeSymbol(volumeProfile?.ticker);
+      const vpTargets =
+        incoming !== "" && selected !== "" && incoming === selected
+          ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
+              ...t,
+              value: normalizePosition(t.value),
+            }))
+          : [];
       const manuals = targetsRef.current.filter((t) => t.metricId == null);
-      const next = mergeTargets(metrics, manuals);
+      const next = mergeTargets(metrics, vpTargets, manuals);
       setState((prev) => ({
         ...prev,
         active: true,
@@ -752,8 +789,11 @@ export function useProfitOverlay() {
     buildMetricTargets,
     connectWs,
     mergeTargets,
+    normalizePosition,
     pushTargets,
+    selectedTicker,
     selectedMetricIds,
+    volumeProfile,
   ]);
 
   const closeOverlay = useCallback(async () => {
@@ -857,7 +897,21 @@ export function useProfitOverlay() {
     setState((prev) => {
       const manuals = prev.targets.filter((t) => t.metricId == null);
       const metrics = buildMetricTargets();
-      const next = mergeTargets(metrics, manuals);
+      const selected = normalizeSymbol(selectedTicker);
+      const incoming = normalizeSymbol(volumeProfile?.ticker);
+      const vpTargets =
+        incoming !== "" && selected !== "" && incoming === selected
+          ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
+              ...t,
+              value: normalizePosition(t.value),
+            }))
+          : [];
+      if (vpTargets.length > 0) {
+        console.debug(
+          `[VP_OVERLAY] targets=${vpTargets.length} prices=${vpTargets.map((t) => t.value).join(",")}`,
+        );
+      }
+      const next = mergeTargets(metrics, vpTargets, manuals);
       if (targetsEqual(next, prev.targets)) return prev;
       scheduleAutoPushTargets(next);
       return { ...prev, targets: next };
@@ -865,7 +919,9 @@ export function useProfitOverlay() {
   }, [
     buildMetricTargets,
     mergeTargets,
+    normalizePosition,
     scheduleAutoPushTargets,
+    selectedTicker,
     state.active,
     vwap,
     agentBuyFinancial,
@@ -875,6 +931,7 @@ export function useProfitOverlay() {
     agentSellTotals,
     agentShortNames,
     selectedMetricIds,
+    volumeProfile,
   ]);
 
   return {

@@ -1,0 +1,4 @@
+scenario,duration_s,frame_hz,frames_produced,frames_consumed,queue_replaced,queue_max,published_count,publish_rate_hz,latency_p50_ms,latency_p95_ms,latency_p99_ms,latency_max_ms,latency_mean_ms,backlog_stable,throttle_ms,send_cost_ms,client_count
+hf_240hz_always_diff,12.0,240.0,2880,2880,0,1,115,9.583,0.0,0.0,0.0,0.0,0.0,True,100,2,2
+hf_480hz_mixed_diff,12.0,480.0,5760,3000,2760,1,119,9.917,0.0,0.0,0.0,0.0,0.0,True,100,2,2
+hf_600hz_burst_diff,10.0,600.0,6000,1112,4888,1,79,7.9,0.0,0.0,0.0,0.667,0.001,True,120,3,3

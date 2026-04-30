@@ -1,0 +1,81 @@
+{
+  "name": "tt_top3_val_buyer_vah_seller",
+  "price_step": 5,
+  "anchor_prices": {
+    "poc_price": 100.0,
+    "vah_price": 105.0,
+    "val_price": 95.0
+  },
+  "trades": [
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 100.0,
+      "qty": 12,
+      "trade_type": "buy_aggression",
+      "buy_agent": 101,
+      "sell_agent": 201
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 100.0,
+      "qty": 8,
+      "trade_type": "buy_aggression",
+      "buy_agent": 102,
+      "sell_agent": 202
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 95.0,
+      "qty": 25,
+      "trade_type": "buy_aggression",
+      "buy_agent": 301,
+      "sell_agent": 401
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 95.0,
+      "qty": 60,
+      "trade_type": "sell_aggression",
+      "buy_agent": 301,
+      "sell_agent": 991
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 105.0,
+      "qty": 30,
+      "trade_type": "sell_aggression",
+      "buy_agent": 501,
+      "sell_agent": 601
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 105.0,
+      "qty": 55,
+      "trade_type": "buy_aggression",
+      "buy_agent": 505,
+      "sell_agent": 601
+    },
+    {
+      "ticker": "WINFUT",
+      "trade_date": "2026-04-25",
+      "price": 100.0,
+      "qty": 9,
+      "trade_type": "buy_aggression",
+      "buy_agent": 103,
+      "sell_agent": 203
+    }
+  ],
+  "assertions": {
+    "poc_player": 101,
+    "val_buyer": 301,
+    "vah_seller": 601,
+    "top3_limit": 3,
+    "rank_order": "total_vol_desc"
+  }
+}

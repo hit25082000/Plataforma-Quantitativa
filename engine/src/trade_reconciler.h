@@ -2,6 +2,7 @@
 
 #include "event_bus.h"
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -26,6 +27,7 @@ public:
     ApplyResult apply(const event_bus::TradeEvent& ev);
     void reset();
     Stats stats() const { return stats_; }
+    size_t seen_size() const { return seen_.size(); }
 
 private:
     struct TradeIdentity {
@@ -39,7 +41,10 @@ private:
 
     std::string make_key(const event_bus::TradeEvent& ev) const;
     static bool same_identity(const TradeIdentity& a, const TradeIdentity& b);
+    void prune_seen_if_needed();
 
+    static constexpr size_t kMaxSeen = 100000;
     std::unordered_map<std::string, TradeIdentity> seen_;
+    std::deque<std::string> seen_order_;
     Stats stats_{};
 };

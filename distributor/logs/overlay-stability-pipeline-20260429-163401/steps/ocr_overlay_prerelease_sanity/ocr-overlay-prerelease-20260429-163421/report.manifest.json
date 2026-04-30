@@ -1,0 +1,181 @@
+{
+  "runner": "run_ocr_overlay_prerelease_sanity.py",
+  "overall_ok": false,
+  "counts": {
+    "ok": 32,
+    "warn": 0,
+    "fail": 1
+  },
+  "generated_at_epoch_s": 1777494861.3435981,
+  "artifacts": {
+    "report_md": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163401\\steps\\ocr_overlay_prerelease_sanity\\ocr-overlay-prerelease-20260429-163421\\report.md",
+    "manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\overlay-stability-pipeline-20260429-163401\\steps\\ocr_overlay_prerelease_sanity\\ocr-overlay-prerelease-20260429-163421\\report.manifest.json"
+  },
+  "results": [
+    {
+      "check_id": "presence:app/src-tauri/resources/profit_ocr_service.py",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/ocr_overlay_audit.py",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/engine.exe",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/distributor.exe",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/ProfitDLL.dll",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/ProfitDLL64.dll",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/libzmq-mt-4_3_5.dll",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/sounds/wall.wav",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:app/src-tauri/resources/sounds/breakout.wav",
+      "status": "ok",
+      "detail": "resource presente"
+    },
+    {
+      "check_id": "presence:docs/contracts/vp-overlay-v1.json",
+      "status": "ok",
+      "detail": "contract presente"
+    },
+    {
+      "check_id": "presence:docs/contracts/fixtures/vp-overlay-demo.json",
+      "status": "ok",
+      "detail": "fixture presente"
+    },
+    {
+      "check_id": "presence:scripts/run_ovr_stab_qa_evidence.py",
+      "status": "ok",
+      "detail": "qa-script presente"
+    },
+    {
+      "check_id": "presence:scripts/run_ovr_stab_field_qa.py",
+      "status": "ok",
+      "detail": "qa-script presente"
+    },
+    {
+      "check_id": "presence:scripts/collect_ocr_overlay_trace_60s.py",
+      "status": "ok",
+      "detail": "qa-script presente"
+    },
+    {
+      "check_id": "presence:scripts/sync-profit-ocr-to-tauri-resources.ps1",
+      "status": "ok",
+      "detail": "qa-script presente"
+    },
+    {
+      "check_id": "presence:distributor/tests/test_profit_ocr_service.py",
+      "status": "ok",
+      "detail": "qa-test presente"
+    },
+    {
+      "check_id": "presence:distributor/tests/test_ocr_overlay_audit.py",
+      "status": "ok",
+      "detail": "qa-test presente"
+    },
+    {
+      "check_id": "presence:distributor/tests/test_vp_overlay_contract.py",
+      "status": "ok",
+      "detail": "qa-test presente"
+    },
+    {
+      "check_id": "presence:distributor/tests/test_websocket_vp_overlay_endpoints.py",
+      "status": "ok",
+      "detail": "qa-test presente"
+    },
+    {
+      "check_id": "presence:distributor/tests/test_vp_ocr_enrich.py",
+      "status": "ok",
+      "detail": "qa-test presente"
+    },
+    {
+      "check_id": "sync:distributor/profit_ocr_service.py->app/src-tauri/resources/profit_ocr_service.py",
+      "status": "fail",
+      "detail": "hash diverge src=76bfa2c88cdd dst=2f585fce8e20"
+    },
+    {
+      "check_id": "sync:distributor/ocr_overlay_audit.py->app/src-tauri/resources/ocr_overlay_audit.py",
+      "status": "ok",
+      "detail": "conteudo sincronizado"
+    },
+    {
+      "check_id": "bundle:resources/profit_ocr_service.py",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/profit_ocr_service.exe",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/engine.exe",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/distributor.exe",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/ProfitDLL.dll",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/ProfitDLL64.dll",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/libzmq-mt-4_3_5.dll",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/sounds/wall.wav",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/sounds/breakout.wav",
+      "status": "ok",
+      "detail": "entrada registrada"
+    },
+    {
+      "check_id": "bundle:resources/ocr_overlay_audit.py",
+      "status": "ok",
+      "detail": "audit script empacotado"
+    },
+    {
+      "check_id": "hygiene:pycache",
+      "status": "ok",
+      "detail": "sem artefatos pycache em resources"
+    }
+  ]
+}
