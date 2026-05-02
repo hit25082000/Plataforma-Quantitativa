@@ -1,7 +1,6 @@
 /** @vitest-environment jsdom */
-import React from "react";
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { VpOverlayHud, type VpOverlayHudProps } from "./OverlayPage";
@@ -303,7 +302,6 @@ describe("VpOverlayHud", () => {
     const {
       container,
       onToggleManualCalibrateMode,
-      onSubmitManualCalibration,
       onVpPeriod,
     } = mount({
       manualCalibrateMode: false,

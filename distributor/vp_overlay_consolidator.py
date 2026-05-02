@@ -274,9 +274,7 @@ class VpOverlayConsolidator:
     """Cache por ticker, throttle temporal e coalescing de hash."""
 
     def __init__(self, publish_interval_ms: int = 125) -> None:
-        interval = int(publish_interval_ms)
-        # OVR-STAB-PERF-03: aplica throttle mínimo de 100ms quando habilitado.
-        self._publish_interval_ms = 0 if interval <= 0 else max(100, interval)
+        self._publish_interval_ms = max(0, int(publish_interval_ms))
         self._vp: dict[str, dict[str, Any]] = {}
         self._tape: dict[str, dict[str, Any]] = {}
         self._seq: dict[str, int] = {}

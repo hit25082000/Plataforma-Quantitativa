@@ -160,9 +160,60 @@ function App() {
     });
   }, []);
 
+  useEffect(() => {
+    const isOverlayLikeWindow =
+      isOverlayWindow || isOverlayControlWindow || isOcrRoiPickerWindow;
+    if (!isOverlayLikeWindow) return;
+    const html = document.documentElement;
+    const body = document.body;
+    const root = document.getElementById("root");
+    const prevHtml = html.style.background;
+    const prevHtmlColor = html.style.backgroundColor;
+    const prevHtmlImage = html.style.backgroundImage;
+    const prevHtmlColorScheme = html.style.colorScheme;
+    const prevBody = body.style.background;
+    const prevBodyColor = body.style.backgroundColor;
+    const prevBodyImage = body.style.backgroundImage;
+    const prevBodyMargin = body.style.margin;
+    const prevBodyOverflow = body.style.overflow;
+    const prevRoot = root?.style.background ?? "";
+    const prevRootColor = root?.style.backgroundColor ?? "";
+    const prevRootImage = root?.style.backgroundImage ?? "";
+    html.style.background = "transparent";
+    html.style.backgroundColor = "transparent";
+    html.style.backgroundImage = "none";
+    html.style.colorScheme = "normal";
+    body.style.background = "transparent";
+    body.style.backgroundColor = "transparent";
+    body.style.backgroundImage = "none";
+    body.style.margin = "0";
+    body.style.overflow = "hidden";
+    if (root) {
+      root.style.background = "transparent";
+      root.style.backgroundColor = "transparent";
+      root.style.backgroundImage = "none";
+    }
+    return () => {
+      html.style.background = prevHtml;
+      html.style.backgroundColor = prevHtmlColor;
+      html.style.backgroundImage = prevHtmlImage;
+      html.style.colorScheme = prevHtmlColorScheme;
+      body.style.background = prevBody;
+      body.style.backgroundColor = prevBodyColor;
+      body.style.backgroundImage = prevBodyImage;
+      body.style.margin = prevBodyMargin;
+      body.style.overflow = prevBodyOverflow;
+      if (root) {
+        root.style.background = prevRoot;
+        root.style.backgroundColor = prevRootColor;
+        root.style.backgroundImage = prevRootImage;
+      }
+    };
+  }, [isOverlayControlWindow, isOverlayWindow, isOcrRoiPickerWindow]);
+
   if (isTauri() && !hasCheckedWindow) {
     return (
-      <div className="h-screen flex items-center justify-center bg-bg text-text/60 text-sm">
+      <div className="h-screen flex items-center justify-center bg-transparent text-text/60 text-sm">
         Carregando…
       </div>
     );

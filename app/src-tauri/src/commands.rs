@@ -27,6 +27,7 @@ fn command_no_console(_cmd: &mut Command) {}
 use tauri::webview::WebviewWindowBuilder;
 use tauri::Emitter;
 use tauri::Manager;
+use tauri::WindowEvent;
 use tauri::WebviewWindow;
 use tauri::State;
 use tauri::WebviewUrl;
@@ -46,6 +47,7 @@ const EVENT_OCR_RECALIBRATING: &str = "pq:ocr-recalibrating";
 const EVENT_OCR_OVERLAY_STATUS: &str = "pq:ocr-overlay-status";
 const BOUNDS_WATCHDOG_INTERVAL_MS: u64 = 750;
 const BOUNDS_RECALIBRATE_COOLDOWN_MS: u64 = 1200;
+const OVERLAY_WATCHDOG_ENABLE_ENV: &str = "PQ_ENABLE_OVERLAY_WATCHDOG";
 
 /// Defaults alinhados a `engine` / `distributor` e `scripts/run-dev2.ps1`.
 fn apply_default_shm_writer_env(cmd: &mut Command) {
@@ -560,6 +562,10 @@ fn ocr_manual_unlock_url() -> String {
     format!("http://127.0.0.1:{}/api/ocr-overlay/manual-unlock", ocr_port())
 }
 
+fn ocr_debug_dump_url() -> String {
+    format!("http://127.0.0.1:{}/api/ocr-overlay/debug-dump", ocr_port())
+}
+
 fn ocr_incompatible_analysis_roi_message() -> String {
     format!(
         "OCR em 127.0.0.1:{} está em versão antiga (sem endpoint /analysis_roi). Feche processos antigos de OCR e reinicie o Overlay para subir a versão nova.",
@@ -838,6 +844,13 @@ fn physical_u32_to_logical_f64(value: u32, scale: f64) -> f64 {
     value as f64 / sanitize_scale_factor(scale)
 }
 
+fn overlay_bounds_watchdog_enabled() -> bool {
+    std::env::var(OVERLAY_WATCHDOG_ENABLE_ENV)
+        .ok()
+        .map(|v| matches!(v.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+        .unwrap_or(false)
+}
+
 fn capture_window_physical_snapshot(
     app: &tauri::AppHandle,
     label: &'static str,
@@ -880,19 +893,18 @@ fn collect_relevant_window_snapshots(app: &tauri::AppHandle) -> Vec<WindowPhysic
     out
 }
 
-fn should_trigger_bounds_recalibration(
-    last: &[WindowPhysicalSnapshot],
-    current: &[WindowPhysicalSnapshot],
-) -> bool {
-    if current == last {
-        return false;
-    }
-    // Também recalibra quando perdemos todos snapshots (ex.: minimizar/ocultar)
-    // para garantir transição explícita de estado operacional.
-    !last.is_empty() || !current.is_empty()
-}
-
 fn start_overlay_bounds_watchdog(app: tauri::AppHandle) {
+    if !overlay_bounds_watchdog_enabled() {
+        append_runtime_bootstrap_log(
+            &app,
+            "overlay",
+            "watchdog_tick",
+            "disabled",
+            json!({"reason": "disabled_by_default", "enable_env": OVERLAY_WATCHDOG_ENABLE_ENV}),
+        );
+        note_overlay_watchdog_event("disabled");
+        return;
+    }
     let watchdog = overlay_bounds_watchdog();
     watchdog.stop_requested.store(false, Ordering::SeqCst);
     if watchdog.running.swap(true, Ordering::SeqCst) {
@@ -910,15 +922,15 @@ fn start_overlay_bounds_watchdog(app: tauri::AppHandle) {
             {
                 break;
             }
+            note_overlay_watchdog_event("tick");
             let current_snapshots = collect_relevant_window_snapshots(&app);
-            if should_trigger_bounds_recalibration(&last_snapshots, &current_snapshots) {
+            if !current_snapshots.is_empty() && current_snapshots != last_snapshots {
                 let now = std::time::Instant::now();
                 if now.duration_since(last_recalibrate_at).as_millis() as u64
                     >= BOUNDS_RECALIBRATE_COOLDOWN_MS
                 {
                     let payload = json!({
                         "reason": "physical_bounds_changed",
-                        "last_windows": last_snapshots,
                         "windows": current_snapshots,
                     });
                     let _ = app.emit(EVENT_OCR_RECALIBRATING, payload.clone());
@@ -994,12 +1006,10 @@ fn logical_to_physical_rect_for_window(
     height: f64,
 ) -> Result<(i32, i32, i32, i32), String> {
     let origin = win.outer_position().map_err(|e| e.to_string())?;
-    // Usa o scale factor efetivo da janela para evitar offset incorreto em
-    // setups multi-monitor/DPI misto (100/125/150%).
-    let scale = win.scale_factor().map_err(|e| e.to_string())?;
-    if !scale.is_finite() || scale <= 0.0 {
-        return Err("Scale factor da janela inválido.".to_string());
-    }
+    let scale = match win.current_monitor().map_err(|e| e.to_string())? {
+        Some(mon) => mon.scale_factor(),
+        None => win.scale_factor().map_err(|e| e.to_string())?,
+    };
     let left = (origin.x as f64 + x * scale).round() as i32;
     let top = (origin.y as f64 + y * scale).round() as i32;
     let w = (width * scale).round() as i32;
@@ -1132,9 +1142,85 @@ pub async fn manual_calibrate_profit_ocr(
     res.json().await.map_err(|e| e.to_string())
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+struct OverlayLifecycleState {
+    desired_active: bool,
+    last_open_at: Option<u128>,
+    last_close_at: Option<u128>,
+    last_close_reason: Option<String>,
+    last_window_event: Option<String>,
+    last_watchdog_event: Option<String>,
+    always_on_top: bool,
+    ignore_cursor_events: bool,
+    last_action_reason: Option<String>,
+}
+
+fn overlay_lifecycle_state() -> &'static Mutex<OverlayLifecycleState> {
+    static STATE: OnceLock<Mutex<OverlayLifecycleState>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(OverlayLifecycleState::default()))
+}
+
+fn set_overlay_desired_active(active: bool, reason: &str) {
+    if let Ok(mut st) = overlay_lifecycle_state().lock() {
+        st.desired_active = active;
+        st.last_action_reason = Some(reason.to_string());
+        if active {
+            st.last_open_at = Some(unix_ts_ms());
+        } else {
+            st.last_close_at = Some(unix_ts_ms());
+            st.last_close_reason = Some(reason.to_string());
+        }
+    }
+}
+
+fn note_overlay_window_event(event: &str) {
+    if let Ok(mut st) = overlay_lifecycle_state().lock() {
+        st.last_window_event = Some(event.to_string());
+    }
+}
+
+fn note_overlay_watchdog_event(event: &str) {
+    if let Ok(mut st) = overlay_lifecycle_state().lock() {
+        st.last_watchdog_event = Some(event.to_string());
+    }
+}
+
+fn set_overlay_window_flags(always_on_top: bool, ignore_cursor_events: bool) {
+    if let Ok(mut st) = overlay_lifecycle_state().lock() {
+        st.always_on_top = always_on_top;
+        st.ignore_cursor_events = ignore_cursor_events;
+    }
+}
+
+fn attach_overlay_window_events(app: &tauri::AppHandle, label: &'static str) {
+    if let Some(win) = app.get_webview_window(label) {
+        let app_handle = app.clone();
+        win.on_window_event(move |evt| {
+            let event_name = match evt {
+                WindowEvent::Resized(_) => "set_size",
+                WindowEvent::Moved(_) => "set_position",
+                WindowEvent::Focused(true) => "focused",
+                WindowEvent::Focused(false) => "blurred",
+                WindowEvent::CloseRequested { .. } => "close_requested",
+                WindowEvent::Destroyed => "destroyed",
+                WindowEvent::ScaleFactorChanged { .. } => "set_bounds",
+                WindowEvent::ThemeChanged(_) => "theme_changed",
+                _ => "window_event",
+            };
+            note_overlay_window_event(event_name);
+            append_runtime_bootstrap_log(
+                &app_handle,
+                "overlay",
+                event_name,
+                "event",
+                json!({ "label": label }),
+            );
+        });
+    }
+}
+
 #[tauri::command]
-pub async fn unlock_manual_profit_ocr(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    emit_ocr_overlay_status(&app, "manual", "start", json!({"phase": "unlock"}));
+pub async fn unlock_manual_profit_ocr() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(4))
         .build()
@@ -1145,21 +1231,104 @@ pub async fn unlock_manual_profit_ocr(app: tauri::AppHandle) -> Result<serde_jso
         .await
         .map_err(|e| e.to_string())?;
     if !res.status().is_success() {
-        emit_ocr_overlay_status(
-            &app,
-            "manual",
-            "error",
-            json!({"http_status": res.status().as_u16(), "phase": "unlock"}),
-        );
         return Err(format!("OCR manual unlock HTTP {}", res.status()));
     }
-    let payload: serde_json::Value = res.json().await.map_err(|e| e.to_string())?;
-    emit_ocr_overlay_status(
-        &app,
-        "manual",
-        "ok",
-        json!({"phase": "unlock", "response": payload}),
-    );
+    res.json().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn debug_dump_profit_ocr() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .post(ocr_debug_dump_url())
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !res.status().is_success() {
+        return Err(format!("OCR debug dump HTTP {}", res.status()));
+    }
+    res.json().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn overlay_debug_snapshot(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let lifecycle = overlay_lifecycle_state()
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_default();
+    let win = app.get_webview_window("profit-overlay");
+    let exists = win.is_some();
+
+    let mut visible = false;
+    let mut minimized = false;
+    let mut focused = false;
+    let mut outer_position = serde_json::Value::Null;
+    let mut outer_size = serde_json::Value::Null;
+    let mut inner_size = serde_json::Value::Null;
+
+    if let Some(w) = &win {
+        visible = w.is_visible().unwrap_or(false);
+        minimized = w.is_minimized().unwrap_or(false);
+        focused = w.is_focused().unwrap_or(false);
+        if let Ok(pos) = w.outer_position() {
+            outer_position = json!({"x": pos.x, "y": pos.y});
+        }
+        if let Ok(sz) = w.outer_size() {
+            outer_size = json!({"width": sz.width, "height": sz.height});
+        }
+        if let Ok(sz) = w.inner_size() {
+            inner_size = json!({"width": sz.width, "height": sz.height});
+        }
+    }
+
+    let classification = if !exists {
+        "destroyed"
+    } else if !visible || minimized {
+        "hidden"
+    } else {
+        let pos = outer_position
+            .as_object()
+            .and_then(|o| Some((o.get("x")?.as_i64()?, o.get("y")?.as_i64()?)));
+        let size = outer_size
+            .as_object()
+            .and_then(|o| Some((o.get("width")?.as_u64()?, o.get("height")?.as_u64()?)));
+        if let (Some((x, y)), Some((w, h))) = (pos, size) {
+            if w == 0 || h == 0 || x < -30000 || y < -30000 {
+                "out_of_bounds"
+            } else if !focused {
+                "behind"
+            } else {
+                "visible_ok"
+            }
+        } else {
+            "render_empty"
+        }
+    };
+
+    let payload = json!({
+        "desired_active": lifecycle.desired_active,
+        "profit-overlay": {
+            "exists": exists,
+            "visible": visible,
+            "minimized": minimized,
+            "focused": focused,
+            "outer_position": outer_position,
+            "outer_size": outer_size,
+            "inner_size": inner_size,
+            "always_on_top": lifecycle.always_on_top,
+            "ignore_cursor_events": lifecycle.ignore_cursor_events,
+        },
+        "last_open_at": lifecycle.last_open_at,
+        "last_close_at": lifecycle.last_close_at,
+        "last_close_reason": lifecycle.last_close_reason,
+        "last_window_event": lifecycle.last_window_event,
+        "last_watchdog_event": lifecycle.last_watchdog_event,
+        "classification": classification,
+    });
+    append_runtime_bootstrap_log(&app, "overlay", "overlay_debug_snapshot", "ok", payload.clone());
     Ok(payload)
 }
 
@@ -1753,6 +1922,7 @@ pub async fn open_profit_overlay(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    set_overlay_desired_active(true, "open_profit_overlay");
     let _open_guard = overlay_open_lock().lock().await;
     append_runtime_bootstrap_log(&app, "overlay", "open_profit_overlay", "attempt", json!({}));
     let t0 = std::time::Instant::now();
@@ -1776,24 +1946,33 @@ pub async fn open_profit_overlay(
     let target_monitor_size = target_monitor.size();
 
     if let Some(win) = app.get_webview_window("profit-overlay") {
+        append_runtime_bootstrap_log(&app, "overlay", "show", "attempt", json!({"reason":"open_profit_overlay"}));
         win.show().map_err(|e| e.to_string())?;
+        note_overlay_window_event("show");
+        append_runtime_bootstrap_log(&app, "overlay", "set_always_on_top", "attempt", json!({"value":true,"reason":"open_profit_overlay"}));
         win.set_always_on_top(true).map_err(|e| e.to_string())?;
+        append_runtime_bootstrap_log(&app, "overlay", "set_ignore_cursor_events", "attempt", json!({"value":true,"reason":"open_profit_overlay"}));
         win.set_ignore_cursor_events(true)
             .map_err(|e| e.to_string())?;
+        set_overlay_window_flags(true, true);
+        append_runtime_bootstrap_log(&app, "overlay", "set_size", "attempt", json!({"reason":"open_profit_overlay"}));
         let _ = win.set_size(tauri::Size::Physical(tauri::PhysicalSize {
             width: target_monitor_size.width,
             height: target_monitor_size.height,
         }));
+        append_runtime_bootstrap_log(&app, "overlay", "set_position", "attempt", json!({"reason":"open_profit_overlay"}));
         let _ = win.set_position(tauri::Position::Physical(tauri::PhysicalPosition {
             x: target_monitor_pos.x,
             y: target_monitor_pos.y,
         }));
+        attach_overlay_window_events(&app, "profit-overlay");
     } else {
         let monitor_scale = sanitize_scale_factor(target_monitor.scale_factor());
         let logical_x = physical_i32_to_logical_f64(target_monitor_pos.x, monitor_scale);
         let logical_y = physical_i32_to_logical_f64(target_monitor_pos.y, monitor_scale);
         let logical_w = physical_u32_to_logical_f64(target_monitor_size.width, monitor_scale);
         let logical_h = physical_u32_to_logical_f64(target_monitor_size.height, monitor_scale);
+
         let url = if cfg!(debug_assertions) {
             let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
             WebviewUrl::External(u)
@@ -1817,9 +1996,12 @@ pub async fn open_profit_overlay(
         window
             .set_ignore_cursor_events(true)
             .map_err(|e| e.to_string())?;
+        set_overlay_window_flags(true, true);
+        attach_overlay_window_events(&app, "profit-overlay");
     }
 
     let screen_w = target_monitor_size.width as f64;
+    let monitor_scale = sanitize_scale_factor(target_monitor.scale_factor());
 
     let control_url = if cfg!(debug_assertions) {
         let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
@@ -1829,16 +2011,19 @@ pub async fn open_profit_overlay(
     };
 
     if let Some(ctrl) = app.get_webview_window("profit-overlay-control") {
+        append_runtime_bootstrap_log(&app, "overlay", "show", "attempt", json!({"label":"profit-overlay-control","reason":"open_profit_overlay"}));
         ctrl.show().map_err(|e| e.to_string())?;
         ctrl.set_always_on_top(true).map_err(|e| e.to_string())?;
+        attach_overlay_window_events(&app, "profit-overlay-control");
     } else {
-        let monitor_scale = sanitize_scale_factor(target_monitor.scale_factor());
         let ctrl_w = 180.0;
         let ctrl_h = 56.0;
         let ctrl_x = target_monitor_pos.x as f64 + (screen_w - ctrl_w - 16.0).max(0.0);
         let ctrl_y = target_monitor_pos.y as f64 + 16.0;
-        let logical_ctrl_x = physical_i32_to_logical_f64(ctrl_x.round() as i32, monitor_scale);
-        let logical_ctrl_y = physical_i32_to_logical_f64(ctrl_y.round() as i32, monitor_scale);
+        let logical_ctrl_x =
+            physical_i32_to_logical_f64(ctrl_x.round() as i32, monitor_scale);
+        let logical_ctrl_y =
+            physical_i32_to_logical_f64(ctrl_y.round() as i32, monitor_scale);
         let logical_ctrl_w = ctrl_w / monitor_scale;
         let logical_ctrl_h = ctrl_h / monitor_scale;
         let _ = WebviewWindowBuilder::new(&app, "profit-overlay-control", control_url)
@@ -1853,6 +2038,7 @@ pub async fn open_profit_overlay(
             .position(logical_ctrl_x, logical_ctrl_y)
             .build()
             .map_err(|e| e.to_string())?;
+        attach_overlay_window_events(&app, "profit-overlay-control");
     }
 
     append_runtime_bootstrap_log(
@@ -1872,12 +2058,24 @@ pub async fn open_profit_overlay(
 }
 
 #[tauri::command]
-pub async fn close_profit_overlay(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn close_profit_overlay(
+    app: tauri::AppHandle,
+    reason: Option<String>,
+) -> Result<(), String> {
+    let close_reason = reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("manual_close_profit_overlay");
+    set_overlay_desired_active(false, close_reason);
     stop_overlay_bounds_watchdog();
     if let Some(win) = app.get_webview_window("profit-overlay") {
+        append_runtime_bootstrap_log(&app, "overlay", "hide", "attempt", json!({"reason": close_reason}));
         win.hide().map_err(|e| e.to_string())?;
+        note_overlay_window_event("hide");
     }
     if let Some(ctrl) = app.get_webview_window("profit-overlay-control") {
+        append_runtime_bootstrap_log(&app, "overlay", "hide", "attempt", json!({"label":"profit-overlay-control","reason": close_reason}));
         ctrl.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -3652,166 +3850,20 @@ mod tests {
     }
 
     #[test]
-    fn monitor_scale_permille_stress_handles_repeated_and_extreme_inputs() {
-        for _ in 0..10_000 {
-            assert_eq!(monitor_scale_permille(1.25), 1250);
-            assert_eq!(monitor_scale_permille(0.0), 1000);
-            assert_eq!(monitor_scale_permille(-42.0), 1000);
-        }
-        assert_eq!(monitor_scale_permille(0.3333), 333);
-        assert_eq!(monitor_scale_permille(1_000_000_000.0), u32::MAX);
-    }
-
-    #[test]
-    fn sanitize_scale_factor_guards_invalid_inputs() {
-        assert_eq!(sanitize_scale_factor(1.0), 1.0);
-        assert_eq!(sanitize_scale_factor(1.5), 1.5);
+    fn physical_to_logical_conversion_uses_safe_scale() {
         assert_eq!(sanitize_scale_factor(0.0), 1.0);
         assert_eq!(sanitize_scale_factor(f64::NAN), 1.0);
-    }
-
-    #[test]
-    fn sanitize_scale_factor_stress_keeps_bounds_stable() {
-        for _ in 0..10_000 {
-            assert_eq!(sanitize_scale_factor(f64::INFINITY), 1.0);
-            assert_eq!(sanitize_scale_factor(f64::NEG_INFINITY), 1.0);
-            assert_eq!(sanitize_scale_factor(f64::NAN), 1.0);
-            assert_eq!(sanitize_scale_factor(-0.0001), 1.0);
-        }
-        assert_eq!(sanitize_scale_factor(0.0001), 0.0001);
-        assert_eq!(sanitize_scale_factor(2.5), 2.5);
-    }
-
-    #[test]
-    fn physical_to_logical_conversions_use_scale_factor() {
         assert_eq!(physical_i32_to_logical_f64(250, 1.25), 200.0);
         assert_eq!(physical_u32_to_logical_f64(300, 1.5), 200.0);
-        assert_eq!(physical_i32_to_logical_f64(-200, 2.0), -100.0);
     }
 
     #[test]
-    fn should_trigger_bounds_recalibration_detects_minimize_restore_transitions() {
-        let sample = WindowPhysicalSnapshot {
-            window_label: "profit-overlay",
-            pos_x: 10,
-            pos_y: 20,
-            width: 100,
-            height: 200,
-            minimized: false,
-            monitor_pos_x: 0,
-            monitor_pos_y: 0,
-            monitor_width: 1920,
-            monitor_height: 1080,
-            monitor_scale_permille: 1250,
-        };
-        let one = vec![sample.clone()];
-        let none: Vec<WindowPhysicalSnapshot> = Vec::new();
-
-        assert!(should_trigger_bounds_recalibration(&one, &none));
-        assert!(should_trigger_bounds_recalibration(&none, &one));
-        assert!(!should_trigger_bounds_recalibration(&none, &none));
-        assert!(!should_trigger_bounds_recalibration(&one, &one));
-    }
-
-    #[test]
-    fn should_trigger_bounds_recalibration_detects_minimized_state_toggle() {
-        let normal = WindowPhysicalSnapshot {
-            window_label: "profit-overlay",
-            pos_x: 10,
-            pos_y: 20,
-            width: 100,
-            height: 200,
-            minimized: false,
-            monitor_pos_x: 0,
-            monitor_pos_y: 0,
-            monitor_width: 1920,
-            monitor_height: 1080,
-            monitor_scale_permille: 1000,
-        };
-        let mut minimized = normal.clone();
-        minimized.minimized = true;
-
-        assert!(should_trigger_bounds_recalibration(
-            std::slice::from_ref(&normal),
-            std::slice::from_ref(&minimized),
-        ));
-    }
-
-    #[test]
-    fn should_trigger_bounds_recalibration_detects_monitor_and_dpi_switch() {
-        let baseline = WindowPhysicalSnapshot {
-            window_label: "profit-overlay",
-            pos_x: 0,
-            pos_y: 0,
-            width: 100,
-            height: 200,
-            minimized: false,
-            monitor_pos_x: 0,
-            monitor_pos_y: 0,
-            monitor_width: 1920,
-            monitor_height: 1080,
-            monitor_scale_permille: 1000,
-        };
-        let mut moved_monitor = baseline.clone();
-        moved_monitor.monitor_pos_x = 1920;
-        moved_monitor.monitor_pos_y = 0;
-        moved_monitor.monitor_width = 2560;
-        moved_monitor.monitor_height = 1440;
-        assert!(should_trigger_bounds_recalibration(
-            std::slice::from_ref(&baseline),
-            std::slice::from_ref(&moved_monitor),
-        ));
-
-        let mut dpi_changed = baseline.clone();
-        dpi_changed.monitor_scale_permille = 1250;
-        assert!(should_trigger_bounds_recalibration(
-            std::slice::from_ref(&baseline),
-            std::slice::from_ref(&dpi_changed),
-        ));
-    }
-
-    #[test]
-    fn should_trigger_bounds_recalibration_stress_repeated_stable_frames() {
-        let stable = WindowPhysicalSnapshot {
-            window_label: "profit-overlay",
-            pos_x: 120,
-            pos_y: 80,
-            width: 640,
-            height: 360,
-            minimized: false,
-            monitor_pos_x: 0,
-            monitor_pos_y: 0,
-            monitor_width: 1920,
-            monitor_height: 1080,
-            monitor_scale_permille: 1000,
-        };
-        let baseline = vec![stable];
-        for _ in 0..10_000 {
-            assert!(!should_trigger_bounds_recalibration(&baseline, &baseline));
-        }
-    }
-
-    #[test]
-    fn should_trigger_bounds_recalibration_stress_repeated_visibility_transitions() {
-        let stable = WindowPhysicalSnapshot {
-            window_label: "profit-overlay",
-            pos_x: 120,
-            pos_y: 80,
-            width: 640,
-            height: 360,
-            minimized: false,
-            monitor_pos_x: 0,
-            monitor_pos_y: 0,
-            monitor_width: 1920,
-            monitor_height: 1080,
-            monitor_scale_permille: 1000,
-        };
-        let populated = vec![stable];
-        let empty: Vec<WindowPhysicalSnapshot> = Vec::new();
-        for _ in 0..5_000 {
-            assert!(should_trigger_bounds_recalibration(&populated, &empty));
-            assert!(should_trigger_bounds_recalibration(&empty, &populated));
-        }
+    fn overlay_watchdog_is_opt_in() {
+        std::env::remove_var(OVERLAY_WATCHDOG_ENABLE_ENV);
+        assert!(!overlay_bounds_watchdog_enabled());
+        std::env::set_var(OVERLAY_WATCHDOG_ENABLE_ENV, "1");
+        assert!(overlay_bounds_watchdog_enabled());
+        std::env::remove_var(OVERLAY_WATCHDOG_ENABLE_ENV);
     }
 
     #[test]

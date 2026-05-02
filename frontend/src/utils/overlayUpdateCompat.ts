@@ -15,12 +15,12 @@ export interface OverlayCompatLine {
 }
 
 export interface OverlayUpdateCompatPayload {
+  rawMessage: UnknownRecord;
   rawData: UnknownRecord;
   status: string;
   lines: OverlayCompatLine[];
   yMin: number | null;
   yMax: number | null;
-  confidence: number | null;
   axisDeltas: OcrAxisDeltas | null;
   axisDiagnostics: Record<string, unknown> | null;
   analysisRoi: Record<string, unknown> | null;
@@ -28,14 +28,20 @@ export interface OverlayUpdateCompatPayload {
   axisStatus: string | null;
   axisSource: string | null;
   badFrames: number | null;
-  pendingFrames: number | null;
-  labelsCount: number | null;
-  residualPx: number | null;
-  maxErrorPx: number | null;
-  slope: number | null;
-  intercept: number | null;
-  valuePerPx: number | null;
+  axisErrorCode: string | null;
+  axisErrorMessage: string | null;
+  lastGoodAxisAgeMs: number | null;
+  overlayWindowAlive: boolean | null;
+  ocrServiceAlive: boolean | null;
+  ocrWsConnected: boolean | null;
+  vpStatus: string | null;
   debugVisual: Record<string, unknown> | null;
+  normalizedAxisStatus: string | null;
+  parsedLabelsCount: number | null;
+  ocrConfidence: number | null;
+  payloadSeq: number | null;
+  ocrPid: number | null;
+  ocrPort: number | null;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -51,6 +57,24 @@ function asNumberOrNull(value: unknown): number | null {
 function asStringOrNull(value: unknown): string | null {
   if (typeof value !== "string") return null;
   return value;
+}
+
+function asBoolOrNull(value: unknown): boolean | null {
+  if (typeof value !== "boolean") return null;
+  return value;
+}
+
+function normalizeAxisStatus(value: unknown): string | null {
+  const raw = asStringOrNull(value);
+  if (!raw) return null;
+  const v = raw.trim().toLowerCase();
+  if (!v) return null;
+  if (v === "stable") return "stable";
+  if (v === "frozen" || v === "freeze" || v === "locked" || v === "paused") return "frozen";
+  if (v === "suspect") return "suspect";
+  if (v === "recalibrating") return "recalibrating";
+  if (v === "no_axis" || v === "not_found" || v === "missing") return "no_axis";
+  return v;
 }
 
 function asAxisDeltas(value: unknown): OcrAxisDeltas | null {
@@ -102,31 +126,14 @@ function asAxisDeltas(value: unknown): OcrAxisDeltas | null {
 export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompatPayload | null {
   const envelope = asRecord(message);
   if (!envelope) return null;
-  const envelopeType = asStringOrNull(envelope.type);
-  const hasCompatTopLevelFields =
-    "status" in envelope ||
-    "lines" in envelope ||
-    "structured" in envelope ||
-    "blocks" in envelope ||
-    "axis_status" in envelope;
-  if (envelopeType != null && envelopeType !== "overlay_update") return null;
-  if (envelopeType == null && !hasCompatTopLevelFields) return null;
+  if (envelope.type !== "overlay_update") return null;
 
-  const data =
-    asRecord(envelope.data) ??
-    asRecord(envelope.payload) ??
-    (envelopeType == null ? envelope : {});
-  const blocks = asRecord(data.blocks);
-  const structured = asRecord(data.structured) ?? blocks;
+  const data = asRecord(envelope.data) ?? asRecord(envelope.payload) ?? {};
+  const structured = asRecord(data.structured);
   const statusBlock = asRecord(data.status) ?? asRecord(structured?.status);
-  const linesBlock =
-    asRecord(data.lines) ?? asRecord(structured?.lines) ?? asRecord(blocks?.lines);
-  const histogramBlock =
-    asRecord(data.histogram) ??
-    asRecord(structured?.histogram) ??
-    asRecord(blocks?.histogram);
-  const axisBlock =
-    asRecord(data.axis) ?? asRecord(structured?.axis) ?? asRecord(blocks?.axis);
+  const linesBlock = asRecord(data.lines) ?? asRecord(structured?.lines);
+  const histogramBlock = asRecord(data.histogram) ?? asRecord(structured?.histogram);
+  const axisBlock = asRecord(data.axis) ?? asRecord(structured?.axis);
   const linesVisualLimits = asRecord(linesBlock?.visual_limits);
   const debugVisualBlock =
     asRecord(data.debug_visual) ?? asRecord(structured?.debug_visual);
@@ -162,59 +169,53 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     asNumberOrNull(data.y_max) ?? asNumberOrNull(linesVisualLimits?.y_max);
 
   const axisStatus =
-    asStringOrNull(data.axis_status) ??
-    asStringOrNull(axisBlock?.axis_status);
+    asStringOrNull(data.axis_status) ?? asStringOrNull(axisBlock?.axis_status);
   const axisSource =
-    asStringOrNull(data.axis_source) ??
-    asStringOrNull(data.source) ??
-    asStringOrNull(axisBlock?.axis_source) ??
-    asStringOrNull(axisBlock?.source);
-  const confidence =
-    asNumberOrNull(data.confidence) ?? asNumberOrNull(axisBlock?.confidence);
+    asStringOrNull(data.axis_source) ?? asStringOrNull(axisBlock?.axis_source);
   const badFrames =
     asNumberOrNull(data.bad_frames) ?? asNumberOrNull(axisBlock?.bad_frames);
-  const pendingFrames =
-    asNumberOrNull(data.pending_count) ??
-    asNumberOrNull(data.pending_frames) ??
-    asNumberOrNull(axisBlock?.pending_count) ??
-    asNumberOrNull(axisBlock?.pending_frames);
-  const labelsCount =
-    asNumberOrNull(data.labels_count) ??
-    asNumberOrNull(axisBlock?.labels_count) ??
-    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.labels_count);
-  const residualPx =
-    asNumberOrNull(data.residual_px) ??
-    asNumberOrNull(axisBlock?.residual_px) ??
-    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.residual_px);
-  const maxErrorPx =
-    asNumberOrNull(data.max_error_px) ??
-    asNumberOrNull(axisBlock?.max_error_px) ??
-    asNumberOrNull(data.axis_diagnostics && asRecord(data.axis_diagnostics)?.max_error_px);
-  const slope =
-    asNumberOrNull(data.slope) ??
-    asNumberOrNull(axisBlock?.slope) ??
-    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.slope);
-  const intercept =
-    asNumberOrNull(data.intercept) ??
-    asNumberOrNull(axisBlock?.intercept) ??
-    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.intercept);
-  const valuePerPx =
-    asNumberOrNull(data.value_per_px) ??
-    asNumberOrNull(axisBlock?.value_per_px) ??
-    asNumberOrNull(debugVisualBlock && asRecord(debugVisualBlock.regression)?.value_per_px);
+  const axisErrorCode =
+    asStringOrNull(data.axis_error_code) ?? asStringOrNull(axisBlock?.axis_error_code);
+  const axisErrorMessage =
+    asStringOrNull(data.axis_error_message) ?? asStringOrNull(axisBlock?.axis_error_message);
+  const lastGoodAxisAgeMs =
+    asNumberOrNull(data.last_good_axis_age_ms) ??
+    asNumberOrNull(axisBlock?.last_good_axis_age_ms);
+  const overlayWindowAlive =
+    asBoolOrNull(data.overlay_window_alive) ??
+    asBoolOrNull(statusBlock?.overlay_window_alive);
+  const ocrServiceAlive =
+    asBoolOrNull(data.ocr_service_alive) ??
+    asBoolOrNull(statusBlock?.ocr_service_alive);
+  const ocrWsConnected =
+    asBoolOrNull(data.ocr_ws_connected) ??
+    asBoolOrNull(statusBlock?.ocr_ws_connected);
+  const vpStatus = asStringOrNull(data.vp_status) ?? asStringOrNull(statusBlock?.vp_status);
+  const normalizedAxisStatus = normalizeAxisStatus(
+    asStringOrNull(data.axis_status) ?? asStringOrNull(axisBlock?.axis_status),
+  );
+  const parsedLabelsCount = Array.isArray(data.parsed_labels) ? data.parsed_labels.length : null;
+  const ocrConfidence = asNumberOrNull(data.ocr_confidence) ?? asNumberOrNull(axisBlock?.confidence);
+  const payloadSeq =
+    asNumberOrNull(data.frame_seq) ??
+    asNumberOrNull(envelope.seq) ??
+    asNumberOrNull(asRecord(envelope.meta)?.frame_seq) ??
+    asNumberOrNull(asRecord(data.last_frame)?.seq);
+  const ocrPid = asNumberOrNull(data.ocr_pid) ?? asNumberOrNull(asRecord(envelope.meta)?.ocr_pid);
+  const ocrPort = asNumberOrNull(data.ocr_port) ?? asNumberOrNull(asRecord(envelope.meta)?.ocr_port);
 
   const analysisRoi =
     asRecord(data.analysis_roi) ?? asRecord(statusBlock?.analysis_roi);
   const analysisSample =
     asRecord(data.analysis_sample) ?? asRecord(statusBlock?.analysis_sample);
 
-  return {
+  const result = {
+    rawMessage: envelope,
     rawData: data,
     status,
     lines,
     yMin,
     yMax,
-    confidence,
     axisDeltas:
       asAxisDeltas(data.axis_deltas) ?? asAxisDeltas(histogramBlock?.axis_deltas),
     axisDiagnostics:
@@ -224,13 +225,38 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     axisStatus,
     axisSource,
     badFrames,
-    pendingFrames,
-    labelsCount,
-    residualPx,
-    maxErrorPx,
-    slope,
-    intercept,
-    valuePerPx,
+    axisErrorCode,
+    axisErrorMessage,
+    lastGoodAxisAgeMs,
+    overlayWindowAlive,
+    ocrServiceAlive,
+    ocrWsConnected,
+    vpStatus,
     debugVisual: debugVisualBlock,
+    normalizedAxisStatus,
+    parsedLabelsCount,
+    ocrConfidence,
+    payloadSeq,
+    ocrPid,
+    ocrPort,
   };
+
+  if (typeof window !== "undefined") {
+    // Debug only: comparar entrada crua vs normalizada para diagnosticar fallback indevido.
+    // eslint-disable-next-line no-console
+    console.log("[overlay compat]", {
+      rawAxisStatus: axisStatus,
+      normalizedAxisStatus,
+      rawAxisSource: axisSource,
+      rawConfidence: ocrConfidence,
+      rawYMin: yMin,
+      rawYMax: yMax,
+      parsedLabelsCount,
+      payloadSeq,
+      ocrPid,
+      ocrPort,
+    });
+  }
+
+  return result;
 }

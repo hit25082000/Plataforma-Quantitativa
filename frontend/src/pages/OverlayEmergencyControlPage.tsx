@@ -1,9 +1,32 @@
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 export default function OverlayEmergencyControlPage() {
+  const [armed, setArmed] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+
+  useEffect(() => {
+    if (!armed) return;
+    setCountdown(5);
+    const id = window.setInterval(() => {
+      setCountdown((prev) => {
+        if (prev <= 1) {
+          setArmed(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [armed]);
+
   const closeOverlay = async () => {
+    if (!armed) {
+      setArmed(true);
+      return;
+    }
     try {
-      await invoke("close_profit_overlay");
+      await invoke("close_profit_overlay", { reason: "overlay_emergency_button" });
     } catch (err) {
       console.error("[overlay] close_profit_overlay failed:", err);
     }
@@ -18,13 +41,15 @@ export default function OverlayEmergencyControlPage() {
         alignItems: "center",
         justifyContent: "center",
         background: "transparent",
+        backgroundColor: "transparent",
+        backgroundImage: "none",
       }}
     >
       <button
         onClick={closeOverlay}
         style={{
           pointerEvents: "auto",
-          background: "rgba(120, 0, 0, 0.9)",
+          background: armed ? "rgba(180, 0, 0, 0.95)" : "rgba(120, 0, 0, 0.9)",
           border: "1px solid rgba(255,255,255,0.5)",
           color: "#fff",
           borderRadius: 8,
@@ -35,7 +60,7 @@ export default function OverlayEmergencyControlPage() {
           boxShadow: "0 4px 12px rgba(0,0,0,0.45)",
         }}
       >
-        FECHAR OVERLAY
+        {armed ? `CONFIRMAR FECHAMENTO (${countdown})` : "FECHAR OVERLAY"}
       </button>
     </div>
   );

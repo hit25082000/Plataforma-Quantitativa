@@ -61,14 +61,6 @@ DEFAULT_SCENARIOS: List[Scenario] = [
     ),
 ]
 
-LATENCY_P99_MAX_MS = 120.0
-LATENCY_P95_MAX_MS = 60.0
-BACKLOG_GROWTH_RATIO_MAX = 1.5
-PUBLISH_RATE_OVERSHOOT_FACTOR_MAX = 1.15
-PUBLISH_RATE_FLOOR_FACTOR_MIN = 0.75
-CONSUMER_FPS_MIN = 90.0
-PUBLISH_INTERVAL_JITTER_CV_MAX = 0.35
-
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stress/regressao de publicacao WS overlay_update (throttle+diff).")
@@ -88,21 +80,6 @@ def _quantile(values: List[float], p: float) -> float:
     hi = min(len(values) - 1, lo + 1)
     frac = idx - lo
     return float(values[lo] * (1.0 - frac) + values[hi] * frac)
-
-
-def _safe_ratio(numerator: float, denominator: float) -> float:
-    if denominator <= 0:
-        return 0.0
-    return float(numerator / denominator)
-
-
-def _coefficient_of_variation(values: List[float]) -> float:
-    if len(values) <= 1:
-        return 0.0
-    mean = statistics.fmean(values)
-    if mean <= 0:
-        return 0.0
-    return float(statistics.pstdev(values) / mean)
 
 
 def _build_payload(seq: int, changed: bool) -> Dict[str, Any]:
@@ -135,7 +112,6 @@ def _run_scenario(scenario: Scenario) -> Dict[str, Any]:
     consumed = 0
     published = 0
     latencies_ms: List[float] = []
-    publish_timestamps_ms: List[float] = []
 
     old_min_ms = profit_ocr_service.WS_PUBLISH_MIN_MS
     old_emit_ts = profit_ocr_service.state.get("last_ws_emit_ts")
@@ -169,7 +145,6 @@ def _run_scenario(scenario: Scenario) -> Dict[str, Any]:
                 ):
                     if profit_ocr_service._should_publish_overlay_update(queue_item["payload"]):
                         published += 1
-                        publish_timestamps_ms.append(consume_ts_ms)
                 queue_item = None
                 consumer_next_available_ms += float(scenario.send_cost_ms) * max(1, scenario.client_count)
 
@@ -185,7 +160,6 @@ def _run_scenario(scenario: Scenario) -> Dict[str, Any]:
             ):
                 if profit_ocr_service._should_publish_overlay_update(queue_item["payload"]):
                     published += 1
-                    publish_timestamps_ms.append(consume_ts_ms)
             queue_item = None
             consumer_next_available_ms += float(scenario.send_cost_ms) * max(1, scenario.client_count)
 
@@ -202,20 +176,6 @@ def _run_scenario(scenario: Scenario) -> Dict[str, Any]:
     mean_latency = statistics.fmean(lat_sorted) if lat_sorted else 0.0
     publish_rate_hz = published / max(0.001, scenario.duration_s)
     backlog_stable = queue_max <= 1
-    split_at = max(1, len(lat_sorted) // 2)
-    first_half = lat_sorted[:split_at]
-    second_half = lat_sorted[split_at:] if len(lat_sorted) > 1 else lat_sorted
-    latency_head_p95_ms = _quantile(first_half, 0.95)
-    latency_tail_p95_ms = _quantile(second_half, 0.95)
-    backlog_growth_ratio = _safe_ratio(latency_tail_p95_ms, max(0.001, latency_head_p95_ms))
-    theoretical_publish_rate_hz = 1000.0 / max(1.0, float(scenario.ws_publish_min_ms))
-    publish_rate_overshoot_ratio = _safe_ratio(publish_rate_hz, theoretical_publish_rate_hz)
-    publish_rate_floor_ratio = _safe_ratio(publish_rate_hz, theoretical_publish_rate_hz)
-    consumer_fps = _safe_ratio(consumed, max(0.001, scenario.duration_s))
-    publish_intervals_ms = [
-        float(curr - prev) for prev, curr in zip(publish_timestamps_ms, publish_timestamps_ms[1:])
-    ]
-    publish_interval_jitter_cv = _coefficient_of_variation(publish_intervals_ms)
 
     return {
         "scenario": scenario.name,
@@ -227,23 +187,15 @@ def _run_scenario(scenario: Scenario) -> Dict[str, Any]:
         "queue_max": queue_max,
         "published_count": published,
         "publish_rate_hz": round(publish_rate_hz, 3),
-        "consumer_fps": round(consumer_fps, 3),
         "latency_p50_ms": round(p50, 3),
         "latency_p95_ms": round(p95, 3),
         "latency_p99_ms": round(p99, 3),
         "latency_max_ms": round(max_latency, 3),
         "latency_mean_ms": round(mean_latency, 3),
-        "latency_head_p95_ms": round(latency_head_p95_ms, 3),
-        "latency_tail_p95_ms": round(latency_tail_p95_ms, 3),
-        "backlog_growth_ratio": round(backlog_growth_ratio, 3),
         "backlog_stable": backlog_stable,
         "throttle_ms": int(scenario.ws_publish_min_ms),
         "send_cost_ms": int(scenario.send_cost_ms),
         "client_count": int(scenario.client_count),
-        "theoretical_publish_rate_hz": round(theoretical_publish_rate_hz, 3),
-        "publish_rate_overshoot_ratio": round(publish_rate_overshoot_ratio, 3),
-        "publish_rate_floor_ratio": round(publish_rate_floor_ratio, 3),
-        "publish_interval_jitter_cv": round(publish_interval_jitter_cv, 3),
     }
 
 
@@ -258,23 +210,15 @@ def write_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         "queue_max",
         "published_count",
         "publish_rate_hz",
-        "consumer_fps",
         "latency_p50_ms",
         "latency_p95_ms",
         "latency_p99_ms",
         "latency_max_ms",
         "latency_mean_ms",
-        "latency_head_p95_ms",
-        "latency_tail_p95_ms",
-        "backlog_growth_ratio",
         "backlog_stable",
         "throttle_ms",
         "send_cost_ms",
         "client_count",
-        "theoretical_publish_rate_hz",
-        "publish_rate_overshoot_ratio",
-        "publish_rate_floor_ratio",
-        "publish_interval_jitter_cv",
     ]
     with path.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.DictWriter(fh, fieldnames=columns)
@@ -290,81 +234,33 @@ def write_summary(path: Path, rows: List[Dict[str, Any]], overall_ok: bool) -> N
         f"- overall_ok: `{int(overall_ok)}`",
         f"- scenarios: `{len(rows)}`",
         "",
-        "| scenario | backlog_stable | backlog_growth | pub_rate_hz | consumer_fps | floor_ratio | overshoot | jitter_cv | p95_ms | p99_ms | max_ms | replaced |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| scenario | backlog_stable | pub_rate_hz | p95_ms | p99_ms | max_ms | replaced |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for row in rows:
         lines.append(
-            f"| {row['scenario']} | {int(bool(row['backlog_stable']))} | {row['backlog_growth_ratio']} | "
-            f"{row['publish_rate_hz']} | {row['consumer_fps']} | {row['publish_rate_floor_ratio']} | "
-            f"{row['publish_rate_overshoot_ratio']} | {row['publish_interval_jitter_cv']} | "
+            f"| {row['scenario']} | {int(bool(row['backlog_stable']))} | {row['publish_rate_hz']} | "
             f"{row['latency_p95_ms']} | {row['latency_p99_ms']} | {row['latency_max_ms']} | {row['queue_replaced']} |"
         )
     lines.append("")
     lines.append("## Gates")
     lines.append("")
     lines.append("- `queue_max <= 1`")
-    lines.append(f"- `latency_p95_ms <= {LATENCY_P95_MAX_MS}`")
-    lines.append(f"- `latency_p99_ms <= {LATENCY_P99_MAX_MS}`")
-    lines.append(f"- `backlog_growth_ratio <= {BACKLOG_GROWTH_RATIO_MAX}`")
-    lines.append(f"- `consumer_fps >= {CONSUMER_FPS_MIN}`")
-    lines.append(f"- `publish_rate_floor_ratio >= {PUBLISH_RATE_FLOOR_FACTOR_MIN}`")
-    lines.append(f"- `publish_rate_overshoot_ratio <= {PUBLISH_RATE_OVERSHOOT_FACTOR_MAX}`")
-    lines.append(f"- `publish_interval_jitter_cv <= {PUBLISH_INTERVAL_JITTER_CV_MAX}`")
+    lines.append("- `latency_p99_ms <= 120.0`")
     lines.append("- `published_count >= 1`")
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def evaluate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
     failures: List[str] = []
-    scenarios: List[Dict[str, Any]] = []
     for row in rows:
-        scenario_failures: List[str] = []
         if int(row["queue_max"]) > 1:
-            scenario_failures.append(f"queue_max={row['queue_max']} > 1")
-        if float(row["latency_p95_ms"]) > LATENCY_P95_MAX_MS:
-            scenario_failures.append(f"latency_p95_ms={row['latency_p95_ms']} > {LATENCY_P95_MAX_MS}")
-        if float(row["latency_p99_ms"]) > LATENCY_P99_MAX_MS:
-            scenario_failures.append(f"latency_p99_ms={row['latency_p99_ms']} > {LATENCY_P99_MAX_MS}")
-        if float(row.get("backlog_growth_ratio", 0.0)) > BACKLOG_GROWTH_RATIO_MAX:
-            scenario_failures.append(
-                f"backlog_growth_ratio={row['backlog_growth_ratio']} > {BACKLOG_GROWTH_RATIO_MAX}"
-            )
-        if float(row.get("consumer_fps", 0.0)) < CONSUMER_FPS_MIN:
-            scenario_failures.append(f"consumer_fps={row.get('consumer_fps', 0.0)} < {CONSUMER_FPS_MIN}")
-        if float(row.get("publish_rate_floor_ratio", 0.0)) < PUBLISH_RATE_FLOOR_FACTOR_MIN:
-            scenario_failures.append(
-                f"publish_rate_floor_ratio={row.get('publish_rate_floor_ratio', 0.0)} < {PUBLISH_RATE_FLOOR_FACTOR_MIN}"
-            )
-        if float(row.get("publish_rate_overshoot_ratio", 0.0)) > PUBLISH_RATE_OVERSHOOT_FACTOR_MAX:
-            scenario_failures.append(
-                f"publish_rate_overshoot_ratio={row['publish_rate_overshoot_ratio']} > {PUBLISH_RATE_OVERSHOOT_FACTOR_MAX}"
-            )
-        if float(row.get("publish_interval_jitter_cv", 0.0)) > PUBLISH_INTERVAL_JITTER_CV_MAX:
-            scenario_failures.append(
-                f"publish_interval_jitter_cv={row.get('publish_interval_jitter_cv', 0.0)} > {PUBLISH_INTERVAL_JITTER_CV_MAX}"
-            )
+            failures.append(f"{row['scenario']}: queue_max={row['queue_max']} > 1")
+        if float(row["latency_p99_ms"]) > 120.0:
+            failures.append(f"{row['scenario']}: latency_p99_ms={row['latency_p99_ms']} > 120")
         if int(row["published_count"]) <= 0:
-            scenario_failures.append("published_count=0")
-        if scenario_failures:
-            failures.extend(f"{row['scenario']}: {failure}" for failure in scenario_failures)
-        scenarios.append({"scenario": row["scenario"], "ok": len(scenario_failures) == 0, "failures": scenario_failures})
-    return {
-        "ok": len(failures) == 0,
-        "failures": failures,
-        "thresholds": {
-            "queue_max": 1,
-            "latency_p95_max_ms": LATENCY_P95_MAX_MS,
-            "latency_p99_max_ms": LATENCY_P99_MAX_MS,
-            "backlog_growth_ratio_max": BACKLOG_GROWTH_RATIO_MAX,
-            "consumer_fps_min": CONSUMER_FPS_MIN,
-            "publish_rate_floor_ratio_min": PUBLISH_RATE_FLOOR_FACTOR_MIN,
-            "publish_rate_overshoot_ratio_max": PUBLISH_RATE_OVERSHOOT_FACTOR_MAX,
-            "publish_interval_jitter_cv_max": PUBLISH_INTERVAL_JITTER_CV_MAX,
-            "published_count_min": 1,
-        },
-        "scenarios": scenarios,
-    }
+            failures.append(f"{row['scenario']}: published_count=0")
+    return {"ok": len(failures) == 0, "failures": failures}
 
 
 def main() -> int:

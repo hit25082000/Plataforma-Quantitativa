@@ -43,6 +43,8 @@ pub fn run() {
             commands::freeze_profit_ocr,
             commands::unfreeze_profit_ocr,
             commands::manual_calibrate_profit_ocr,
+            commands::debug_dump_profit_ocr,
+            commands::overlay_debug_snapshot,
             commands::unlock_manual_profit_ocr,
         ])
         .setup(|app| {

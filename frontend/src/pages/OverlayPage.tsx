@@ -10,7 +10,6 @@ import type {
   VolumeProfileLevel,
   VolumeProfileMessage,
   VpOverlayDebugMessage,
-  VpOverlayHealthDebug,
   VpOverlayDisplay,
   VpOverlayMessage,
   WsBatchMessage,
@@ -24,7 +23,6 @@ import {
   overlayStatusText,
 } from "../utils/ocrStatus";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
-import { hasMeaningfulLineDiff } from "../utils/overlayRenderDiff";
 import { listenOcrOverlayStatus } from "../utils/ocrOverlayEvents";
 import { isTauri } from "../utils/tauri";
 import { PQ_CONFIG_SAVED_EVENT } from "../constants/pqTauriEvents";
@@ -95,25 +93,28 @@ interface OverlayData {
     rejected?: number;
     rejected_monotonic?: number;
     rejected_slope_outlier?: number;
-    labels_count?: number;
-    residual_px?: number;
-    max_error_px?: number;
-    pending_frames?: number;
-    slope?: number;
-    intercept?: number;
-    value_per_px?: number;
   } | null;
   axis_status?: string | null;
   axis_source?: string | null;
   bad_frames?: number | null;
-  pending_frames?: number | null;
-  residual_px?: number | null;
-  max_error_px?: number | null;
-  labels_count?: number | null;
-  slope?: number | null;
-  intercept?: number | null;
-  value_per_px?: number | null;
+  axis_error_code?: string | null;
+  axis_error_message?: string | null;
+  last_good_axis_age_ms?: number | null;
+  overlay_window_alive?: boolean | null;
+  ocr_service_alive?: boolean | null;
+  ocr_ws_connected?: boolean | null;
+  vp_status?: string | null;
   debug_visual?: DebugVisualBlock | null;
+  raw_axis_status?: string | null;
+  normalized_axis_status?: string | null;
+  parsed_labels_count?: number | null;
+  ocr_confidence?: number | null;
+  payload_seq?: number | null;
+  ocr_pid?: number | null;
+  ocr_port?: number | null;
+  fallback_reason?: string | null;
+  ws_url?: string | null;
+  last_payload_age_ms?: number | null;
 }
 
 const LABEL_W = 150;
@@ -133,6 +134,7 @@ const VP_WAITING_BADGE_W = 238;
 const VP_WS_INITIAL_BACKOFF_MS = 500;
 const VP_WS_MAX_BACKOFF_MS = 10_000;
 const VP_DEMO_LOCK_MS = 30_000;
+const VP_OVERLAY_STICKY_MS = 30_000;
 
 type AppConfigRead = {
   overlay_right_margin_px?: number | null;
@@ -333,6 +335,40 @@ function parseMarketWsPayload(raw: unknown): WsMessage | null {
 
 function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
+}
+
+function normalizeAxisStatus(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (!raw) return "unknown";
+  if (raw === "stable") return "stable";
+  if (raw === "frozen" || raw === "freeze" || raw === "locked" || raw === "paused") return "frozen";
+  if (raw === "recalibrating") return "recalibrating";
+  if (raw === "suspect") return "suspect";
+  if (raw === "no_axis" || raw === "not_found" || raw === "missing") return "no_axis";
+  return raw;
+}
+
+function isAxisUsableForOcr(data: OverlayData): { usable: boolean; reason: string } {
+  const axisStatus = normalizeAxisStatus(data.normalized_axis_status ?? data.axis_status ?? "");
+  const hasStableStatus = axisStatus === "stable" || axisStatus === "frozen";
+  if (!hasStableStatus) return { usable: false, reason: `axis_status_${axisStatus}` };
+
+  const yMin = data.y_min;
+  const yMax = data.y_max;
+  const hasScreenRange =
+    Number.isFinite(yMin) &&
+    Number.isFinite(yMax) &&
+    Math.abs(Number(yMax) - Number(yMin)) > 50;
+  if (!hasScreenRange) return { usable: false, reason: "screen_range_invalid" };
+
+  const labelsCount = Number(data.parsed_labels_count ?? 0);
+  if (labelsCount > 0 && labelsCount < 3) return { usable: false, reason: "parsed_labels_lt_3" };
+
+  const age = Number(data.last_good_axis_age_ms ?? 0);
+  if (!Number.isFinite(age)) return { usable: true, reason: "" };
+  if (age > 15000) return { usable: false, reason: "axis_age_no_axis" };
+  if (age > 5000) return { usable: true, reason: "axis_age_frozen" };
+  return { usable: true, reason: "" };
 }
 
 function scaleChartRect(rect: ChartRect | null | undefined, scale: number): ScaledChartRect | null {
@@ -748,6 +784,9 @@ export default function OverlayPage() {
   const vpOvWsRef = useRef<WebSocket | null>(null);
   const vpOvBackoffRef = useRef(VP_WS_INITIAL_BACKOFF_MS);
   const vpOvRetryTimer = useRef<ReturnType<typeof setTimeout>>();
+  const lastGoodVpOverlayRef = useRef<{ ts: number; model: VolumeProfileOverlayModel } | null>(
+    null,
+  );
   const [vpOverlayDisplay, setVpOverlayDisplay] = useState<VpOverlayDisplay | null>(null);
   const [vpOverlayPrefs, setVpOverlayPrefs] = useState<VpOverlayPrefsConfig | null>(null);
   const [vpOverlayHealth, setVpOverlayHealth] = useState<VpOverlayDebugMessage["health"] | null>(null);
@@ -767,6 +806,8 @@ export default function OverlayPage() {
   const [manualPointA, setManualPointA] = useState<{ y: number; value: string } | null>(null);
   const [manualPointB, setManualPointB] = useState<{ y: number; value: string } | null>(null);
   const [manualCalibrateHint, setManualCalibrateHint] = useState<string | null>(null);
+  const [ocrWsUrl, setOcrWsUrl] = useState<string | null>(null);
+  const [lastPayloadAtMs, setLastPayloadAtMs] = useState<number | null>(null);
   const overlayPerfLastRef = useRef(performance.now());
   const overlayPerfBootRef = useRef(true);
   const effectiveVpDisplay = useMemo(
@@ -841,18 +882,6 @@ export default function OverlayPage() {
           setAxisActionHint(typeof code === "number" ? `falha eixo (HTTP ${code})` : "falha eixo");
         }
         window.setTimeout(() => setAxisActionHint(null), 5000);
-        return;
-      }
-      if (payload.action === "manual") {
-        if (payload.status === "start") setManualCalibrateHint("destravando modo manual...");
-        else if (payload.status === "ok") setManualCalibrateHint("modo OCR automático restaurado");
-        else if (payload.status === "error") {
-          const code = payload.details?.http_status;
-          setManualCalibrateHint(
-            typeof code === "number" ? `falha unlock manual (HTTP ${code})` : "falha unlock manual",
-          );
-        }
-        window.setTimeout(() => setManualCalibrateHint(null), 5000);
       }
     }).then((fn) => {
       if (cancelled) {
@@ -956,6 +985,7 @@ export default function OverlayPage() {
       } catch {
         // fallback para porta estática
       }
+      setOcrWsUrl(wsUrl);
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
       ws.onopen = () => {
@@ -973,6 +1003,7 @@ export default function OverlayPage() {
           const msg = JSON.parse(ev.data);
           const parsed = parseOverlayUpdatePayload(msg);
           if (parsed) {
+            setLastPayloadAtMs(Date.now());
             const lines = parsed.lines;
             const yValues = lines
               .map((line: OverlayLine) => Number(line?.y_screen))
@@ -985,6 +1016,11 @@ export default function OverlayPage() {
               "overlay_update_received",
               {
                 lineCount: lines.length,
+                rawAxisStatus: parsed.axisStatus,
+                normalizedAxisStatus: parsed.normalizedAxisStatus,
+                parsedLabelsCount: parsed.parsedLabelsCount,
+                ocrConfidence: parsed.ocrConfidence,
+                payloadSeq: parsed.payloadSeq,
                 yMinIncoming: yValues.length ? Math.min(...yValues) : null,
                 yMaxIncoming: yValues.length ? Math.max(...yValues) : null,
                 sample: lines.slice(0, 3).map((line: OverlayLine) => ({
@@ -998,11 +1034,10 @@ export default function OverlayPage() {
             );
             // #endregion
             setData((prev) => {
-              const shouldUpdateLines = hasMeaningfulLineDiff(prev.lines, lines);
               const next = {
                 ...parsed.rawData,
                 status: parsed.status || prev.status,
-                lines: shouldUpdateLines ? lines : prev.lines,
+                lines,
                 y_min: parsed.yMin ?? prev.y_min,
                 y_max: parsed.yMax ?? prev.y_max,
                 axis_deltas: parsed.axisDeltas ?? prev.axis_deltas,
@@ -1010,14 +1045,23 @@ export default function OverlayPage() {
                 axis_status: parsed.axisStatus ?? prev.axis_status,
                 axis_source: parsed.axisSource ?? prev.axis_source,
                 bad_frames: parsed.badFrames ?? prev.bad_frames,
-                pending_frames: parsed.pendingFrames ?? prev.pending_frames,
-                labels_count: parsed.labelsCount ?? prev.labels_count,
-                residual_px: parsed.residualPx ?? prev.residual_px,
-                max_error_px: parsed.maxErrorPx ?? prev.max_error_px,
-                slope: parsed.slope ?? prev.slope,
-                intercept: parsed.intercept ?? prev.intercept,
-                value_per_px: parsed.valuePerPx ?? prev.value_per_px,
+                axis_error_code: parsed.axisErrorCode ?? prev.axis_error_code,
+                axis_error_message: parsed.axisErrorMessage ?? prev.axis_error_message,
+                last_good_axis_age_ms: parsed.lastGoodAxisAgeMs ?? prev.last_good_axis_age_ms,
+                overlay_window_alive: parsed.overlayWindowAlive ?? prev.overlay_window_alive,
+                ocr_service_alive: parsed.ocrServiceAlive ?? prev.ocr_service_alive,
+                ocr_ws_connected: parsed.ocrWsConnected ?? prev.ocr_ws_connected,
+                vp_status: parsed.vpStatus ?? prev.vp_status,
                 debug_visual: parsed.debugVisual ?? prev.debug_visual ?? null,
+                raw_axis_status: parsed.axisStatus ?? prev.raw_axis_status ?? null,
+                normalized_axis_status: parsed.normalizedAxisStatus ?? prev.normalized_axis_status ?? null,
+                parsed_labels_count: parsed.parsedLabelsCount ?? prev.parsed_labels_count ?? null,
+                ocr_confidence: parsed.ocrConfidence ?? prev.ocr_confidence ?? null,
+                payload_seq: parsed.payloadSeq ?? prev.payload_seq ?? null,
+                ocr_pid: parsed.ocrPid ?? prev.ocr_pid ?? null,
+                ocr_port: parsed.ocrPort ?? prev.ocr_port ?? null,
+                ws_url: wsUrl,
+                last_payload_age_ms: 0,
               } as OverlayData;
               const holdVerdict = shouldHoldPreviousLinesOnOcrDropout(prev, next);
               const rejectVerdict = shouldRejectUnstableOcrFrame(
@@ -1049,15 +1093,11 @@ export default function OverlayPage() {
                   ...prev,
                   status: prev.status || next.status,
                   bad_frames: next.bad_frames ?? prev.bad_frames,
-                  pending_frames: next.pending_frames ?? prev.pending_frames,
-                  labels_count: next.labels_count ?? prev.labels_count,
-                  residual_px: next.residual_px ?? prev.residual_px,
-                  max_error_px: next.max_error_px ?? prev.max_error_px,
-                  slope: next.slope ?? prev.slope,
-                  intercept: next.intercept ?? prev.intercept,
-                  value_per_px: next.value_per_px ?? prev.value_per_px,
                   axis_status: next.axis_status ?? prev.axis_status,
                   axis_source: next.axis_source ?? prev.axis_source,
+                  axis_error_code: next.axis_error_code ?? prev.axis_error_code,
+                  axis_error_message: next.axis_error_message ?? prev.axis_error_message,
+                  last_good_axis_age_ms: next.last_good_axis_age_ms ?? prev.last_good_axis_age_ms,
                 };
               }
               if (holdVerdict.hold) {
@@ -1071,18 +1111,6 @@ export default function OverlayPage() {
                   axis_diagnostics: prev.axis_diagnostics,
                   status: prev.status,
                 };
-              }
-              if (
-                !shouldUpdateLines &&
-                next.status === prev.status &&
-                next.y_min === prev.y_min &&
-                next.y_max === prev.y_max &&
-                next.axis_status === prev.axis_status &&
-                next.axis_source === prev.axis_source &&
-                next.bad_frames === prev.bad_frames &&
-                next.pending_frames === prev.pending_frames
-              ) {
-                return prev;
               }
               return next;
             });
@@ -1233,6 +1261,7 @@ export default function OverlayPage() {
       vpOvWsRef.current?.close();
       vpOvWsRef.current = null;
       vpOverlayPrimaryRef.current = false;
+      lastGoodVpOverlayRef.current = null;
       setVpOverlayRawTicker(null);
       setVpOverlayAgeMs(null);
     };
@@ -1297,17 +1326,48 @@ export default function OverlayPage() {
     const body = document.body;
     const root = document.getElementById("root");
     const prevHtml = html.style.background;
+    const prevHtmlColor = html.style.backgroundColor;
+    const prevHtmlImage = html.style.backgroundImage;
+    const prevHtmlColorScheme = html.style.colorScheme;
     const prevBody = body.style.background;
+    const prevBodyColor = body.style.backgroundColor;
+    const prevBodyImage = body.style.backgroundImage;
+    const prevBodyMargin = body.style.margin;
+    const prevBodyOverflow = body.style.overflow;
     const prevRoot = root?.style.background ?? "";
+    const prevRootColor = root?.style.backgroundColor ?? "";
+    const prevRootImage = root?.style.backgroundImage ?? "";
 
     html.style.background = "transparent";
+    html.style.backgroundColor = "transparent";
+    html.style.backgroundImage = "none";
+    html.style.colorScheme = "normal";
     body.style.background = "transparent";
-    if (root) root.style.background = "transparent";
+    body.style.backgroundColor = "transparent";
+    body.style.backgroundImage = "none";
+    body.style.margin = "0";
+    body.style.overflow = "hidden";
+    if (root) {
+      root.style.background = "transparent";
+      root.style.backgroundColor = "transparent";
+      root.style.backgroundImage = "none";
+    }
 
     return () => {
       html.style.background = prevHtml;
+      html.style.backgroundColor = prevHtmlColor;
+      html.style.backgroundImage = prevHtmlImage;
+      html.style.colorScheme = prevHtmlColorScheme;
       body.style.background = prevBody;
-      if (root) root.style.background = prevRoot;
+      body.style.backgroundColor = prevBodyColor;
+      body.style.backgroundImage = prevBodyImage;
+      body.style.margin = prevBodyMargin;
+      body.style.overflow = prevBodyOverflow;
+      if (root) {
+        root.style.background = prevRoot;
+        root.style.backgroundColor = prevRootColor;
+        root.style.backgroundImage = prevRootImage;
+      }
     };
   }, []);
 
@@ -1329,9 +1389,10 @@ export default function OverlayPage() {
   const W = viewport.width;
   const H = viewport.height;
   const positionedLines = useMemo(() => layoutOverlayLines(scaledLines, H), [scaledLines, H]);
+  const axisUsability = useMemo(() => isAxisUsableForOcr(data), [data]);
   const scaledChartRect = useMemo(
-    () => (data.status === "ok" ? scaleChartRect(data.chart_rect, renderScale) : null),
-    [data.chart_rect, data.status, renderScale],
+    () => (axisUsability.usable ? scaleChartRect(data.chart_rect, renderScale) : null),
+    [axisUsability.usable, data.chart_rect, renderScale],
   );
   const debugVisual = useMemo(
     () => normalizeDebugVisual(data.debug_visual, renderScale),
@@ -1342,6 +1403,14 @@ export default function OverlayPage() {
     [H, W, volumeProfile],
   );
   const effectiveChartRect = scaledChartRect ?? fallbackVpChartRect;
+  const effectiveFallbackReason = useMemo(() => {
+    if (scaledChartRect) return "";
+    return axisUsability.reason || "axis_unavailable";
+  }, [axisUsability.reason, scaledChartRect]);
+  const effectiveLastPayloadAgeMs = useMemo(() => {
+    if (!Number.isFinite(lastPayloadAtMs) || lastPayloadAtMs == null) return null;
+    return Math.max(0, Date.now() - lastPayloadAtMs);
+  }, [lastPayloadAtMs, data.payload_seq]);
   const vpRange = useMemo(() => volumeProfilePriceRange(volumeProfile), [volumeProfile]);
 
   useEffect(() => {
@@ -1589,10 +1658,20 @@ export default function OverlayPage() {
     volumeProfile,
     effectiveVpDisplay,
   ]);
+  const effectiveVolumeProfileOverlay = useMemo(() => {
+    const now = Date.now();
+    if (volumeProfileOverlay) {
+      lastGoodVpOverlayRef.current = { ts: now, model: volumeProfileOverlay };
+      return volumeProfileOverlay;
+    }
+    const sticky = lastGoodVpOverlayRef.current;
+    if (!sticky) return null;
+    if (now - sticky.ts > VP_OVERLAY_STICKY_MS) return null;
+    return sticky.model;
+  }, [volumeProfileOverlay, data.payload_seq, volumeProfile?.timestamp]);
   const histogramVisible =
     effectiveVpDisplay?.histogram_visible !== false && showVolumeProfileOverlay;
-  const topAvgLinesVisible =
-    effectiveVpDisplay?.top_avg_visible !== false && showTapeIntelligenceOverlay;
+  const topAvgLinesVisible = false;
   const maxAvgLinesSetting =
     typeof effectiveVpDisplay?.max_avg_lines === "number" &&
     Number.isFinite(effectiveVpDisplay.max_avg_lines)
@@ -1607,14 +1686,14 @@ export default function OverlayPage() {
       !showTapeIntelligenceOverlay ||
       !tapeIntelligence ||
       !effectiveChartRect ||
-      !volumeProfileOverlay ||
+      !effectiveVolumeProfileOverlay ||
       effectiveVpDisplay?.labels_visible === false
     ) {
       return [];
     }
     const chartForTape = effectiveChartRect;
     const preferExplicitY = usingOcrChart;
-    const baseX = Math.max(chartForTape.left + 12, volumeProfileOverlay.profileLeft - 124);
+    const baseX = Math.max(chartForTape.left + 12, effectiveVolumeProfileOverlay.profileLeft - 124);
     const initialBadges: TapeBadgeModel[] = [
       {
         key: "poc",
@@ -1630,7 +1709,7 @@ export default function OverlayPage() {
             renderScale,
             effectiveYMin,
             effectiveYMax,
-          ) ?? volumeProfileOverlay.pocY ?? chartForTape.top,
+          ) ?? effectiveVolumeProfileOverlay.pocY ?? chartForTape.top,
         x: baseX,
         color: "#FDBA74",
         top3: tapeIntelligence.poc_top3 ?? [],
@@ -1649,7 +1728,7 @@ export default function OverlayPage() {
             renderScale,
             effectiveYMin,
             effectiveYMax,
-          ) ?? volumeProfileOverlay.valY ?? chartForTape.bottom,
+          ) ?? effectiveVolumeProfileOverlay.valY ?? chartForTape.bottom,
         x: baseX,
         color: "#e53935",
         top3: tapeIntelligence.val_top3 ?? [],
@@ -1668,7 +1747,7 @@ export default function OverlayPage() {
             renderScale,
             effectiveYMin,
             effectiveYMax,
-          ) ?? volumeProfileOverlay.vahY ?? chartForTape.top,
+          ) ?? effectiveVolumeProfileOverlay.vahY ?? chartForTape.top,
         x: baseX,
         color: "#e53935",
         top3: tapeIntelligence.vah_top3 ?? [],
@@ -1699,33 +1778,33 @@ export default function OverlayPage() {
     showTapeIntelligenceOverlay,
     tapeIntelligence,
     usingOcrChart,
-    volumeProfileOverlay,
+    effectiveVolumeProfileOverlay,
     effectiveVpDisplay?.labels_visible,
     effectiveVpDisplay?.poc_visible,
     effectiveVpDisplay?.val_vah_visible,
   ]);
   const overlayAlignmentMaxDeltaPx = useMemo(() => {
-    if (!volumeProfileOverlay || !effectiveChartRect) return null;
+    if (!effectiveVolumeProfileOverlay || !effectiveChartRect) return null;
     const deltas = [
       alignmentDeltaPx(
-        volumeProfileOverlay.pocY ?? undefined,
-        volumeProfileOverlay.poc,
+        effectiveVolumeProfileOverlay.pocY ?? undefined,
+        effectiveVolumeProfileOverlay.poc,
         effectiveChartRect,
         renderScale,
         effectiveYMin,
         effectiveYMax,
       ),
       alignmentDeltaPx(
-        volumeProfileOverlay.valY ?? undefined,
-        volumeProfileOverlay.val,
+        effectiveVolumeProfileOverlay.valY ?? undefined,
+        effectiveVolumeProfileOverlay.val,
         effectiveChartRect,
         renderScale,
         effectiveYMin,
         effectiveYMax,
       ),
       alignmentDeltaPx(
-        volumeProfileOverlay.vahY ?? undefined,
-        volumeProfileOverlay.vah,
+        effectiveVolumeProfileOverlay.vahY ?? undefined,
+        effectiveVolumeProfileOverlay.vah,
         effectiveChartRect,
         renderScale,
         effectiveYMin,
@@ -1734,7 +1813,7 @@ export default function OverlayPage() {
     ].filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     if (deltas.length === 0) return null;
     return Math.max(...deltas);
-  }, [effectiveChartRect, effectiveYMax, effectiveYMin, renderScale, volumeProfileOverlay]);
+  }, [effectiveChartRect, effectiveYMax, effectiveYMin, renderScale, effectiveVolumeProfileOverlay]);
 
   useEffect(() => {
     if (data.lines.length === 0) return;
@@ -1787,15 +1866,7 @@ export default function OverlayPage() {
   const captureManualPoint = useCallback(
     (y: number) => {
       if (!manualCalibrateMode) return;
-      const closestLine = [...scaledLines]
-        .sort((a, b) => Math.abs(a.y_screen - y) - Math.abs(b.y_screen - y))[0];
-      const p = {
-        y,
-        value:
-          closestLine && Number.isFinite(closestLine.value)
-            ? String(Math.round(closestLine.value))
-            : "",
-      };
+      const p = { y, value: "" };
       if (!manualPointA) {
         setManualPointA(p);
         return;
@@ -1807,7 +1878,7 @@ export default function OverlayPage() {
       setManualPointA(manualPointB);
       setManualPointB(p);
     },
-    [manualCalibrateMode, manualPointA, manualPointB, scaledLines],
+    [manualCalibrateMode, manualPointA, manualPointB],
   );
 
   const submitManualCalibration = useCallback(() => {
@@ -1844,46 +1915,13 @@ export default function OverlayPage() {
 
   const returnToAutoAxis = useCallback(() => {
     if (!isTauri()) return;
-    void invoke<{ ok?: boolean; message?: string }>("unlock_manual_profit_ocr")
-      .then((r) => {
-        setManualCalibrateMode(false);
-        setManualPointA(null);
-        setManualPointB(null);
-        setManualCalibrateHint(r?.message ?? "manual_axis_unlocked");
-      })
+    void invoke<{ ok?: boolean; message?: string }>("unfreeze_profit_ocr")
+      .then(() => invoke<{ ok?: boolean; message?: string }>("recalibrate_profit_ocr"))
+      .then((r) => setManualCalibrateHint(r?.message ?? "recalibrating"))
       .catch((e) =>
         setManualCalibrateHint(e instanceof Error ? e.message : String(e ?? "erro")),
       );
     window.setTimeout(() => setManualCalibrateHint(null), 5000);
-  }, []);
-
-  const handleToggleVisualDebug = useCallback((enabled: boolean) => {
-    setShowVisualDebug(enabled);
-    if (!enabled) {
-      setManualCalibrateMode(false);
-      setManualPointA(null);
-      setManualPointB(null);
-    }
-  }, []);
-
-  const handleToggleManualCalibrateMode = useCallback((enabled: boolean) => {
-    setManualCalibrateMode(enabled);
-    if (enabled) {
-      setShowVisualDebug(true);
-      setDebugLayerVisibility((prev) => ({
-        ...prev,
-        bounds: true,
-        regression: true,
-      }));
-      return;
-    }
-    setManualPointA(null);
-    setManualPointB(null);
-  }, []);
-
-  const handleClearManualCalibration = useCallback(() => {
-    setManualPointA(null);
-    setManualPointB(null);
   }, []);
 
   const lineStatusSummary = useMemo(() => {
@@ -1903,7 +1941,6 @@ export default function OverlayPage() {
     }
     return parts.join(" · ");
   }, [data.lines]);
-
   return (
     <div
       style={{
@@ -1911,9 +1948,13 @@ export default function OverlayPage() {
         inset: 0,
         pointerEvents: "none",
         background: "transparent",
+        backgroundColor: "transparent",
+        backgroundImage: "none",
         overflow: "hidden",
         userSelect: "none",
         WebkitUserSelect: "none",
+        colorScheme: "normal",
+        forcedColorAdjust: "none",
       }}
     >
       <svg
@@ -2033,7 +2074,7 @@ export default function OverlayPage() {
             ))}
           </g>
         ) : null}
-        {volumeProfileOverlay?.ySource === "fallback" ? (
+        {effectiveVolumeProfileOverlay?.ySource === "fallback" ? (
           <g>
             <rect
               x={10}
@@ -2054,11 +2095,12 @@ export default function OverlayPage() {
               fontWeight={800}
             >
               {`FALLBACK VP — eixo OCR indisponível ou incompleto · modo ${(vpFallbackMode || "auto").trim()}`}
+              {effectiveFallbackReason ? ` · ${effectiveFallbackReason}` : ""}
             </text>
           </g>
         ) : null}
-        {volumeProfileOverlay ? (
-          <VolumeProfileLayer overlay={volumeProfileOverlay} showHistogram={histogramVisible} />
+        {effectiveVolumeProfileOverlay ? (
+          <VolumeProfileLayer overlay={effectiveVolumeProfileOverlay} showHistogram={histogramVisible} />
         ) : (
           showVolumeProfileOverlay &&
           effectiveChartRect && (
@@ -2068,11 +2110,11 @@ export default function OverlayPage() {
         {tapeBadges.map((badge) => (
           <TapeBadge key={badge.key} badge={badge} />
         ))}
-        {effectiveChartRect && volumeProfileOverlay && tapeIntelligence?.top_player_avg_lines?.length ? (
+        {effectiveChartRect && effectiveVolumeProfileOverlay && tapeIntelligence?.top_player_avg_lines?.length ? (
           <TopPlayerAvgLinesLayer
             lines={(tapeIntelligence.top_player_avg_lines ?? []) as TopPlayerAvgLine[]}
             chart={effectiveChartRect}
-            lineEndX={volumeProfileOverlay.lineEndX}
+            lineEndX={effectiveVolumeProfileOverlay.lineEndX}
             effectiveYMin={effectiveYMin}
             effectiveYMax={effectiveYMax}
             renderScale={renderScale}
@@ -2128,10 +2170,10 @@ export default function OverlayPage() {
           alignmentMaxDeltaPx={overlayAlignmentMaxDeltaPx}
           viewportHeight={H}
           visibleLineCount={positionedLines.length}
-          visibleHistogramLevels={volumeProfileOverlay?.levels.length ?? 0}
-          histogramCandidates={volumeProfileOverlay?.histogramCandidates ?? 0}
-          histogramRendered={volumeProfileOverlay?.histogramRendered ?? 0}
-          histogramCoalesced={volumeProfileOverlay?.histogramCoalesced ?? 0}
+          visibleHistogramLevels={effectiveVolumeProfileOverlay?.levels.length ?? 0}
+          histogramCandidates={effectiveVolumeProfileOverlay?.histogramCandidates ?? 0}
+          histogramRendered={effectiveVolumeProfileOverlay?.histogramRendered ?? 0}
+          histogramCoalesced={effectiveVolumeProfileOverlay?.histogramCoalesced ?? 0}
           avgLineVisibleCount={topAvgLineVisibleCount}
           avgLineCandidates={topAvgLineCandidates}
           labelCollisionsCount={countDenseLabelCollisions(data.lines)}
@@ -2140,11 +2182,28 @@ export default function OverlayPage() {
           axisStatus={data.axis_status ?? null}
           axisSource={data.axis_source ?? null}
           badFrames={data.bad_frames ?? null}
-          pendingFrames={data.pending_frames ?? null}
+          axisErrorCode={data.axis_error_code ?? null}
+          axisErrorMessage={data.axis_error_message ?? null}
+          lastGoodAxisAgeMs={data.last_good_axis_age_ms ?? null}
+          overlayWindowAlive={data.overlay_window_alive ?? null}
+          ocrServiceAlive={data.ocr_service_alive ?? null}
+          ocrWsConnected={data.ocr_ws_connected ?? null}
+          vpStatus={data.vp_status ?? null}
           lineStatusSummary={lineStatusSummary}
+          rawAxisStatus={data.raw_axis_status ?? data.axis_status ?? null}
+          normalizedAxisStatus={data.normalized_axis_status ?? normalizeAxisStatus(data.axis_status ?? "")}
+          fallbackReason={effectiveFallbackReason || null}
+          payloadSeq={data.payload_seq ?? null}
+          wsUrl={data.ws_url ?? ocrWsUrl}
+          ocrPid={data.ocr_pid ?? null}
+          ocrPort={data.ocr_port ?? null}
+          parsedLabelsCount={data.parsed_labels_count ?? null}
+          ocrConfidence={data.ocr_confidence ?? null}
+          lastPayloadAgeMs={effectiveLastPayloadAgeMs}
         />
       </svg>
-      <VpOverlayHud
+      {false ? (
+        <VpOverlayHud
         effective={effectiveVpDisplay}
         showVp={showVolumeProfileOverlay}
         showTi={showTapeIntelligenceOverlay}
@@ -2159,62 +2218,16 @@ export default function OverlayPage() {
         onVpPeriod={setVpPeriod}
         streamVpPeriod={volumeProfile?.period ?? null}
         health={vpOverlayHealth}
-        overlayDebug={{
-          axisStatus: data.axis_status ?? null,
-          axisSource: data.axis_source ?? null,
-          badFrames: data.bad_frames ?? null,
-          pendingFrames:
-            data.pending_frames ??
-            (typeof data.axis_diagnostics?.pending_frames === "number"
-              ? data.axis_diagnostics.pending_frames
-              : null),
-          labelsCount:
-            data.labels_count ??
-            (typeof data.axis_diagnostics?.labels_count === "number"
-              ? data.axis_diagnostics.labels_count
-              : typeof data.axis_diagnostics?.kept_labels === "number"
-                ? data.axis_diagnostics.kept_labels
-                : null),
-          residualPx:
-            data.residual_px ??
-            (typeof data.axis_diagnostics?.residual_px === "number"
-              ? data.axis_diagnostics.residual_px
-              : null),
-          maxErrorPx:
-            data.max_error_px ??
-            (typeof data.axis_diagnostics?.max_error_px === "number"
-              ? data.axis_diagnostics.max_error_px
-              : null),
-          slope:
-            data.slope ??
-            (debugVisual?.regression?.slope ??
-              (typeof data.axis_diagnostics?.slope === "number"
-                ? data.axis_diagnostics.slope
-                : null)),
-          intercept:
-            data.intercept ??
-            (debugVisual?.regression?.intercept ??
-              (typeof data.axis_diagnostics?.intercept === "number"
-                ? data.axis_diagnostics.intercept
-                : null)),
-          valuePerPx:
-            data.value_per_px ??
-            (debugVisual?.regression?.valuePerPx ??
-              (typeof data.axis_diagnostics?.value_per_px === "number"
-                ? data.axis_diagnostics.value_per_px
-                : null)),
-          lineStatusSummary,
-        }}
         vpOverlayRawTicker={vpOverlayRawTicker}
         vpOverlayAgeMs={vpOverlayAgeMs}
         showVisualDebug={showVisualDebug}
-        onToggleVisualDebug={handleToggleVisualDebug}
+        onToggleVisualDebug={setShowVisualDebug}
         debugLayerVisibility={debugLayerVisibility}
         onToggleDebugLayer={(layer, value) =>
           setDebugLayerVisibility((prev) => ({ ...prev, [layer]: value }))
         }
         manualCalibrateMode={manualCalibrateMode}
-        onToggleManualCalibrateMode={handleToggleManualCalibrateMode}
+        onToggleManualCalibrateMode={setManualCalibrateMode}
         manualPointA={manualPointA}
         manualPointB={manualPointB}
         onSetManualPointAValue={(value) =>
@@ -2224,9 +2237,13 @@ export default function OverlayPage() {
           setManualPointB((prev) => (prev ? { ...prev, value } : prev))
         }
         onSubmitManualCalibration={submitManualCalibration}
-        onClearManualCalibration={handleClearManualCalibration}
+        onClearManualCalibration={() => {
+          setManualPointA(null);
+          setManualPointB(null);
+        }}
         onReturnAutoAxis={returnToAutoAxis}
       />
+      ) : null}
     </div>
   );
 }
@@ -2245,8 +2262,8 @@ export interface VpOverlayHudProps {
   vpPeriod: "day" | "week" | "manual";
   onVpPeriod: (p: "day" | "week" | "manual") => void;
   streamVpPeriod: "day" | "week" | "manual" | null;
-  health: VpOverlayHealthDebug | null;
-  overlayDebug: {
+  health: Record<string, unknown> | null;
+  overlayDebug?: {
     axisStatus: string | null;
     axisSource: string | null;
     badFrames: number | null;
@@ -2338,48 +2355,22 @@ export function VpOverlayHud({
       ? Math.round(Number(health.last_trade_age_ms))
       : null;
   const axisStatus =
-    typeof health?.axis_status === "string" ? health.axis_status : overlayDebug.axisStatus;
+    typeof health?.axis_status === "string"
+      ? health.axis_status
+      : overlayDebug?.axisStatus ?? null;
   const axisSource =
-    typeof health?.axis_source === "string" ? health.axis_source : overlayDebug.axisSource;
-  const normalizedAxisStatus = (axisStatus ?? "").trim().toUpperCase();
-  const normalizedAxisSource = (axisSource ?? "").trim().toLowerCase();
-  const canUnlockManualAxis =
-    normalizedAxisStatus === "MANUAL_LOCKED" ||
-    normalizedAxisStatus === "MANUAL" ||
-    normalizedAxisStatus === "LOCKED" ||
-    normalizedAxisSource === "manual";
-  const badFrames =
+    typeof health?.axis_source === "string"
+      ? health.axis_source
+      : overlayDebug?.axisSource ?? null;
+  const badFramesRaw =
     typeof health?.bad_frames === "number" && Number.isFinite(health.bad_frames)
       ? Math.round(Number(health.bad_frames))
-      : overlayDebug.badFrames;
+      : overlayDebug?.badFrames ?? null;
+  const badFrames = badFramesRaw == null ? null : Math.max(0, Math.round(badFramesRaw));
   const pendingFrames =
-    typeof health?.pending_frames === "number" && Number.isFinite(health.pending_frames)
-      ? Math.round(Number(health.pending_frames))
-      : overlayDebug.pendingFrames;
-  const labelsCount =
-    typeof health?.labels_count === "number" && Number.isFinite(health.labels_count)
-      ? Math.round(Number(health.labels_count))
-      : overlayDebug.labelsCount;
-  const residualPx =
-    typeof health?.residual_px === "number" && Number.isFinite(health.residual_px)
-      ? Math.round(Number(health.residual_px) * 1000) / 1000
-      : overlayDebug.residualPx;
-  const maxErrorPx =
-    typeof health?.max_error_px === "number" && Number.isFinite(health.max_error_px)
-      ? Math.round(Number(health.max_error_px) * 1000) / 1000
-      : overlayDebug.maxErrorPx;
-  const slope =
-    typeof health?.slope === "number" && Number.isFinite(health.slope)
-      ? Math.round(Number(health.slope) * 10000) / 10000
-      : overlayDebug.slope;
-  const intercept =
-    typeof health?.intercept === "number" && Number.isFinite(health.intercept)
-      ? Math.round(Number(health.intercept) * 1000) / 1000
-      : overlayDebug.intercept;
-  const valuePerPx =
-    typeof health?.value_per_px === "number" && Number.isFinite(health.value_per_px)
-      ? Math.round(Number(health.value_per_px) * 10000) / 10000
-      : overlayDebug.valuePerPx;
+    overlayDebug?.pendingFrames == null || !Number.isFinite(overlayDebug.pendingFrames)
+      ? null
+      : Math.max(0, Math.round(overlayDebug.pendingFrames));
   const overlayPublishAge =
     typeof health?.last_overlay_publish_age_ms === "number" && Number.isFinite(health.last_overlay_publish_age_ms)
       ? Math.round(Number(health.last_overlay_publish_age_ms))
@@ -2403,22 +2394,13 @@ export function VpOverlayHud({
   const sameManualPrice = hasValidManualA && hasValidManualB && parsedManualA === parsedManualB;
   const sameManualY =
     hasManualPointA && hasManualPointB && Math.abs(manualPointA.y - manualPointB.y) < 1;
-  const inconsistentManualOrientation =
-    hasManualPointA &&
-    hasManualPointB &&
-    hasValidManualA &&
-    hasValidManualB &&
-    !sameManualY &&
-    ((manualPointA.y < manualPointB.y && parsedManualA <= parsedManualB) ||
-      (manualPointA.y > manualPointB.y && parsedManualA >= parsedManualB));
   const canSubmitManualCalibration =
     hasManualPointA &&
     hasManualPointB &&
     hasValidManualA &&
     hasValidManualB &&
     !sameManualPrice &&
-    !sameManualY &&
-    !inconsistentManualOrientation;
+    !sameManualY;
   const manualValidationMessage = !hasManualPointA
     ? "Selecione o ponto A no overlay."
     : !hasManualPointB
@@ -2429,44 +2411,25 @@ export function VpOverlayHud({
           ? "A e B precisam ter preços diferentes."
           : sameManualY
             ? "A e B precisam estar em alturas diferentes no gráfico."
-            : inconsistentManualOrientation
-              ? "A orientação preço/altura está inconsistente (preço deve cair conforme o Y aumenta)."
             : null;
   const overlayAgeStateLabel =
     overlayAgeState === "missing" || overlayAgeState === "stale" || overlayAgeState === "fresh"
       ? overlayAgeState
       : "missing";
-  const normalizedDataStatus = String(dataStatus ?? "")
-    .trim()
-    .toLowerCase();
-  const badFramesSafe =
-    typeof badFrames === "number" && Number.isFinite(badFrames)
-      ? Math.max(0, Math.round(Number(badFrames)))
-      : null;
-  const pendingFramesSafe =
-    typeof pendingFrames === "number" && Number.isFinite(pendingFrames)
-      ? Math.max(0, Math.round(Number(pendingFrames)))
-      : null;
-  const hasDataError =
-    normalizedDataStatus.startsWith("error") ||
-    normalizedDataStatus.includes("fail") ||
-    normalizedDataStatus.includes("unreachable");
-  const isDataTransient =
-    normalizedDataStatus === "warming_up" ||
-    normalizedDataStatus === "connecting" ||
-    normalizedDataStatus === "ocr_axis_warming" ||
-    normalizedDataStatus === "ocr_unreachable_retrying";
-  const isAxisDegraded =
-    normalizedAxisStatus.includes("FAILED") ||
-    normalizedAxisStatus.includes("ERROR") ||
-    normalizedAxisStatus.includes("INVALID");
-  const hasFramePressure =
-    (badFramesSafe != null && badFramesSafe > 0) ||
-    (pendingFramesSafe != null && pendingFramesSafe >= 4);
-  const overlayStatePriority: "error" | "alert" | "info" =
-    overlayAgeStateLabel === "missing" || hasDataError || isAxisDegraded
+  const axisStatusNormalized = (axisStatus ?? "").trim().toUpperCase();
+  const dataStatusNormalized = (dataStatus ?? "").trim().toLowerCase();
+  const hasRuntimeError =
+    dataStatusNormalized.startsWith("error") || dataStatusNormalized.includes("timeout");
+  const hasAxisError =
+    axisStatusNormalized.includes("ERROR") ||
+    axisStatusNormalized === "NO_AXIS" ||
+    axisStatusNormalized === "AXIS_NOT_FOUND";
+  const hasFramePressure = (badFrames ?? 0) >= 3 || (pendingFrames ?? 0) >= 5;
+  const overlayStatePriority: "error" | "alert" | "info" = hasRuntimeError || hasAxisError
+    ? "error"
+    : overlayAgeStateLabel === "missing"
       ? "error"
-      : overlayAgeStateLabel === "stale" || isDataTransient || hasFramePressure
+      : overlayAgeStateLabel === "stale" || hasFramePressure
         ? "alert"
         : "info";
   const overlayStateBadgeText =
@@ -2480,39 +2443,34 @@ export function VpOverlayHud({
       ? "degradado"
       : overlayStatePriority === "alert"
         ? "instável"
-        : overlayAgeStateLabel === "missing"
-      ? "sem payload"
-      : overlayAgeStateLabel === "stale"
-        ? "desatualizado"
         : "atualizado";
-  const overlayStateReason =
-    overlayStatePriority === "error"
-      ? hasDataError
-        ? "falha no runtime OCR"
-        : isAxisDegraded
-          ? "eixo OCR inconsistente"
-          : "sem payload recente"
-      : overlayStatePriority === "alert"
-        ? hasFramePressure
+  const overlayReason =
+    hasRuntimeError
+      ? "falha no runtime OCR"
+      : hasAxisError
+        ? "eixo OCR inconsistente"
+        : hasFramePressure
           ? "fila/bad frames elevados"
-          : isDataTransient
-            ? "reconectando serviço OCR"
-            : "payload desatualizado"
-        : "telemetria consistente";
-  const overlayStateAction =
-    overlayStatePriority === "error"
-      ? hasDataError
-        ? "manter overlay aberto e revisar logs do runtime OCR"
-        : isAxisDegraded
-          ? "acionar recalibrar eixo e validar leitura no gráfico"
-          : "aguardar próximo payload ou reabrir overlay"
-      : overlayStatePriority === "alert"
-        ? hasFramePressure
+          : overlayAgeStateLabel === "missing"
+            ? "sem payload recente"
+            : overlayAgeStateLabel === "stale"
+              ? "payload desatualizado"
+              : "operação normal";
+  const overlayAction =
+    hasRuntimeError
+      ? "manter overlay aberto e revisar logs do runtime OCR"
+      : hasAxisError
+        ? "acionar recalibrar eixo e validar leitura no gráfico"
+        : hasFramePressure
           ? "reduzir carga visual e monitorar normalização dos frames"
-          : isDataTransient
-            ? "aguardar reconexão automática sem fechar o overlay"
-            : "validar estabilidade do feed antes de operar"
-        : "operação normal: seguir monitorando";
+          : overlayAgeStateLabel === "missing"
+            ? "aguardar próximo payload ou reabrir overlay"
+            : overlayAgeStateLabel === "stale"
+              ? "validar estabilidade do feed antes de operar"
+              : "operação normal: seguir monitorando";
+  const canReturnAutoAxis =
+    axisStatusNormalized === "MANUAL_LOCKED" ||
+    (axisSource ?? "").trim().toLowerCase() === "manual";
   const hudPlaceholder = (value: string | number | null | undefined, placeholder: string): string =>
     value == null || value === "" ? placeholder : String(value);
   return (
@@ -2572,7 +2530,7 @@ export function VpOverlayHud({
           {`Stream: ${streamVpPeriod}`}
         </div>
       ) : null}
-      {health || overlayDebug.lineStatusSummary ? (
+      {health ? (
         <div
           aria-live="polite"
           style={{
@@ -2591,8 +2549,8 @@ export function VpOverlayHud({
             <span>{`overlay: ${overlayStateLabel}`}</span>
             <span style={vpHudPriorityBadgeStyle(overlayStatePriority)}>{overlayStateBadgeText}</span>
           </div>
-          <div>{`motivo: ${overlayStateReason}`}</div>
-          <div>{`ação: ${overlayStateAction}`}</div>
+          <div>{`motivo: ${overlayReason}`}</div>
+          <div>{`ação: ${overlayAction}`}</div>
           <div>{`raw: ${hudPlaceholder(vpOverlayRawTicker, "— sem ticker")}`}</div>
           <div>{`payload age: ${vpOverlayAgeMs != null ? `${Math.round(vpOverlayAgeMs)} ms` : "— sem dado"}`}</div>
           <div>{`publish age: ${overlayPublishAge != null ? `${overlayPublishAge} ms` : "— sem dado"}`}</div>
@@ -2600,18 +2558,8 @@ export function VpOverlayHud({
           <div>
             {`axis: ${axisStatus ? `${axisStatus}${axisSource ? ` / ${axisSource}` : ""}` : "— sem eixo"}`}
           </div>
-          <div>{`bad frames: ${badFramesSafe != null ? String(badFramesSafe) : "— sem dado"}`}</div>
-          <div>{`pending: ${pendingFramesSafe != null ? String(pendingFramesSafe) : "— sem dado"}`}</div>
-          <div>{`labels: ${labelsCount != null ? String(labelsCount) : "— sem dado"}`}</div>
-          <div>{`residual px: ${residualPx != null ? String(residualPx) : "— sem dado"}`}</div>
-          <div>{`max error px: ${maxErrorPx != null ? String(maxErrorPx) : "— sem dado"}`}</div>
-          <div>{`slope/intercept: ${
-            slope != null || intercept != null
-              ? `${slope != null ? slope : "?"} / ${intercept != null ? intercept : "?"}`
-              : "— sem dado"
-          }`}</div>
-          <div>{`value/px: ${valuePerPx != null ? String(valuePerPx) : "— sem dado"}`}</div>
-          <div>{`line status: ${overlayDebug.lineStatusSummary || "— sem linhas"}`}</div>
+          <div>{`bad frames: ${badFrames != null ? String(badFrames) : "— sem dado"}`}</div>
+          <div>{`pending: ${pendingFrames != null ? String(pendingFrames) : "— sem dado"}`}</div>
           <div>{`OCR conf: ${ocrConf != null ? String(ocrConf) : "— sem dado"}`}</div>
           <div>{`eixo stale: ${axisStale != null ? `${axisStale} ms` : "— sem dado"}`}</div>
           <div>{`último trade: ${lastTradeAge != null ? `${lastTradeAge} ms` : "— sem dado"}`}</div>
@@ -2956,20 +2904,20 @@ export function VpOverlayHud({
         <button
           type="button"
           onClick={onReturnAutoAxis}
-          disabled={!canUnlockManualAxis}
+          disabled={!canReturnAutoAxis}
           aria-label="Retornar para modo automático de eixo"
+          title={
+            canReturnAutoAxis
+              ? undefined
+              : "Disponível apenas quando axis_status=MANUAL_LOCKED."
+          }
           style={{
             ...vpHudActionBtn,
             marginTop: 8,
             width: "100%",
-            opacity: canUnlockManualAxis ? 1 : 0.55,
-            cursor: canUnlockManualAxis ? "pointer" : "not-allowed",
+            opacity: canReturnAutoAxis ? 1 : 0.5,
+            cursor: canReturnAutoAxis ? "pointer" : "not-allowed",
           }}
-          title={
-            canUnlockManualAxis
-              ? "Destravar eixo manual e retomar OCR automático"
-              : "Disponível apenas quando o eixo está em MANUAL_LOCKED"
-          }
         >
           Voltar para eixo automático
         </button>
@@ -3566,8 +3514,24 @@ function StatusBadge({
   axisStatus,
   axisSource,
   badFrames,
-  pendingFrames,
+  axisErrorCode,
+  axisErrorMessage,
+  lastGoodAxisAgeMs,
+  overlayWindowAlive,
+  ocrServiceAlive,
+  ocrWsConnected,
+  vpStatus,
   lineStatusSummary,
+  rawAxisStatus,
+  normalizedAxisStatus,
+  fallbackReason,
+  payloadSeq,
+  wsUrl,
+  ocrPid,
+  ocrPort,
+  parsedLabelsCount,
+  ocrConfidence,
+  lastPayloadAgeMs,
 }: {
   status: string;
   y_min: number | null;
@@ -3593,8 +3557,24 @@ function StatusBadge({
   axisStatus: string | null;
   axisSource: string | null;
   badFrames: number | null;
-  pendingFrames: number | null;
+  axisErrorCode: string | null;
+  axisErrorMessage: string | null;
+  lastGoodAxisAgeMs: number | null;
+  overlayWindowAlive: boolean | null;
+  ocrServiceAlive: boolean | null;
+  ocrWsConnected: boolean | null;
+  vpStatus: string | null;
   lineStatusSummary: string;
+  rawAxisStatus: string | null;
+  normalizedAxisStatus: string | null;
+  fallbackReason: string | null;
+  payloadSeq: number | null;
+  wsUrl: string | null;
+  ocrPid: number | null;
+  ocrPort: number | null;
+  parsedLabelsCount: number | null;
+  ocrConfidence: number | null;
+  lastPayloadAgeMs: number | null;
 }) {
   const color = overlayStatusColor(status);
   const text = overlayStatusText(status, y_min, y_max, axis_deltas);
@@ -3623,8 +3603,31 @@ function StatusBadge({
       ? `render ${overlayCommitMs}ms ~${overlayCommitHz}Hz`
       : "";
   const axisDbg = axisStatus
-    ? `axis ${axisStatus}${axisSource ? `/${axisSource}` : ""}${badFrames != null ? ` bf:${badFrames}` : ""}${pendingFrames != null ? ` pend:${pendingFrames}` : ""}`
+    ? `axis ${axisStatus}${axisSource ? `/${axisSource}` : ""}${badFrames != null ? ` bf:${badFrames}` : ""}`
     : "";
+  const axisRawDbg = rawAxisStatus ? `raw_axis ${rawAxisStatus}` : "";
+  const axisNormDbg = normalizedAxisStatus ? `norm_axis ${normalizedAxisStatus}` : "";
+  const axisErrDbg = axisErrorCode
+    ? `axis_err ${axisErrorCode}${axisErrorMessage ? ` (${axisErrorMessage})` : ""}`
+    : "";
+  const axisAgeDbg = lastGoodAxisAgeMs != null ? `last_good ${Math.round(lastGoodAxisAgeMs)}ms` : "";
+  const payloadDbg = payloadSeq != null ? `seq ${Math.round(payloadSeq)}` : "";
+  const labelsDbg = parsedLabelsCount != null ? `labels_parsed ${parsedLabelsCount}` : "";
+  const confDbg = ocrConfidence != null ? `ocr_conf ${Math.round(ocrConfidence * 1000) / 1000}` : "";
+  const fallbackDbg = fallbackReason ? `fallback ${fallbackReason}` : "";
+  const wsDbg = wsUrl ? `ws_url ${wsUrl}` : "";
+  const pidDbg = ocrPid != null ? `ocr_pid ${Math.round(ocrPid)}` : "";
+  const portDbg = ocrPort != null ? `ocr_port ${Math.round(ocrPort)}` : "";
+  const payloadAgeDbg =
+    lastPayloadAgeMs != null ? `payload_age ${Math.round(lastPayloadAgeMs)}ms` : "";
+  const healthDbg = [
+    overlayWindowAlive != null ? `win ${overlayWindowAlive ? "alive" : "down"}` : "",
+    ocrServiceAlive != null ? `ocr ${ocrServiceAlive ? "alive" : "down"}` : "",
+    ocrWsConnected != null ? `ws ${ocrWsConnected ? "connected" : "disconnected"}` : "",
+    vpStatus ? `vp ${vpStatus}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const linesDbg = lineStatusSummary ? `lines ${lineStatusSummary}` : "";
 
   return (
@@ -3643,7 +3646,23 @@ function StatusBadge({
           fontWeight="500"
         >
           {[diagText, alignDbg, lineDbg, vpDbg, histCoalDbg, avgDbg, collDbg, perfDbg]
-            .concat([axisDbg, linesDbg])
+            .concat([
+              axisDbg,
+              axisRawDbg,
+              axisNormDbg,
+              axisErrDbg,
+              axisAgeDbg,
+              labelsDbg,
+              confDbg,
+              payloadDbg,
+              payloadAgeDbg,
+              pidDbg,
+              portDbg,
+              wsDbg,
+              fallbackDbg,
+              healthDbg,
+              linesDbg,
+            ])
             .filter(Boolean)
             .join(" · ")}
         </text>
@@ -3656,7 +3675,30 @@ function StatusBadge({
           fontFamily={FONT}
           fontWeight="500"
         >
-          {[alignDbg, lineDbg, vpDbg, histCoalDbg, avgDbg, collDbg, perfDbg, axisDbg, linesDbg]
+          {[
+            alignDbg,
+            lineDbg,
+            vpDbg,
+            histCoalDbg,
+            avgDbg,
+            collDbg,
+            perfDbg,
+            axisDbg,
+            axisRawDbg,
+            axisNormDbg,
+            axisErrDbg,
+            axisAgeDbg,
+            labelsDbg,
+            confDbg,
+            payloadDbg,
+            payloadAgeDbg,
+            pidDbg,
+            portDbg,
+            wsDbg,
+            fallbackDbg,
+            healthDbg,
+            linesDbg,
+          ]
             .filter(Boolean)
             .join(" · ")}
         </text>

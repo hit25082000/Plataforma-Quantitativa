@@ -37,7 +37,7 @@ export default function OverlayControl() {
   const inputRef = useRef<HTMLInputElement>(null);
   const lastRoiKeyRef = useRef<string | null>(null);
 
-  const canActivate = selectedMetricIds.length > 0;
+  const canActivate = true;
   const handleToggle = () => {
     if (activating) return;
     active ? void closeOverlay() : void openOverlay();
@@ -109,28 +109,30 @@ export default function OverlayControl() {
         </button>
       </div>
 
-      {!canActivate && !active && (
-        <div style={styles.warnHint}>Marque ao menos um parâmetro para monitorar.</div>
-      )}
-
       <div style={styles.section}>
         <div style={styles.sectionLabel}>Monitorar</div>
-        <div style={styles.checkboxGrid}>
-          {OVERLAY_METRIC_ORDER.map((id) => {
-            const checked = selectedMetricIds.includes(id);
-            return (
-              <label key={id} style={styles.checkboxRow}>
-                <input
-                  type="checkbox"
-                  checked={checked}
-                  onChange={() => toggleMetric(id)}
-                  style={styles.checkbox}
-                />
-                <span>{OVERLAY_METRIC_LABELS[id]}</span>
-              </label>
-            );
-          })}
-        </div>
+        {OVERLAY_METRIC_ORDER.length > 0 ? (
+          <div style={styles.checkboxGrid}>
+            {OVERLAY_METRIC_ORDER.map((id) => {
+              const checked = selectedMetricIds.includes(id);
+              return (
+                <label key={id} style={styles.checkboxRow}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleMetric(id)}
+                    style={styles.checkbox}
+                  />
+                  <span>{OVERLAY_METRIC_LABELS[id]}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : (
+          <div style={styles.warnHint}>
+            Modo estável: somente VP Sato e linhas manuais. Médias automáticas estão desligadas.
+          </div>
+        )}
       </div>
 
       <div style={styles.statusRow}>

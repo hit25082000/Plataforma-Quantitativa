@@ -14,7 +14,6 @@ import {
   topSellerByVolFin,
 } from "../utils/agentVolume";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
-import { hasMeaningfulLineDiff } from "../utils/overlayRenderDiff";
 
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
@@ -24,11 +23,7 @@ const OPEN_OVERLAY_TIMEOUT_MS = 190_000;
 
 export type OverlayMetricId = "ubs" | "best_bid" | "best_ask";
 
-export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = [
-  "ubs",
-  "best_bid",
-  "best_ask",
-];
+export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = [];
 
 export const OVERLAY_METRIC_LABELS: Record<OverlayMetricId, string> = {
   ubs: "UBS",
@@ -55,7 +50,7 @@ export function overlayLineColorForLabel(label: string, index: number): string {
   return OVERLAY_FALLBACK_COLORS[index % OVERLAY_FALLBACK_COLORS.length];
 }
 
-const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["ubs", "best_bid", "best_ask"];
+const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = [];
 
 function normalizeSymbol(symbol?: string | null): string {
   if (!symbol) return "";
@@ -132,6 +127,7 @@ function saveSelectedMetrics(ids: OverlayMetricId[]) {
 export interface OverlayTarget {
   value: number;
   label: string;
+  source?: "manual" | "metric" | "vp";
   /** Definido para linhas derivadas de métricas; ausente em linhas manuais. */
   metricId?: OverlayMetricId;
 }
@@ -184,6 +180,13 @@ export interface OverlayState {
   axis_diagnostics: Record<string, unknown> | null;
   analysisRoi: OcrAnalysisRoi | null;
   analysisSample: OcrAnalysisSample | null;
+  axis_error_code: string | null;
+  axis_error_message: string | null;
+  last_good_axis_age_ms: number | null;
+  overlay_window_alive: boolean | null;
+  ocr_service_alive: boolean | null;
+  ocr_ws_connected: boolean | null;
+  vp_status: string | null;
 }
 
 function formatBrokerName(
@@ -204,12 +207,18 @@ function targetsEqual(a: OverlayTarget[], b: OverlayTarget[]): boolean {
     if (
       a[i].value !== b[i].value ||
       a[i].label !== b[i].label ||
+      a[i].source !== b[i].source ||
       a[i].metricId !== b[i].metricId
     ) {
       return false;
     }
   }
   return true;
+}
+
+function isManualTarget(t: OverlayTarget): boolean {
+  if (t.source != null) return t.source === "manual";
+  return t.metricId == null && t.label === "Manual";
 }
 
 export function useProfitOverlay() {
@@ -225,6 +234,13 @@ export function useProfitOverlay() {
     axis_diagnostics: null,
     analysisRoi: null,
     analysisSample: null,
+    axis_error_code: null,
+    axis_error_message: null,
+    last_good_axis_age_ms: null,
+    overlay_window_alive: null,
+    ocr_service_alive: null,
+    ocr_ws_connected: null,
+    vp_status: null,
   });
 
   const [selectedMetricIds, setSelectedMetricIdsState] =
@@ -316,6 +332,8 @@ export function useProfitOverlay() {
   );
 
   const buildMetricTargets = useCallback((): OverlayTarget[] => {
+    if (selectedMetricIds.length === 0) return [];
+
     const saldoFin = (agentId: number) =>
       Number(agentBuyFinancial[agentId] ?? 0) -
       Number(agentSellFinancial[agentId] ?? 0);
@@ -488,6 +506,7 @@ export function useProfitOverlay() {
       out.push({
         value: raw,
         label,
+        source: "metric",
         metricId: id,
       });
     }
@@ -584,27 +603,24 @@ export function useProfitOverlay() {
               console.info(`[overlay-latency] first_overlay_ok elapsed_ms=${ms}`);
               firstOverlayLoggedRef.current = true;
             }
-            setState((prev) => {
-              const shouldUpdateLines = hasMeaningfulLineDiff(prev.lines, parsed.lines);
-              const hasMetaDiff =
-                prev.status !== parsed.status ||
-                prev.y_min !== parsed.yMin ||
-                prev.y_max !== parsed.yMax ||
-                prev.axis_deltas !== parsed.axisDeltas ||
-                prev.axis_diagnostics !== parsed.axisDiagnostics;
-              if (!shouldUpdateLines && !hasMetaDiff) return prev;
-              return {
-                ...prev,
-                status: parsed.status,
-                lines: shouldUpdateLines ? parsed.lines : prev.lines,
-                y_min: parsed.yMin,
-                y_max: parsed.yMax,
-                axis_deltas: parsed.axisDeltas,
-                axis_diagnostics: parsed.axisDiagnostics,
-                analysisRoi: (parsed.analysisRoi as OcrAnalysisRoi | null | undefined) ?? null,
-                analysisSample: (parsed.analysisSample as OcrAnalysisSample | null | undefined) ?? null,
-              };
-            });
+            setState((prev) => ({
+              ...prev,
+              status: parsed.status,
+              lines: parsed.lines,
+              y_min: parsed.yMin,
+              y_max: parsed.yMax,
+              axis_deltas: parsed.axisDeltas,
+              axis_diagnostics: parsed.axisDiagnostics,
+              analysisRoi: (parsed.analysisRoi as OcrAnalysisRoi | null | undefined) ?? null,
+              analysisSample: (parsed.analysisSample as OcrAnalysisSample | null | undefined) ?? null,
+              axis_error_code: parsed.axisErrorCode,
+              axis_error_message: parsed.axisErrorMessage,
+              last_good_axis_age_ms: parsed.lastGoodAxisAgeMs,
+              overlay_window_alive: parsed.overlayWindowAlive,
+              ocr_service_alive: parsed.ocrServiceAlive,
+              ocr_ws_connected: parsed.ocrWsConnected,
+              vp_status: parsed.vpStatus,
+            }));
           }
         } catch {
           // ignore parse errors
@@ -724,10 +740,6 @@ export function useProfitOverlay() {
   }, []);
 
   const openOverlay = useCallback(async () => {
-    if (selectedMetricIds.length === 0) {
-      console.warn("[overlay] Selecione ao menos um parâmetro para monitorar.");
-      return;
-    }
     try {
       openStartMsRef.current = performance.now();
       wsOpenLoggedRef.current = false;
@@ -772,9 +784,10 @@ export function useProfitOverlay() {
           ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
               ...t,
               value: normalizePosition(t.value),
+              source: "vp" as const,
             }))
           : [];
-      const manuals = targetsRef.current.filter((t) => t.metricId == null);
+      const manuals = targetsRef.current.filter(isManualTarget);
       const next = mergeTargets(metrics, vpTargets, manuals);
       setState((prev) => ({
         ...prev,
@@ -809,7 +822,7 @@ export function useProfitOverlay() {
 
   const closeOverlay = useCallback(async () => {
     try {
-      await invoke("close_profit_overlay");
+      await invoke("close_profit_overlay", { reason: "overlay_control_toggle_off" });
       clearTimeout(autoPushTimerRef.current);
       pendingAutoPushRef.current = null;
       stableBuyerLeaderRef.current = null;
@@ -851,6 +864,7 @@ export function useProfitOverlay() {
         const manual: OverlayTarget = {
           value: normalizePosition(value),
           label: "Manual",
+          source: "manual",
         };
         const next = [...prev.targets, manual];
         pushTargets(next);
@@ -906,7 +920,7 @@ export function useProfitOverlay() {
   useEffect(() => {
     if (!state.active || !autoDynamicDefaultsRef.current) return;
     setState((prev) => {
-      const manuals = prev.targets.filter((t) => t.metricId == null);
+      const manuals = prev.targets.filter(isManualTarget);
       const metrics = buildMetricTargets();
       const selected = normalizeSymbol(selectedTicker);
       const incoming = normalizeSymbol(volumeProfile?.ticker);
@@ -915,6 +929,7 @@ export function useProfitOverlay() {
           ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
               ...t,
               value: normalizePosition(t.value),
+              source: "vp" as const,
             }))
           : [];
       if (vpTargets.length > 0) {

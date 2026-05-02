@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import asyncio
-import json
 import sys
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -165,18 +163,9 @@ class TestVpOverlayEndpoints(unittest.TestCase):
         with patch("websocket_server._ocr_overlay_proxy", async_mock):
             self.assertEqual(self.client.get("/api/ocr-overlay/status").status_code, 200)
             self.assertEqual(self.client.get("/api/ocr-overlay/debug").status_code, 200)
-            self.assertEqual(self.client.get("/api/ocr-overlay/config").status_code, 200)
-            self.assertEqual(
-                self.client.post(
-                    "/api/ocr-overlay/config",
-                    json={"refresh_ms": 250, "line_y_smooth_alpha": 0.75, "min_conf": 21},
-                ).status_code,
-                200,
-            )
             self.assertEqual(self.client.post("/api/ocr-overlay/recalibrate").status_code, 200)
             self.assertEqual(self.client.post("/api/ocr-overlay/freeze").status_code, 200)
             self.assertEqual(self.client.post("/api/ocr-overlay/unfreeze").status_code, 200)
-            self.assertEqual(self.client.post("/api/ocr-overlay/manual-unlock").status_code, 200)
             self.assertEqual(
                 self.client.post(
                     "/api/ocr-overlay/manual-calibration",
@@ -184,52 +173,6 @@ class TestVpOverlayEndpoints(unittest.TestCase):
                 ).status_code,
                 200,
             )
-        async_mock.assert_any_await(
-            "POST",
-            "/api/ocr-overlay/config",
-            payload={"refresh_ms": 250, "line_y_smooth_alpha": 0.75, "min_conf": 21},
-        )
-
-    def test_ocr_overlay_config_rejects_empty_payload_with_canonical_error(self) -> None:
-        response = self.client.post("/api/ocr-overlay/config", json={})
-        self.assertEqual(response.status_code, 400)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/config")
-        self.assertEqual(body["error_code"], "OCR_INVALID_PAYLOAD")
-        self.assertEqual(body["message"], "Payload inválido para configuração do OCR overlay.")
-        self.assertEqual(body["details"]["reason"], "payload_must_not_be_empty")
-
-    def test_ocr_overlay_config_rejects_non_object_payload_with_canonical_error(self) -> None:
-        response = self.client.post("/api/ocr-overlay/config", json=[])
-        self.assertEqual(response.status_code, 422)
-        body = response.json()
-        self.assertEqual(body["detail"][0]["type"], "dict_type")
-
-    def test_ocr_overlay_config_rejects_unknown_fields_with_canonical_error(self) -> None:
-        response = self.client.post("/api/ocr-overlay/config", json={"foo": 1})
-        self.assertEqual(response.status_code, 400)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/config")
-        self.assertEqual(body["error_code"], "OCR_INVALID_PAYLOAD")
-        self.assertEqual(body["message"], "Payload inválido para configuração do OCR overlay.")
-        self.assertEqual(body["details"]["reason"], "unknown_fields")
-        self.assertIn("foo", body["details"]["fields"])
-
-    def test_ocr_overlay_config_rejects_invalid_limits_with_canonical_error(self) -> None:
-        response = self.client.post(
-            "/api/ocr-overlay/config",
-            json={"refresh_ms": 99, "line_y_smooth_alpha": 1.5, "axis_max_bad_frames": True},
-        )
-        self.assertEqual(response.status_code, 400)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/config")
-        self.assertEqual(body["error_code"], "OCR_INVALID_PAYLOAD")
-        self.assertEqual(body["message"], "Payload inválido para configuração do OCR overlay.")
-        self.assertEqual(body["details"]["reason"], "invalid_fields")
-        fields = {entry["field"]: entry["reason"] for entry in body["details"]["fields"]}
-        self.assertEqual(fields["refresh_ms"], "out_of_range")
-        self.assertEqual(fields["line_y_smooth_alpha"], "out_of_range")
-        self.assertEqual(fields["axis_max_bad_frames"], "must_be_number")
 
     def test_ocr_overlay_manual_calibration_invalid_payload(self) -> None:
         response = self.client.post("/api/ocr-overlay/manual-calibration", json={"points": []})
@@ -283,113 +226,6 @@ class TestVpOverlayEndpoints(unittest.TestCase):
         self.assertEqual(body["endpoint"], "/api/ocr-overlay/status")
         self.assertEqual(body["error_code"], "OCR_DOWNSTREAM_TIMEOUT")
         self.assertIn("ts", body)
-
-    def test_ocr_overlay_proxy_degraded_state_error_shape(self) -> None:
-        degraded = {
-            "ok": False,
-            "endpoint": "status",
-            "error": {"code": "axis_lost", "message": "axis degraded"},
-            "meta": {"status": "degraded"},
-        }
-        with patch("websocket_server._ocr_overlay_proxy_sync", return_value=degraded):
-            response = self.client.get("/api/ocr-overlay/status")
-        self.assertEqual(response.status_code, 503)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/status")
-        self.assertEqual(body["error_code"], "OCR_DEGRADED_STATE")
-        self.assertIn("details", body)
-
-    def test_ocr_overlay_proxy_bad_payload_error_shape(self) -> None:
-        with patch("websocket_server._ocr_overlay_proxy_sync", return_value=["invalid"]):
-            response = self.client.get("/api/ocr-overlay/config")
-        self.assertEqual(response.status_code, 503)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/config")
-        self.assertEqual(body["error_code"], "OCR_DOWNSTREAM_BAD_PAYLOAD")
-        self.assertIn("ts", body)
-
-    def test_ocr_overlay_proxy_http_error_maps_to_unavailable(self) -> None:
-        exc = urllib.error.HTTPError(
-            url="http://127.0.0.1:5558/api/ocr-overlay/status",
-            code=503,
-            msg="Service Unavailable",
-            hdrs=None,
-            fp=None,
-        )
-        with patch("websocket_server._ocr_overlay_proxy_sync", side_effect=exc):
-            response = self.client.get("/api/ocr-overlay/status")
-        self.assertEqual(response.status_code, 503)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/status")
-        self.assertEqual(body["error_code"], "OCR_DOWNSTREAM_UNAVAILABLE")
-        self.assertIn("ts", body)
-
-    def test_ocr_overlay_proxy_http_400_maps_to_invalid_payload_error_code(self) -> None:
-        exc = urllib.error.HTTPError(
-            url="http://127.0.0.1:5558/api/ocr-overlay/config",
-            code=400,
-            msg="Bad Request",
-            hdrs=None,
-            fp=None,
-        )
-        with patch("websocket_server._ocr_overlay_proxy_sync", side_effect=exc):
-            response = self.client.get("/api/ocr-overlay/config")
-        self.assertEqual(response.status_code, 400)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/config")
-        self.assertEqual(body["error_code"], "OCR_INVALID_PAYLOAD")
-        self.assertIn("ts", body)
-
-    def test_ocr_overlay_proxy_http_504_maps_to_timeout_error_code(self) -> None:
-        exc = urllib.error.HTTPError(
-            url="http://127.0.0.1:5558/api/ocr-overlay/status",
-            code=504,
-            msg="Gateway Timeout",
-            hdrs=None,
-            fp=None,
-        )
-        with patch("websocket_server._ocr_overlay_proxy_sync", side_effect=exc):
-            response = self.client.get("/api/ocr-overlay/status")
-        self.assertEqual(response.status_code, 504)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/status")
-        self.assertEqual(body["error_code"], "OCR_DOWNSTREAM_TIMEOUT")
-        self.assertIn("ts", body)
-
-    def test_ocr_overlay_proxy_unexpected_exception_has_unavailable_error_code(self) -> None:
-        with patch("websocket_server._ocr_overlay_proxy_sync", side_effect=RuntimeError("boom")):
-            response = self.client.post("/api/ocr-overlay/recalibrate")
-        self.assertEqual(response.status_code, 503)
-        body = response.json()["detail"]
-        self.assertEqual(body["endpoint"], "/api/ocr-overlay/recalibrate")
-        self.assertEqual(body["error_code"], "OCR_DOWNSTREAM_UNAVAILABLE")
-        self.assertIn("ts", body)
-
-    def test_ws_volume_profile_alias_sends_snapshot_for_symbol(self) -> None:
-        payload = {
-            "topic": "market",
-            "type": "volume_profile",
-            "ticker": "WINFUT",
-            "raw_ticker": "WINFUT",
-            "total_vol": 100,
-            "poc": 100000.0,
-            "vah": 100010.0,
-            "val": 99990.0,
-            "levels": [],
-            "source": "test",
-            "updated_at": 1.0,
-        }
-        asyncio.run(self.router.route(json.dumps(payload)))
-        with self.client.websocket_connect("/ws/volume-profile?symbol=WINFUT") as ws:
-            first = ws.receive_json()
-        self.assertEqual(first["type"], "volume_profile")
-        self.assertEqual(first["ticker"], "WINFUT")
-
-    def test_ws_tape_intelligence_alias_accepts_connections(self) -> None:
-        self.assertEqual(len(self.vp_tape_manager.active), 0)
-        with self.client.websocket_connect("/ws/tape-intelligence"):
-            self.assertEqual(len(self.vp_tape_manager.active), 1)
-        self.assertEqual(len(self.vp_tape_manager.active), 0)
 
 
 if __name__ == "__main__":

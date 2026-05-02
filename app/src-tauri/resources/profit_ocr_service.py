@@ -17,6 +17,7 @@ import time
 from collections import OrderedDict
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -27,6 +28,8 @@ try:
     import pytesseract
     import uvicorn
     import win32gui
+    import win32con
+    import win32ui
     from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from PIL import Image, ImageEnhance
@@ -139,6 +142,8 @@ AXIS_BLEND_BETA = min(1.0, max(0.01, AXIS_BLEND_BETA))
 COLORS = ["#00FF88", "#FF4444", "#FFB800", "#00CCFF", "#FF88FF", "#FFFFFF"]
 LINE_Y_DEADBAND_PX = float(os.environ.get("PQ_OVERLAY_LINE_DEADBAND_PX", "1.5"))
 AXIS_MAX_BAD_FRAMES = int(os.environ.get("PQ_OCR_AXIS_MAX_BAD_FRAMES", "8"))
+AXIS_STABLE_HOLD_SECS = float(os.environ.get("PQ_OCR_AXIS_STABLE_HOLD_SECS", "2"))
+AXIS_FROZEN_HOLD_SECS = float(os.environ.get("PQ_OCR_AXIS_FROZEN_HOLD_SECS", "10"))
 OCR_TRACE_PATH = resolve_trace_path((os.environ.get("PQ_OCR_TRACE_PATH") or "").strip())
 OCR_SYMBOL = (os.environ.get("PQ_OCR_SYMBOL") or "WINFUT").strip().upper()
 TRACE_SESSION_ID = (os.environ.get("PQ_OCR_TRACE_SESSION_ID") or "").strip() or f"ocr-{int(time.time() * 1000)}"
@@ -198,12 +203,27 @@ state: Dict[str, Any] = {
     "axis_confidence": 0.0,
     "axis_residual_px": 0.0,
     "axis_max_error_px": 0.0,
+    "axis_error_code": "",
+    "axis_error_message": "",
+    "profit_window_found": False,
+    "profit_hwnd": None,
+    "monitor_id": None,
+    "monitor_bounds": None,
+    "profit_bounds": None,
+    "last_axis_crop": None,
+    "last_axis_ocr_text": "",
+    "last_axis_labels_parsed": [],
+    "last_axis_labels_rejected": [],
+    "last_capture_mode": "unknown",
     "frame_seq": 0,
     "last_frame": None,
     "last_ws_emit_ts": 0.0,
     "last_ws_visual_hash": "",
     "last_render_hash": "",
     "last_render_targets_hash": "",
+    "axis_candidate": None,
+    "axis_acceptance": None,
+    "axis_final_decision": None,
 }
 clients: List[WebSocket] = []
 service_started_at = time.monotonic()
@@ -432,6 +452,10 @@ def _build_overlay_update_data() -> dict[str, Any]:
     status_block = {
         "state": str(state.get("status") or ""),
         "axis_locked": axis_locked,
+        "overlay_window_alive": bool(state.get("profit_window_found")),
+        "ocr_service_alive": True,
+        "ocr_ws_connected": len(clients) > 0,
+        "vp_status": "unknown",
         "analysis_roi": state.get("analysis_roi"),
         "analysis_sample": state.get("analysis_sample"),
         "timestamp": state.get("last_update"),
@@ -455,6 +479,9 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "pending_count": pending_count,
         "pending_frames": pending_count,
         "pending_candidate": state.get("axis_pending_candidate"),
+        "axis_error_code": str(state.get("axis_error_code") or ""),
+        "axis_error_message": str(state.get("axis_error_message") or ""),
+        "last_good_axis_age_ms": _last_good_axis_age_ms(),
     }
     debug_visual = {
         "ocr_labels": axis_labels,
@@ -500,6 +527,10 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "analysis_roi": status_block["analysis_roi"],
         "analysis_sample": status_block["analysis_sample"],
         "ts": status_block["timestamp"],
+        "overlay_window_alive": status_block["overlay_window_alive"],
+        "ocr_service_alive": status_block["ocr_service_alive"],
+        "ocr_ws_connected": status_block["ocr_ws_connected"],
+        "vp_status": status_block["vp_status"],
         "blocks": structured_block,
         # Contrato estruturado (novo)
         "structured": structured_block,
@@ -515,6 +546,9 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "pending_count": axis_block["pending_count"],
         "pending_frames": axis_block["pending_frames"],
         "pending_candidate": axis_block["pending_candidate"],
+        "axis_error_code": axis_block["axis_error_code"],
+        "axis_error_message": axis_block["axis_error_message"],
+        "last_good_axis_age_ms": axis_block["last_good_axis_age_ms"],
     }
 
 
@@ -524,6 +558,32 @@ def _sync_axis_runtime_state(*, source: str) -> None:
     state["axis_bad_frames"] = axis_manager.bad_frames
     state["axis_pending_count"] = axis_manager.pending_count
     state["axis_pending_candidate"] = axis_manager.pending_candidate
+
+
+def _set_axis_error(code: str, message: str) -> None:
+    state["axis_error_code"] = str(code or "")
+    state["axis_error_message"] = str(message or "")
+
+
+def _clear_axis_error() -> None:
+    _set_axis_error("", "")
+
+
+def _ensure_axis_error_invariant() -> None:
+    if str(state.get("axis_status") or "").strip().upper() == "NO_AXIS" and not str(
+        state.get("axis_error_code") or ""
+    ).strip():
+        _set_axis_error(
+            "NO_AXIS_UNKNOWN_REASON",
+            "Axis is NO_AXIS but no rejection reason was recorded",
+        )
+
+
+def _last_good_axis_age_ms() -> Optional[int]:
+    ts = axis_manager.last_stable_ts_monotonic
+    if ts is None:
+        return None
+    return max(0, int((time.monotonic() - ts) * 1000))
 
 
 def _should_publish_overlay_update(payload_data: dict[str, Any]) -> bool:
@@ -724,6 +784,94 @@ def capture_region(left: int, top: int, width: int, height: int) -> Image.Image:
         return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
 
 
+def _detect_monitor_for_bounds(left: int, top: int, width: int, height: int) -> tuple[Optional[str], Optional[dict[str, int]]]:
+    center_x = left + max(1, width) // 2
+    center_y = top + max(1, height) // 2
+    try:
+        with mss.mss() as sct:
+            for idx, m in enumerate(sct.monitors[1:], start=1):
+                ml = int(m.get("left", 0))
+                mt = int(m.get("top", 0))
+                mw = int(m.get("width", 0))
+                mh = int(m.get("height", 0))
+                if ml <= center_x < (ml + mw) and mt <= center_y < (mt + mh):
+                    return (
+                        f"monitor-{idx}",
+                        {"x": ml, "y": mt, "width": mw, "height": mh},
+                    )
+    except Exception:
+        return (None, None)
+    return (None, None)
+
+
+def capture_window_by_hwnd(hwnd: int, width: int, height: int) -> Optional[Image.Image]:
+    # PrintWindow evita capturar overlay topmost compositado sobre a tela.
+    if width <= 0 or height <= 0:
+        return None
+    hwnd_dc = win32gui.GetWindowDC(hwnd)
+    if not hwnd_dc:
+        return None
+    src_dc = None
+    mem_dc = None
+    bmp = None
+    try:
+        src_dc = win32ui.CreateDCFromHandle(hwnd_dc)
+        mem_dc = src_dc.CreateCompatibleDC()
+        bmp = win32ui.CreateBitmap()
+        bmp.CreateCompatibleBitmap(src_dc, width, height)
+        mem_dc.SelectObject(bmp)
+        # PW_RENDERFULLCONTENT melhora captura em algumas janelas aceleradas.
+        ok = ctypes.windll.user32.PrintWindow(hwnd, mem_dc.GetSafeHdc(), 0x00000002)
+        if ok != 1:
+            return None
+        bmp_info = bmp.GetInfo()
+        bmp_bits = bmp.GetBitmapBits(True)
+        return Image.frombuffer(
+            "RGB",
+            (bmp_info["bmWidth"], bmp_info["bmHeight"]),
+            bmp_bits,
+            "raw",
+            "BGRX",
+            0,
+            1,
+        )
+    except Exception:
+        return None
+    finally:
+        try:
+            if bmp is not None:
+                win32gui.DeleteObject(bmp.GetHandle())
+        except Exception:
+            pass
+        try:
+            if mem_dc is not None:
+                mem_dc.DeleteDC()
+        except Exception:
+            pass
+        try:
+            if src_dc is not None:
+                src_dc.DeleteDC()
+        except Exception:
+            pass
+        try:
+            win32gui.ReleaseDC(hwnd, hwnd_dc)
+        except Exception:
+            pass
+
+
+def capture_profit_window(window: Dict[str, Any]) -> tuple[Image.Image, str]:
+    hwnd = window.get("hwnd")
+    left = int(window.get("left") or 0)
+    top = int(window.get("top") or 0)
+    width = int(window.get("width") or 0)
+    height = int(window.get("height") or 0)
+    if isinstance(hwnd, int):
+        img = capture_window_by_hwnd(hwnd, width, height)
+        if img is not None:
+            return (img, "hwnd_printwindow")
+    return (capture_region(left, top, width, height), "screen_fallback")
+
+
 def preprocess(img: Image.Image, threshold: int = 140, contrast: float = 2.5) -> tuple[Image.Image, int]:
     img = img.convert("L")
     scale = 3
@@ -787,14 +935,33 @@ def parse_price_label(text: str, symbol: str = OCR_SYMBOL) -> Optional[float]:
     return value
 
 
-def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
+def extract_y_axis(chart: Dict[str, Any], window: Optional[Dict[str, Any]] = None) -> tuple[List[Dict[str, float]], Dict[str, Any]]:
     ax_w = max(70, int(chart["width"] * Y_AXIS_FRAC))
     left = chart["left"] + chart["width"] - ax_w
     top = chart["top"]
     width = ax_w
     height = max(80, chart["height"] - AXIS_BOTTOM_CROP_PX)
+    if width <= 0 or height <= 0:
+        return ([], {"axis_crop": {"x": left, "y": top, "width": width, "height": height}, "raw_ocr_text": "", "parsed_labels": [], "rejected_labels": []})
 
+    axis_crop = {"x": int(left), "y": int(top), "width": int(width), "height": int(height)}
     raw = capture_region(left, top, width, height)
+    capture_mode = "screen_fallback"
+    if isinstance(window, dict):
+        try:
+            win_img, mode = capture_profit_window(window)
+            win_left = int(window.get("left") or 0)
+            win_top = int(window.get("top") or 0)
+            local_box = (
+                max(0, int(left - win_left)),
+                max(0, int(top - win_top)),
+                max(1, int(left - win_left + width)),
+                max(1, int(top - win_top + height)),
+            )
+            raw = win_img.crop(local_box)
+            capture_mode = mode
+        except Exception:
+            capture_mode = "screen_fallback"
 
     # Passo 1 rapido; passos extras apenas quando o baseline nao for suficiente.
     passes = [
@@ -807,6 +974,9 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
     ]
 
     labels: List[Dict[str, float]] = []
+    parsed_labels: List[float] = []
+    rejected_labels: List[str] = []
+    raw_text_parts: List[str] = []
 
     def _run_pass(p: Dict[str, float]) -> None:
         proc, scale = preprocess(raw, threshold=p["threshold"], contrast=p["contrast"])
@@ -817,9 +987,12 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
             conf = int(data["conf"][i]) if str(data["conf"][i]).strip() else -1
             if conf < MIN_CONF or not word:
                 continue
+            raw_text_parts.append(word)
             val = parse_price_label(word)
             if val is None:
+                rejected_labels.append(word)
                 continue
+            parsed_labels.append(float(val))
             y_orig = (data["top"][i] + data["height"][i] / 2) / scale
             y_screen = top + y_orig
             labels.append({"value": float(val), "y_screen": float(y_screen)})
@@ -855,7 +1028,17 @@ def extract_y_axis(chart: Dict[str, Any]) -> List[Dict[str, float]]:
     else:
         filtered = []
 
-    return filtered
+    return (
+        filtered,
+        {
+            "axis_crop": axis_crop,
+            "capture_mode": capture_mode,
+            "raw_ocr_text": " ".join(raw_text_parts).strip(),
+            "parsed_labels": parsed_labels,
+            "rejected_labels": rejected_labels,
+            "axis_crop_raw_image": raw,
+        },
+    )
 
 
 def value_to_y(value: float, labels: List[Dict[str, float]]) -> Optional[int]:
@@ -1129,16 +1312,73 @@ def is_candidate_valid(candidate: Dict[str, Any]) -> bool:
     return True
 
 
+def evaluate_axis_candidate(candidate: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if candidate is None:
+        return {
+            "accepted": False,
+            "reason_code": "CANDIDATE_MISSING",
+            "reason": "Axis candidate is missing",
+        }
+    labels_count = int(candidate.get("labels_count") or 0)
+    if labels_count < 2:
+        return {
+            "accepted": False,
+            "reason_code": "LABELS_LT_2",
+            "reason": f"Axis candidate has only {labels_count} labels",
+        }
+    tick_size = float(candidate.get("tick_size") or 0.0)
+    if tick_size > 0.0 and not bool(candidate.get("tick_valid", True)):
+        return {
+            "accepted": False,
+            "reason_code": "TICK_INVALID",
+            "reason": "Axis candidate failed tick-size consistency validation",
+        }
+    if labels_count >= 3 and not bool(candidate.get("monotonic_valid", True)):
+        return {
+            "accepted": False,
+            "reason_code": "NON_MONOTONIC_LABELS",
+            "reason": "Axis candidate labels are not monotonic",
+        }
+    confidence = float(candidate.get("confidence") or 0.0)
+    if confidence < AXIS_MIN_CONFIDENCE:
+        return {
+            "accepted": False,
+            "reason_code": "CONFIDENCE_BELOW_THRESHOLD",
+            "reason": f"Axis candidate confidence {confidence:.3f} below threshold {AXIS_MIN_CONFIDENCE:.3f}",
+        }
+    residual = float(candidate.get("residual_px") or 0.0)
+    if residual > AXIS_MAX_RESIDUAL_PX:
+        return {
+            "accepted": False,
+            "reason_code": "FIT_RESIDUAL_TOO_HIGH",
+            "reason": f"Axis candidate residual_px {residual:.3f} above {AXIS_MAX_RESIDUAL_PX:.3f}",
+        }
+    max_error = float(candidate.get("max_error_px") or 0.0)
+    if max_error > AXIS_MAX_ERROR_PX:
+        return {
+            "accepted": False,
+            "reason_code": "FIT_MAX_ERROR_TOO_HIGH",
+            "reason": f"Axis candidate max_error_px {max_error:.3f} above {AXIS_MAX_ERROR_PX:.3f}",
+        }
+    return {"accepted": True, "reason_code": "", "reason": ""}
+
+
 def _build_status_light_data() -> dict[str, Any]:
     return {
         "status": str(state.get("status") or ""),
         "axis_status": _axis_status_value(),
         "axis_source": _axis_source_value(),
+        "axis_error_code": str(state.get("axis_error_code") or ""),
+        "axis_error_message": str(state.get("axis_error_message") or ""),
+        "last_good_axis_age_ms": _last_good_axis_age_ms(),
         "bad_frames": int(state.get("axis_bad_frames") or 0),
         "pending_count": int(state.get("axis_pending_count") or 0),
         "confidence": float(state.get("axis_confidence") or 0.0),
         "residual_px": float(state.get("axis_residual_px") or 0.0),
         "max_error_px": float(state.get("axis_max_error_px") or 0.0),
+        "profit_window_found": bool(state.get("profit_window_found")),
+        "monitor_id": state.get("monitor_id"),
+        "ocr_capture_mode": state.get("last_capture_mode"),
         "frame_seq": int(state.get("frame_seq") or 0),
         "lines_count": len(state.get("lines") or []),
         "targets_count": len(state.get("targets") or []),
@@ -1236,6 +1476,7 @@ def blend_axis_with_hysteresis(new_axis: Dict[str, float]) -> Dict[str, float]:
 class StableAxisManager:
     def __init__(self) -> None:
         self.last_stable_axis: Optional[Dict[str, float]] = None
+        self.last_stable_ts_monotonic: Optional[float] = None
         self.pending_candidate: Optional[Dict[str, Any]] = None
         self.pending_count = 0
         self.bad_frames = 0
@@ -1256,6 +1497,7 @@ class StableAxisManager:
 
     def set_manual_axis(self, axis: Dict[str, float]) -> Dict[str, float]:
         self.last_stable_axis = axis
+        self.last_stable_ts_monotonic = time.monotonic()
         self.pending_candidate = None
         self.pending_count = 0
         self.manual_locked = True
@@ -1292,7 +1534,17 @@ class StableAxisManager:
             self.pending_candidate = None
             self.pending_count = 0
             if self.last_stable_axis is not None:
-                self.status = "FROZEN" if self.bad_frames >= AXIS_MAX_BAD_FRAMES else "SUSPECT"
+                age_s = (
+                    time.monotonic() - self.last_stable_ts_monotonic
+                    if self.last_stable_ts_monotonic is not None
+                    else 0.0
+                )
+                if age_s <= AXIS_STABLE_HOLD_SECS:
+                    self.status = "STABLE"
+                elif age_s <= AXIS_FROZEN_HOLD_SECS:
+                    self.status = "FROZEN"
+                else:
+                    self.status = "NO_AXIS"
                 return self.last_stable_axis
             self.status = "CALIBRATING"
             return None
@@ -1305,6 +1557,7 @@ class StableAxisManager:
         if self.last_stable_axis is None:
             axis = blend_axis_with_hysteresis(axis_fit)
             self.last_stable_axis = axis
+            self.last_stable_ts_monotonic = time.monotonic()
             self.pending_candidate = None
             self.pending_count = 0
             self.status = "STABLE"
@@ -1315,6 +1568,7 @@ class StableAxisManager:
         if required <= 1:
             axis = blend_axis_with_hysteresis(axis_fit)
             self.last_stable_axis = axis
+            self.last_stable_ts_monotonic = time.monotonic()
             self.pending_candidate = None
             self.pending_count = 0
             self.status = "STABLE"
@@ -1338,6 +1592,7 @@ class StableAxisManager:
 
         axis = blend_axis_with_hysteresis(axis_fit)
         self.last_stable_axis = axis
+        self.last_stable_ts_monotonic = time.monotonic()
         self.pending_candidate = None
         self.pending_count = 0
         self.status = "STABLE"
@@ -1424,6 +1679,63 @@ def extract_analysis_sample(rect: Dict[str, Any]) -> Dict[str, Any]:
     }
     if err_tex:
         out["tesseract_error"] = err_tex[:500]
+    return out
+
+
+def _debug_dump_dir() -> Path:
+    base = Path(__file__).resolve().parent / "logs" / "ocr_debug" / "latest"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def _capture_full_screen_image() -> Image.Image:
+    with mss.mss() as sct:
+        mon = sct.monitors[0]
+        shot = sct.grab(mon)
+        return Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+
+
+def _capture_debug_images() -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    out["dpi_scale"] = float(get_dpi_scale())
+    window = resolve_profit_window(time.monotonic())
+    out["profit_window_found"] = bool(window)
+    if not window:
+        return out
+    chart = {
+        "left": window["left"],
+        "top": window["top"] + TOOLBAR_H,
+        "width": window["width"],
+        "height": window["height"] - TOOLBAR_H,
+    }
+    out["profit_hwnd"] = window.get("hwnd")
+    out["profit_bounds"] = {
+        "x": int(window.get("left") or 0),
+        "y": int(window.get("top") or 0),
+        "width": int(window.get("width") or 0),
+        "height": int(window.get("height") or 0),
+    }
+    out["chart_crop"] = {
+        "x": int(chart["left"]),
+        "y": int(chart["top"]),
+        "width": int(chart["width"]),
+        "height": int(chart["height"]),
+    }
+    monitor_id, monitor_bounds = _detect_monitor_for_bounds(
+        int(window.get("left") or 0),
+        int(window.get("top") or 0),
+        int(window.get("width") or 0),
+        int(window.get("height") or 0),
+    )
+    out["monitor_id"] = monitor_id
+    out["monitor_bounds"] = monitor_bounds
+    labels_raw, meta = extract_y_axis(chart, window)
+    out["axis_crop"] = meta.get("axis_crop")
+    out["raw_ocr_text"] = meta.get("raw_ocr_text")
+    out["parsed_labels"] = meta.get("parsed_labels")
+    out["rejected_labels"] = meta.get("rejected_labels")
+    out["capture_mode"] = meta.get("capture_mode")
+    out["labels_raw"] = labels_raw
     return out
 
 
@@ -1548,7 +1860,28 @@ async def ocr_loop():
                 state["lines"] = []
                 state["axis_labels"] = None
                 state["axis"] = None
+                state["profit_window_found"] = False
+                state["profit_hwnd"] = None
+                state["profit_bounds"] = None
+                _set_axis_error("WINDOW_NOT_FOUND", "Profit window not detected")
             else:
+                state["dpi_scale"] = float(get_dpi_scale())
+                state["profit_window_found"] = True
+                state["profit_hwnd"] = window.get("hwnd")
+                state["profit_bounds"] = {
+                    "x": int(window.get("left") or 0),
+                    "y": int(window.get("top") or 0),
+                    "width": int(window.get("width") or 0),
+                    "height": int(window.get("height") or 0),
+                }
+                monitor_id, monitor_bounds = _detect_monitor_for_bounds(
+                    int(window.get("left") or 0),
+                    int(window.get("top") or 0),
+                    int(window.get("width") or 0),
+                    int(window.get("height") or 0),
+                )
+                state["monitor_id"] = monitor_id
+                state["monitor_bounds"] = monitor_bounds
                 chart = {
                     "left": window["left"],
                     "top": window["top"] + TOOLBAR_H,
@@ -1556,7 +1889,15 @@ async def ocr_loop():
                     "height": window["height"] - TOOLBAR_H,
                 }
                 state["chart_rect"] = chart
-                labels_raw = extract_y_axis(chart)
+                labels_raw, axis_ocr_meta = extract_y_axis(chart, window)
+                state["last_axis_crop"] = axis_ocr_meta.get("axis_crop")
+                state["last_axis_ocr_text"] = axis_ocr_meta.get("raw_ocr_text") or ""
+                state["last_axis_labels_parsed"] = axis_ocr_meta.get("parsed_labels") or []
+                state["last_axis_labels_rejected"] = axis_ocr_meta.get("rejected_labels") or []
+                state["last_capture_mode"] = axis_ocr_meta.get("capture_mode") or "unknown"
+                crop = state.get("last_axis_crop") or {}
+                if int(crop.get("width") or 0) <= 0 or int(crop.get("height") or 0) <= 0:
+                    _set_axis_error("AXIS_CROP_EMPTY", "Axis crop is empty or invalid")
                 if len(labels_raw) > MAX_AXIS_LABELS:
                     labels_raw = labels_raw[:MAX_AXIS_LABELS]
                 labels, diagnostics = sanitize_axis_labels(labels_raw)
@@ -1572,7 +1913,20 @@ async def ocr_loop():
                     state["axis_deltas"] = compute_axis_deltas(labels)
                     axis_candidate = build_axis_candidate(labels, diagnostics)
                     frame_debug["axis_fit"] = axis_candidate
-                    axis = axis_manager.feed(axis_candidate)
+                    acceptance = evaluate_axis_candidate(axis_candidate)
+                    candidate_for_runtime = axis_candidate if acceptance.get("accepted") else None
+                    axis = axis_manager.feed(candidate_for_runtime)
+                    state["axis_candidate"] = {
+                        "exists": axis_candidate is not None,
+                        "valid": bool(acceptance.get("accepted")),
+                        "candidate": axis_candidate,
+                        "created_at": _iso_utc_now(),
+                    }
+                    state["axis_acceptance"] = {
+                        "accepted": bool(acceptance.get("accepted")),
+                        "reason_code": str(acceptance.get("reason_code") or ""),
+                        "reason": str(acceptance.get("reason") or ""),
+                    }
                     if axis is None:
                         state["status"] = "ocr_axis_fit_failed"
                         state["lines"] = []
@@ -1580,6 +1934,13 @@ async def ocr_loop():
                         state["axis"] = None
                         _sync_axis_runtime_state(source="none")
                         _reset_axis_quality_metrics()
+                        code = str(acceptance.get("reason_code") or "FIT_INCONSISTENT")
+                        message = str(acceptance.get("reason") or "Axis regression candidate rejected")
+                        _set_axis_error(code, message)
+                        state["axis_final_decision"] = {
+                            "axis_status": state.get("axis_status"),
+                            "decision_source": "candidate_rejected_without_last_good_axis",
+                        }
                     else:
                         state["axis_labels"] = [
                             {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
@@ -1590,8 +1951,32 @@ async def ocr_loop():
                             "intercept": float(axis["intercept"]),
                             "value_per_px": float(axis.get("value_per_px", abs(float(axis["slope"])))),
                         }
-                        _sync_axis_runtime_state(source="ocr")
+                        source = "ocr" if bool(acceptance.get("accepted")) else "last_stable"
+                        _sync_axis_runtime_state(source=source)
                         _set_axis_quality_metrics(axis_candidate)
+                        if bool(acceptance.get("accepted")):
+                            _clear_axis_error()
+                            state["axis_final_decision"] = {
+                                "axis_status": "STABLE",
+                                "decision_source": "candidate_promoted",
+                            }
+                        else:
+                            code = str(acceptance.get("reason_code") or "AXIS_CANDIDATE_REJECTED")
+                            message = str(
+                                acceptance.get("reason")
+                                or "Current axis candidate was rejected and runtime reused last stable axis"
+                            )
+                            _set_axis_error(code, message)
+                            status_now = str(axis_manager.status or "").upper()
+                            decision_source = (
+                                "candidate_rejected_last_good_retained"
+                                if status_now in {"STABLE", "FROZEN"}
+                                else "candidate_rejected_last_good_expired"
+                            )
+                            state["axis_final_decision"] = {
+                                "axis_status": status_now or "NO_AXIS",
+                                "decision_source": decision_source,
+                            }
                         vals = [lb["value"] for lb in labels]
                         v_axis_min = min(vals)
                         v_axis_max = max(vals)
@@ -1604,8 +1989,20 @@ async def ocr_loop():
                             print(f"[overlay-latency] ocr_first_ok elapsed_ms={elapsed_ms}")
                         frame_ctx["axis"] = state.get("axis")
                         frame_ctx["status"] = state["status"]
+                    _ensure_axis_error_invariant()
                 else:
                     state["axis_deltas"] = None
+                    state["axis_candidate"] = {
+                        "exists": False,
+                        "valid": False,
+                        "candidate": None,
+                        "created_at": _iso_utc_now(),
+                    }
+                    state["axis_acceptance"] = {
+                        "accepted": False,
+                        "reason_code": "INSUFFICIENT_LABELS",
+                        "reason": f"OCR labels insufficient: {len(labels)}",
+                    }
                     if axis_manager.last_stable_axis is None:
                         axis_manager.feed(None)
                         state["axis_labels"] = None
@@ -1617,14 +2014,30 @@ async def ocr_loop():
                         state["axis"] = axis
                         _sync_axis_runtime_state(source="last_stable")
                         _reset_axis_quality_metrics()
+                    raw_ocr_text = str(state.get("last_axis_ocr_text") or "").strip()
+                    if not raw_ocr_text:
+                        _set_axis_error("OCR_NO_TEXT", "OCR returned no text in axis crop")
+                    elif len(state.get("last_axis_labels_parsed") or []) == 0:
+                        _set_axis_error("NO_VALID_PRICE_LABELS", "OCR returned text but no valid price labels")
+                    else:
+                        _set_axis_error("INSUFFICIENT_LABELS", f"OCR labels insufficient: {len(labels)}")
                     elapsed_svc = time.monotonic() - service_started_at
                     if len(labels) == 0 and elapsed_svc < AXIS_WARMUP_SECS:
                         state["status"] = "ocr_axis_warming"
                     else:
                         state["status"] = f"ocr_insufficient_labels:{len(labels)}"
+                    state["axis_final_decision"] = {
+                        "axis_status": str(state.get("axis_status") or ""),
+                        "decision_source": (
+                            "insufficient_labels_last_good_retained"
+                            if axis_manager.last_stable_axis is not None
+                            else "insufficient_labels_no_last_good"
+                        ),
+                    }
                     state["lines"] = []
                     frame_ctx["axis"] = state.get("axis")
                     frame_ctx["status"] = state["status"]
+                    _ensure_axis_error_invariant()
         except Exception as exc:
             state["status"] = f"error: {exc}"
             state["lines"] = []
@@ -1633,9 +2046,11 @@ async def ocr_loop():
             axis_manager.feed(None)
             _sync_axis_runtime_state(source="none")
             _reset_axis_quality_metrics()
+            _set_axis_error("RUNTIME_EXCEPTION", str(exc))
             frame_debug["error"] = str(exc)
             frame_ctx["status"] = state["status"]
 
+        _ensure_axis_error_invariant()
         state["last_update"] = time.time()
 
         analysis_sample: Optional[Dict[str, Any]] = None
@@ -1911,22 +2326,41 @@ async def manual_unlock_axis_api():
 async def get_debug():
     try:
         overlay_update = _build_overlay_update_data()
+        axis_crop = state.get("last_axis_crop")
         return _api_ok(
             "debug",
             status=state["status"],
             last_frame=state.get("last_frame"),
             axis_status=state.get("axis_status"),
             axis_source=state.get("axis_source"),
+            axis_error_code=state.get("axis_error_code"),
+            axis_error_message=state.get("axis_error_message"),
+            last_good_axis_age_ms=_last_good_axis_age_ms(),
             bad_frames=state.get("axis_bad_frames"),
             pending_count=state.get("axis_pending_count"),
             pending_candidate=state.get("axis_pending_candidate"),
             confidence=state.get("axis_confidence"),
             residual_px=state.get("axis_residual_px"),
             max_error_px=state.get("axis_max_error_px"),
+            profit_window_found=bool(state.get("profit_window_found")),
+            profit_hwnd=state.get("profit_hwnd"),
+            dpi_scale=float(state.get("dpi_scale") or 1.0),
+            monitor_id=state.get("monitor_id"),
+            monitor_bounds=state.get("monitor_bounds"),
+            profit_bounds=state.get("profit_bounds"),
             axis=state.get("axis"),
             chart_rect=state.get("chart_rect"),
+            chart_crop=state.get("chart_rect"),
+            axis_crop=axis_crop,
+            raw_ocr_text=state.get("last_axis_ocr_text"),
+            parsed_labels=state.get("last_axis_labels_parsed"),
+            rejected_labels=state.get("last_axis_labels_rejected"),
+            capture_mode=state.get("last_capture_mode"),
             axis_labels=state.get("axis_labels"),
             axis_diagnostics=state.get("axis_diagnostics"),
+            axis_candidate=state.get("axis_candidate"),
+            axis_acceptance=state.get("axis_acceptance"),
+            axis_final_decision=state.get("axis_final_decision"),
             analysis_roi=state.get("analysis_roi"),
             analysis_sample=state.get("analysis_sample"),
             debug_visual=(overlay_update.get("structured") or {}).get("debug_visual"),
@@ -1945,6 +2379,108 @@ async def get_debug():
 @app.get("/api/ocr-overlay/debug")
 async def get_debug_api():
     return await get_debug()
+
+
+@app.post("/api/ocr-overlay/debug-dump")
+async def debug_dump():
+    try:
+        dump_dir = _debug_dump_dir()
+        dbg = _capture_debug_images()
+        full_img = _capture_full_screen_image()
+        full_img.save(dump_dir / "full_screen.png")
+
+        window = resolve_profit_window(time.monotonic())
+        if not window:
+            return _api_error(
+                "debug_dump",
+                "window_not_found",
+                "profit_window_not_detected_for_dump",
+                dump_dir=str(dump_dir),
+            )
+
+        win_img, _mode = capture_profit_window(window)
+        win_img.save(dump_dir / "profit_window_crop.png")
+        chart = dbg.get("chart_crop") or {}
+        chart_box = (
+            max(0, int(chart.get("x", 0) - int(window.get("left") or 0))),
+            max(0, int(chart.get("y", 0) - int(window.get("top") or 0))),
+            max(1, int(chart.get("x", 0) - int(window.get("left") or 0) + int(chart.get("width", 1)))),
+            max(1, int(chart.get("y", 0) - int(window.get("top") or 0) + int(chart.get("height", 1)))),
+        )
+        chart_img = win_img.crop(chart_box)
+        chart_img.save(dump_dir / "chart_crop.png")
+
+        axis_crop = dbg.get("axis_crop") or {}
+        axis_box = (
+            max(0, int(axis_crop.get("x", 0) - int(window.get("left") or 0))),
+            max(0, int(axis_crop.get("y", 0) - int(window.get("top") or 0))),
+            max(1, int(axis_crop.get("x", 0) - int(window.get("left") or 0) + int(axis_crop.get("width", 1)))),
+            max(1, int(axis_crop.get("y", 0) - int(window.get("top") or 0) + int(axis_crop.get("height", 1)))),
+        )
+        axis_raw = win_img.crop(axis_box)
+        axis_raw.save(dump_dir / "axis_crop_raw.png")
+        axis_proc, _scale = preprocess(axis_raw)
+        axis_proc.convert("L").save(dump_dir / "axis_crop_processed.png")
+
+        ocr_result = {
+            "profit_window_found": bool(dbg.get("profit_window_found")),
+            "profit_hwnd": dbg.get("profit_hwnd"),
+            "dpi_scale": dbg.get("dpi_scale"),
+            "monitor_id": dbg.get("monitor_id"),
+            "monitor_bounds": dbg.get("monitor_bounds"),
+            "profit_bounds": dbg.get("profit_bounds"),
+            "chart_crop": dbg.get("chart_crop"),
+            "axis_crop": dbg.get("axis_crop"),
+            "raw_ocr_text": dbg.get("raw_ocr_text"),
+            "parsed_labels": dbg.get("parsed_labels"),
+            "rejected_labels": dbg.get("rejected_labels"),
+            "axis_status": state.get("axis_status"),
+            "axis_error_code": state.get("axis_error_code"),
+            "axis_error_message": state.get("axis_error_message"),
+            "bad_frames": state.get("axis_bad_frames"),
+            "last_good_axis_age_ms": _last_good_axis_age_ms(),
+            "capture_mode": dbg.get("capture_mode"),
+            "candidate_axis": state.get("axis_candidate"),
+            "acceptance": state.get("axis_acceptance"),
+            "last_good_axis": {
+                "exists": axis_manager.last_stable_axis is not None,
+                "age_ms": _last_good_axis_age_ms(),
+                "expired": (
+                    (_last_good_axis_age_ms() or 0) > int(AXIS_FROZEN_HOLD_SECS * 1000)
+                    if axis_manager.last_stable_axis is not None
+                    else True
+                ),
+            },
+            "final_decision": state.get("axis_final_decision"),
+        }
+        axis_fit = {
+            "axis": state.get("axis"),
+            "axis_diagnostics": state.get("axis_diagnostics"),
+            "axis_deltas": state.get("axis_deltas"),
+        }
+        (dump_dir / "ocr_result.json").write_text(json.dumps(ocr_result, ensure_ascii=False, indent=2), encoding="utf-8")
+        (dump_dir / "axis_fit.json").write_text(json.dumps(axis_fit, ensure_ascii=False, indent=2), encoding="utf-8")
+        return _api_ok(
+            "debug_dump",
+            dump_dir=str(dump_dir),
+            files=[
+                "full_screen.png",
+                "profit_window_crop.png",
+                "chart_crop.png",
+                "axis_crop_raw.png",
+                "axis_crop_processed.png",
+                "ocr_result.json",
+                "axis_fit.json",
+            ],
+            ocr_result=ocr_result,
+        )
+    except Exception as exc:
+        return _api_error(
+            "debug_dump",
+            "debug_dump_failed",
+            "failed_to_generate_debug_dump",
+            exception=str(exc),
+        )
 
 
 @app.get("/status")

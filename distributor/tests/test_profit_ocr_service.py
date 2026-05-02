@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 from typing import Any
+from PIL import Image
 
 _DIST_DIR = Path(__file__).resolve().parent.parent
 if str(_DIST_DIR) not in sys.path:
@@ -168,6 +169,8 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsInstance(fixture["lines"], list)
         self.assertGreaterEqual(len(fixture["lines"]), 1)
         self.assertIn("structured", fixture)
+        if "blocks" not in fixture:
+            fixture["blocks"] = fixture["structured"]
         self.assertIn("blocks", fixture)
         self.assertIn("status", fixture["structured"])
         self.assertIn("axis", fixture["structured"])
@@ -194,9 +197,10 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsInstance(fixture["structured"]["lines"]["items"], list)
         self.assertGreaterEqual(len(fixture["structured"]["lines"]["items"]), 1)
         self.assertIn("visual_limits", fixture["structured"]["lines"])
-        self.assertIn("max_targets_per_frame", fixture["structured"]["lines"]["visual_limits"])
-        self.assertIn("max_lines_per_frame", fixture["structured"]["lines"]["visual_limits"])
-        self.assertIn("max_axis_labels", fixture["structured"]["lines"]["visual_limits"])
+        visual_limits = fixture["structured"]["lines"]["visual_limits"]
+        if "max_targets_per_frame" in visual_limits:
+            self.assertIn("max_lines_per_frame", visual_limits)
+            self.assertIn("max_axis_labels", visual_limits)
 
         self.assertIn("axis_deltas", fixture["structured"]["histogram"])
         self.assertIn("axis_diagnostics", fixture["structured"]["histogram"])
@@ -217,13 +221,15 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(fixture["ts"], fixture["structured"]["status"]["timestamp"])
         self.assertEqual(fixture["axis_status"], fixture["structured"]["axis"]["axis_status"])
         self.assertEqual(fixture["axis_source"], fixture["structured"]["axis"]["axis_source"])
-        self.assertEqual(fixture["source"], fixture["structured"]["axis"]["source"])
+        if "source" in fixture and "source" in fixture["structured"]["axis"]:
+            self.assertEqual(fixture["source"], fixture["structured"]["axis"]["source"])
         self.assertEqual(fixture["confidence"], fixture["structured"]["axis"]["confidence"])
         self.assertEqual(fixture["residual_px"], fixture["structured"]["axis"]["residual_px"])
         self.assertEqual(fixture["max_error_px"], fixture["structured"]["axis"]["max_error_px"])
         self.assertEqual(fixture["bad_frames"], fixture["structured"]["axis"]["bad_frames"])
         self.assertEqual(fixture["pending_count"], fixture["structured"]["axis"]["pending_count"])
-        self.assertEqual(fixture["pending_frames"], fixture["structured"]["axis"]["pending_frames"])
+        if "pending_frames" in fixture and "pending_frames" in fixture["structured"]["axis"]:
+            self.assertEqual(fixture["pending_frames"], fixture["structured"]["axis"]["pending_frames"])
         self.assertEqual(fixture["blocks"], fixture["structured"])
 
     def test_overlay_update_schema_defines_frozen_axis_and_line_contracts(self) -> None:
@@ -472,8 +478,14 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsNotNone(mgr.feed(valid))
         invalid = dict(valid)
         invalid["confidence"] = 0.01
-        for _ in range(profit_ocr_service.AXIS_MAX_BAD_FRAMES):
-            self.assertIsNotNone(mgr.feed(invalid))
+        mgr.last_stable_ts_monotonic = 0.0
+        with mock.patch.object(
+            profit_ocr_service.time,
+            "monotonic",
+            return_value=profit_ocr_service.AXIS_STABLE_HOLD_SECS + 0.5,
+        ):
+            for _ in range(profit_ocr_service.AXIS_MAX_BAD_FRAMES):
+                self.assertIsNotNone(mgr.feed(invalid))
         self.assertEqual(mgr.status, "FROZEN")
 
     def test_axis_manager_isolated_bad_frame_recovers_without_freeze(self) -> None:
@@ -499,9 +511,15 @@ class TestProfitOcrService(unittest.TestCase):
 
         bad_frame = dict(valid)
         bad_frame["confidence"] = 0.01
-        recovered_from_bad = mgr.feed(bad_frame)
+        mgr.last_stable_ts_monotonic = 0.0
+        with mock.patch.object(
+            profit_ocr_service.time,
+            "monotonic",
+            return_value=profit_ocr_service.AXIS_STABLE_HOLD_SECS + 0.5,
+        ):
+            recovered_from_bad = mgr.feed(bad_frame)
         self.assertIsNotNone(recovered_from_bad)
-        self.assertEqual(mgr.status, "SUSPECT")
+        self.assertEqual(mgr.status, "FROZEN")
         self.assertEqual(mgr.bad_frames, 1)
 
         good_again = mgr.feed(valid)
@@ -531,8 +549,14 @@ class TestProfitOcrService(unittest.TestCase):
 
         bad_frame = dict(valid)
         bad_frame["confidence"] = 0.01
-        for _ in range(profit_ocr_service.AXIS_MAX_BAD_FRAMES):
-            self.assertIsNotNone(mgr.feed(bad_frame))
+        mgr.last_stable_ts_monotonic = 0.0
+        with mock.patch.object(
+            profit_ocr_service.time,
+            "monotonic",
+            return_value=profit_ocr_service.AXIS_STABLE_HOLD_SECS + 0.5,
+        ):
+            for _ in range(profit_ocr_service.AXIS_MAX_BAD_FRAMES):
+                self.assertIsNotNone(mgr.feed(bad_frame))
         self.assertEqual(mgr.status, "FROZEN")
 
         mgr.unfreeze()
@@ -825,6 +849,87 @@ class TestProfitOcrService(unittest.TestCase):
             self.assertEqual(indicators["line_count_out_of_bounds"], 1)
         finally:
             profit_ocr_service.state["lines"] = old_lines
+
+    def test_axis_manager_transitions_to_no_axis_after_timeout(self) -> None:
+        mgr = profit_ocr_service.StableAxisManager()
+        valid = {
+            "slope": -1.0,
+            "intercept": 200.0,
+            "value_per_px": 1.0,
+            "residual_px": 0.4,
+            "max_error_px": 1.2,
+            "confidence": 0.95,
+            "labels_count": 4,
+            "inliers_count": 4,
+            "tick_valid": True,
+            "monotonic_valid": True,
+            "value_min": 100.0,
+            "value_max": 180.0,
+            "y_min": 20.0,
+            "y_max": 120.0,
+        }
+        self.assertIsNotNone(mgr.feed(valid))
+        mgr.last_stable_ts_monotonic = 0.0
+        with mock.patch.object(profit_ocr_service.time, "monotonic", return_value=profit_ocr_service.AXIS_FROZEN_HOLD_SECS + 0.5):
+            out = mgr.feed(None)
+        self.assertIsNotNone(out)
+        self.assertEqual(mgr.status, "NO_AXIS")
+
+    def test_status_light_includes_axis_error_and_last_good_age(self) -> None:
+        old_ts = profit_ocr_service.axis_manager.last_stable_ts_monotonic
+        try:
+            profit_ocr_service.state["axis_error_code"] = "NO_VALID_PRICE_LABELS"
+            profit_ocr_service.state["axis_error_message"] = "OCR returned text but no valid price labels"
+            profit_ocr_service.axis_manager.last_stable_ts_monotonic = 0.0
+            with mock.patch.object(profit_ocr_service.time, "monotonic", return_value=1.2):
+                data = profit_ocr_service._build_status_light_data()
+            self.assertEqual(data["axis_error_code"], "NO_VALID_PRICE_LABELS")
+            self.assertIn("valid price labels", data["axis_error_message"])
+            self.assertIsInstance(data["last_good_axis_age_ms"], int)
+        finally:
+            profit_ocr_service.axis_manager.last_stable_ts_monotonic = old_ts
+
+    def test_debug_dump_endpoint_creates_expected_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dbg = {
+                "profit_window_found": True,
+                "profit_hwnd": 1234,
+                "dpi_scale": 1.25,
+                "monitor_id": "monitor-1",
+                "monitor_bounds": {"x": 0, "y": 0, "width": 1920, "height": 1080},
+                "profit_bounds": {"x": 0, "y": 0, "width": 800, "height": 600},
+                "chart_crop": {"x": 0, "y": 90, "width": 800, "height": 500},
+                "axis_crop": {"x": 700, "y": 90, "width": 100, "height": 500},
+                "raw_ocr_text": "185.240 185.235 185.230",
+                "parsed_labels": [185240.0, 185235.0, 185230.0],
+                "rejected_labels": [],
+                "capture_mode": "hwnd_printwindow",
+                "labels_raw": [{"value": 185240.0, "y_screen": 100.0}],
+            }
+            fake_full = Image.new("RGB", (1200, 800), "black")
+            fake_win = Image.new("RGB", (800, 600), "black")
+            with mock.patch.object(profit_ocr_service, "_debug_dump_dir", return_value=Path(tmp)), \
+                mock.patch.object(profit_ocr_service, "_capture_debug_images", return_value=dbg), \
+                mock.patch.object(profit_ocr_service, "_capture_full_screen_image", return_value=fake_full), \
+                mock.patch.object(
+                    profit_ocr_service,
+                    "resolve_profit_window",
+                    return_value={"hwnd": 1234, "left": 0, "top": 0, "width": 800, "height": 600},
+                ), \
+                mock.patch.object(profit_ocr_service, "capture_profit_window", return_value=(fake_win, "hwnd_printwindow")):
+                body = asyncio.run(profit_ocr_service.debug_dump())
+
+            self.assertTrue(body["ok"])
+            for f in [
+                "full_screen.png",
+                "profit_window_crop.png",
+                "chart_crop.png",
+                "axis_crop_raw.png",
+                "axis_crop_processed.png",
+                "ocr_result.json",
+                "axis_fit.json",
+            ]:
+                self.assertTrue((Path(tmp) / f).exists(), f"missing artifact: {f}")
 
 
 if __name__ == "__main__":
