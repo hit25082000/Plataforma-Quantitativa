@@ -21,7 +21,11 @@ class TestVpOverlayConsolidator(unittest.TestCase):
             "poc": 100.0,
             "val": 99.0,
             "vah": 101.0,
-            "levels": [{"price": 100.0, "total_vol": 10, "bid_vol": 5, "ask_vol": 5, "pct_of_max": 1.0}],
+            "levels": [
+                {"price": 101.0, "total_vol": 8, "bid_vol": 4, "ask_vol": 4, "pct_of_max": 0.8},
+                {"price": 100.0, "total_vol": 10, "bid_vol": 5, "ask_vol": 5, "pct_of_max": 1.0},
+                {"price": 99.0, "total_vol": 6, "bid_vol": 3, "ask_vol": 3, "pct_of_max": 0.6},
+            ],
         }
         tape = {
             "topic": "market",
@@ -53,7 +57,7 @@ class TestVpOverlayConsolidator(unittest.TestCase):
         self.assertEqual(out["poc"]["holder"]["method"], "total_volume")
         self.assertEqual(out["val"]["holder"]["method"], "passive_buy_absorption")
         self.assertEqual(out["vah"]["holder"]["method"], "passive_sell_absorption")
-        self.assertEqual(len(out["levels"]), 1)
+        self.assertEqual(len(out["levels"]), 3)
         self.assertIn("last_overlay_publish_age_ms", out["health"])
         self.assertIn("last_overlay_publish_age_sec", out["health"])
 
@@ -67,7 +71,11 @@ class TestVpOverlayConsolidator(unittest.TestCase):
             "poc": 1.0,
             "val": 0.0,
             "vah": 2.0,
-            "levels": [{"price": 1.0, "total_vol": 1, "bid_vol": 1, "ask_vol": 0, "pct_of_max": 1.0}],
+            "levels": [
+                {"price": 2.0, "total_vol": 2, "bid_vol": 1, "ask_vol": 1, "pct_of_max": 1.0},
+                {"price": 1.0, "total_vol": 1, "bid_vol": 1, "ask_vol": 0, "pct_of_max": 0.5},
+                {"price": 0.0, "total_vol": 1, "bid_vol": 0, "ask_vol": 1, "pct_of_max": 0.5},
+            ],
         }
         tape = {
             "topic": "market",
@@ -101,7 +109,11 @@ class TestVpOverlayConsolidator(unittest.TestCase):
             "poc": 1.0,
             "val": 0.0,
             "vah": 2.0,
-            "levels": [],
+            "levels": [
+                {"price": 2.0, "total_vol": 2, "bid_vol": 1, "ask_vol": 1, "pct_of_max": 1.0},
+                {"price": 1.0, "total_vol": 1, "bid_vol": 1, "ask_vol": 0, "pct_of_max": 0.5},
+                {"price": 0.0, "total_vol": 1, "bid_vol": 0, "ask_vol": 1, "pct_of_max": 0.5},
+            ],
         }
         tape = {
             "topic": "market",
@@ -135,7 +147,11 @@ class TestVpOverlayConsolidator(unittest.TestCase):
             "poc": 1.0,
             "val": 0.0,
             "vah": 2.0,
-            "levels": [{"price": 1.0, "total_vol": 1, "bid_vol": 1, "ask_vol": 0, "pct_of_max": 1.0}],
+            "levels": [
+                {"price": 2.0, "total_vol": 2, "bid_vol": 1, "ask_vol": 1, "pct_of_max": 1.0},
+                {"price": 1.0, "total_vol": 1, "bid_vol": 1, "ask_vol": 0, "pct_of_max": 0.5},
+                {"price": 0.0, "total_vol": 1, "bid_vol": 0, "ask_vol": 1, "pct_of_max": 0.5},
+            ],
         }
         tape = {
             "topic": "market",
@@ -205,7 +221,11 @@ class TestVpOverlayConsolidator(unittest.TestCase):
             "poc": 100.0,
             "val": 99.0,
             "vah": 101.0,
-            "levels": [{"price": 100.0, "total_vol": 10, "bid_vol": 5, "ask_vol": 5, "pct_of_max": 1.0}],
+            "levels": [
+                {"price": 101.0, "total_vol": 8, "bid_vol": 4, "ask_vol": 4, "pct_of_max": 0.8},
+                {"price": 100.0, "total_vol": 10, "bid_vol": 5, "ask_vol": 5, "pct_of_max": 1.0},
+                {"price": 99.0, "total_vol": 6, "bid_vol": 3, "ask_vol": 3, "pct_of_max": 0.6},
+            ],
         }
         tape = {
             "topic": "market",

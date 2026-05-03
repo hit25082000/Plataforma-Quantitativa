@@ -1,6 +1,13 @@
 /** Emitido em todas as janelas após gravar config.json (`write_config`). */
 export const PQ_CONFIG_SAVED_EVENT = "pq:config-saved";
 
+/** profit-overlay-control → profit-overlay: expandir painel OCR debug HUD. */
+export const PQ_OVERLAY_OCR_DEBUG_HUD_EVENT = "pq:overlay-ocr-debug-hud";
+
+export type PqOverlayOcrDebugHudPayload = {
+  expanded: boolean;
+};
+
 /** Emitido na janela principal quando o ativo ativo muda (para hidratar widgets). */
 export const PQ_SELECTED_ASSET_EVENT = "pq:selected-asset";
 
@@ -21,8 +28,11 @@ export const PQ_OCR_RECALIBRATING_EVENT = "pq:ocr-recalibrating";
 
 /** Evento canônico para status de OCR overlay (recalibrate/freeze/status). */
 export const PQ_OCR_OVERLAY_STATUS_EVENT = "pq:ocr-overlay-status";
+export const PQ_PROFIT_OVERLAY_OCR_STARTING_EVENT = "profit-overlay://ocr-starting";
+export const PQ_PROFIT_OVERLAY_OCR_READY_EVENT = "profit-overlay://ocr-ready";
+export const PQ_PROFIT_OVERLAY_OCR_ERROR_EVENT = "profit-overlay://ocr-error";
 
-export type PqOcrOverlayAction = "recalibrate" | "freeze" | "manual";
+export type PqOcrOverlayAction = "recalibrate" | "freeze" | "manual" | "startup";
 export type PqOcrOverlayStatus = "start" | "ok" | "error" | "released";
 
 export type PqOcrOverlayStatusPayload = {

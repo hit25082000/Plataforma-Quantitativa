@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -45,6 +45,12 @@ const AGENT007_CHAT_URL: &str = "http://127.0.0.1:8000/api/agent007/chat";
 const DISTRIBUTOR_IPC_STATE_URL: &str = "http://127.0.0.1:8000/ipc-state";
 const EVENT_OCR_RECALIBRATING: &str = "pq:ocr-recalibrating";
 const EVENT_OCR_OVERLAY_STATUS: &str = "pq:ocr-overlay-status";
+const EVENT_PROFIT_OVERLAY_OCR_STARTING: &str = "profit-overlay://ocr-starting";
+const EVENT_PROFIT_OVERLAY_OCR_READY: &str = "profit-overlay://ocr-ready";
+const EVENT_PROFIT_OVERLAY_OCR_ERROR: &str = "profit-overlay://ocr-error";
+const OCR_IDLE_SHUTDOWN_MS: u64 = 10 * 60 * 1000;
+const OCR_FAST_PROBE_TIMEOUT_MS: u64 = 400;
+const OCR_DEBUG_PROBE_TIMEOUT_MS: u64 = 8_000;
 const BOUNDS_WATCHDOG_INTERVAL_MS: u64 = 750;
 const BOUNDS_RECALIBRATE_COOLDOWN_MS: u64 = 1200;
 const OVERLAY_WATCHDOG_ENABLE_ENV: &str = "PQ_ENABLE_OVERLAY_WATCHDOG";
@@ -309,6 +315,7 @@ pub struct ChildProcesses {
     pub engine: Mutex<Option<Child>>,
     pub distributor: Mutex<Option<Child>>,
     pub profit_ocr: Mutex<Option<Child>>,
+    pub ocr_idle_shutdown_generation: AtomicU64,
 }
 
 /// Estado persistido de uma janela de widget (posição e tamanho).
@@ -979,6 +986,102 @@ fn emit_ocr_overlay_status(
     }
 }
 
+fn emit_profit_overlay_ocr_event(
+    app: &tauri::AppHandle,
+    event_name: &str,
+    payload: serde_json::Value,
+) {
+    let _ = app.emit(event_name, payload.clone());
+    append_runtime_bootstrap_log(app, "ocr", "overlay_event", "ok", json!({
+        "event": event_name,
+        "payload": payload
+    }));
+}
+
+fn cancel_ocr_idle_shutdown(processes: &ChildProcesses) {
+    processes
+        .ocr_idle_shutdown_generation
+        .fetch_add(1, Ordering::SeqCst);
+}
+
+fn schedule_ocr_idle_shutdown(app: tauri::AppHandle) {
+    let processes = app.state::<ChildProcesses>();
+    let generation = processes
+        .ocr_idle_shutdown_generation
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "idle_shutdown",
+        "scheduled",
+        json!({"delay_ms": OCR_IDLE_SHUTDOWN_MS, "generation": generation}),
+    );
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(OCR_IDLE_SHUTDOWN_MS)).await;
+        let current_generation = app
+            .state::<ChildProcesses>()
+            .ocr_idle_shutdown_generation
+            .load(Ordering::SeqCst);
+        if current_generation != generation {
+            append_runtime_bootstrap_log(
+                &app,
+                "ocr",
+                "idle_shutdown",
+                "cancelled",
+                json!({"generation": generation, "current_generation": current_generation}),
+            );
+            return;
+        }
+        let desired_active = overlay_lifecycle_state()
+            .lock()
+            .map(|s| s.desired_active)
+            .unwrap_or(false);
+        if desired_active {
+            append_runtime_bootstrap_log(
+                &app,
+                "ocr",
+                "idle_shutdown",
+                "skipped",
+                json!({"reason": "overlay_desired_active"}),
+            );
+            return;
+        }
+        match app.state::<ChildProcesses>().profit_ocr.lock() {
+            Ok(mut guard) => {
+                if let Some(mut child) = guard.take() {
+                    let pid = child.id();
+                    let _ = child.kill();
+                    append_runtime_bootstrap_log(
+                        &app,
+                        "ocr",
+                        "idle_shutdown",
+                        "killed",
+                        json!({"pid": pid, "generation": generation}),
+                    );
+                } else {
+                    append_runtime_bootstrap_log(
+                        &app,
+                        "ocr",
+                        "idle_shutdown",
+                        "no_process",
+                        json!({"generation": generation}),
+                    );
+                }
+            }
+            Err(e) => {
+                append_runtime_bootstrap_log(
+                    &app,
+                    "ocr",
+                    "idle_shutdown",
+                    "error",
+                    json!({"generation": generation, "reason": e.to_string()}),
+                );
+            }
+        }
+    });
+}
+
 fn resolve_target_monitor(
     app: &tauri::AppHandle,
     preferred_window: Option<&WebviewWindow>,
@@ -996,6 +1099,18 @@ fn resolve_target_monitor(
     app.primary_monitor()
         .map_err(|e| e.to_string())?
         .ok_or("Monitor principal não encontrado".to_string())
+}
+
+fn resolve_frontend_webview_url() -> Result<WebviewUrl, String> {
+    if cfg!(debug_assertions) {
+        let dev_url = env_nonempty("TAURI_DEV_URL")
+            .or_else(|| env_nonempty("VITE_DEV_SERVER_URL"))
+            .or_else(|| env_nonempty("PQ_DEV_URL"))
+            .unwrap_or_else(|| "http://localhost:5173".to_string());
+        let parsed = url::Url::parse(dev_url.trim()).map_err(|e| e.to_string())?;
+        return Ok(WebviewUrl::External(parsed));
+    }
+    Ok(WebviewUrl::App(PathBuf::from("index.html")))
 }
 
 fn logical_to_physical_rect_for_window(
@@ -1411,9 +1526,17 @@ async fn profit_ocr_http_reachable() -> bool {
         .unwrap_or(false)
 }
 
+async fn profit_ocr_fast_probe() -> bool {
+    profit_ocr_http_compatible_timeout_ms(OCR_FAST_PROBE_TIMEOUT_MS).await
+}
+
 /// Igual a `profit_ocr_http_reachable` no tempo de espera — evita falso “porta ocupada” em OCR a aquecer.
 async fn profit_ocr_http_compatible_long() -> bool {
     profit_ocr_http_compatible_timeout_ms(OCR_HTTP_HEALTH_TIMEOUT_MS).await
+}
+
+async fn profit_ocr_debug_probe() -> bool {
+    profit_ocr_http_compatible_timeout_ms(OCR_DEBUG_PROBE_TIMEOUT_MS).await
 }
 
 async fn profit_ocr_http_compatible_timeout_ms(timeout_ms: u64) -> bool {
@@ -1498,7 +1621,7 @@ fn kill_stale_ocr_processes() {}
 /// Garante processo Python do OCR (porta 5558) ao abrir o overlay — evita espera longa no retry do WebSocket.
 async fn ensure_profit_ocr_running(
     app: tauri::AppHandle,
-    processes: State<'_, ChildProcesses>,
+    processes: &ChildProcesses,
 ) -> Result<(), String> {
     let base_ocr_port = configured_ocr_port();
     set_runtime_ocr_port(base_ocr_port);
@@ -1522,7 +1645,7 @@ async fn ensure_profit_ocr_running(
             "http_health_timeout_ms": OCR_HTTP_HEALTH_TIMEOUT_MS,
         }),
     );
-    if profit_ocr_http_reachable().await {
+    if profit_ocr_fast_probe().await {
         if !profit_ocr_has_analysis_roi_endpoint().await {
             let err = ocr_incompatible_analysis_roi_message();
             append_runtime_bootstrap_log(
@@ -1539,8 +1662,9 @@ async fn ensure_profit_ocr_running(
             "ocr",
             "ensure_running",
             "already_reachable",
-            json!({"elapsed_ms": t0.elapsed().as_millis()}),
+            json!({"elapsed_ms": t0.elapsed().as_millis(), "ocr_already_running": true}),
         );
+        eprintln!("[overlay-metric] ocr_already_running=true");
         eprintln!(
             "[overlay-latency] ensure_profit_ocr_running reachable_immediately elapsed_ms={}",
             t0.elapsed().as_millis()
@@ -1564,7 +1688,7 @@ async fn ensure_profit_ocr_running(
 
     if !spawn_new {
         for _ in 0..ocr_startup_attempts() {
-            if profit_ocr_http_reachable().await {
+            if profit_ocr_fast_probe().await {
                 append_runtime_bootstrap_log(
                     &app,
                     "ocr",
@@ -1851,6 +1975,10 @@ async fn ensure_profit_ocr_running(
     };
 
     let mut child = child;
+    eprintln!(
+        "[overlay-metric] ocr_spawn_ms={}",
+        t0.elapsed().as_millis()
+    );
     append_runtime_bootstrap_log(
         &app,
         "ocr",
@@ -1862,7 +1990,7 @@ async fn ensure_profit_ocr_running(
         }),
     );
     for _ in 0..ocr_startup_attempts() {
-        if profit_ocr_http_reachable().await {
+        if profit_ocr_http_compatible_long().await {
             let mut ocr_guard = processes.profit_ocr.lock().map_err(|e| e.to_string())?;
             *ocr_guard = Some(child);
             append_runtime_bootstrap_log(
@@ -1871,6 +1999,10 @@ async fn ensure_profit_ocr_running(
                 "ensure_running",
                 "spawned_ready",
                 json!({"elapsed_ms": t0.elapsed().as_millis()}),
+            );
+            eprintln!(
+                "[overlay-metric] ocr_health_ready_ms={}",
+                t0.elapsed().as_millis()
             );
             eprintln!(
                 "[overlay-latency] ensure_profit_ocr_running spawned_ready elapsed_ms={}",
@@ -1914,31 +2046,34 @@ async fn ensure_profit_ocr_running(
         "error",
         json!({"reason": err.clone()}),
     );
+    let debug_probe_ok = profit_ocr_debug_probe().await;
+    append_runtime_bootstrap_log(
+        &app,
+        "ocr",
+        "debug_probe",
+        if debug_probe_ok { "ok" } else { "error" },
+        json!({"timeout_ms": OCR_DEBUG_PROBE_TIMEOUT_MS}),
+    );
     Err(err)
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenProfitOverlayResult {
+    ok: bool,
+    windows_ready_ms: u128,
+    ocr_mode: String,
 }
 
 #[tauri::command]
 pub async fn open_profit_overlay(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
-) -> Result<(), String> {
+) -> Result<OpenProfitOverlayResult, String> {
     set_overlay_desired_active(true, "open_profit_overlay");
     let _open_guard = overlay_open_lock().lock().await;
+    cancel_ocr_idle_shutdown(&processes);
     append_runtime_bootstrap_log(&app, "overlay", "open_profit_overlay", "attempt", json!({}));
     let t0 = std::time::Instant::now();
-
-    // OCR antes das janelas: evita overlay visível sem serviço e falha limpa sem UI órfã.
-    if let Err(e) = ensure_profit_ocr_running(app.clone(), processes).await {
-        append_runtime_bootstrap_log(
-            &app,
-            "overlay",
-            "open_profit_overlay",
-            "error",
-            json!({"reason": e.clone(), "phase": "ensure_ocr"}),
-        );
-        return Err(e);
-    }
-    push_saved_ocr_analysis_roi_to_http(&app).await;
 
     let main_window = app.get_webview_window("main");
     let target_monitor = resolve_target_monitor(&app, main_window.as_ref())?;
@@ -1973,12 +2108,7 @@ pub async fn open_profit_overlay(
         let logical_w = physical_u32_to_logical_f64(target_monitor_size.width, monitor_scale);
         let logical_h = physical_u32_to_logical_f64(target_monitor_size.height, monitor_scale);
 
-        let url = if cfg!(debug_assertions) {
-            let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
-            WebviewUrl::External(u)
-        } else {
-            WebviewUrl::App(PathBuf::from("index.html"))
-        };
+        let url = resolve_frontend_webview_url()?;
 
         let window = WebviewWindowBuilder::new(&app, "profit-overlay", url)
             .title("Profit Overlay")
@@ -2003,12 +2133,7 @@ pub async fn open_profit_overlay(
     let screen_w = target_monitor_size.width as f64;
     let monitor_scale = sanitize_scale_factor(target_monitor.scale_factor());
 
-    let control_url = if cfg!(debug_assertions) {
-        let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
-        WebviewUrl::External(u)
-    } else {
-        WebviewUrl::App(PathBuf::from("index.html"))
-    };
+    let control_url = resolve_frontend_webview_url()?;
 
     if let Some(ctrl) = app.get_webview_window("profit-overlay-control") {
         append_runtime_bootstrap_log(&app, "overlay", "show", "attempt", json!({"label":"profit-overlay-control","reason":"open_profit_overlay"}));
@@ -2052,14 +2177,66 @@ pub async fn open_profit_overlay(
         "[overlay-latency] open_profit_overlay windows_ready elapsed_ms={}",
         t0.elapsed().as_millis()
     );
+    eprintln!(
+        "[overlay-metric] windows_ready_ms={}",
+        t0.elapsed().as_millis()
+    );
     start_overlay_bounds_watchdog(app.clone());
+    emit_profit_overlay_ocr_event(
+        &app,
+        EVENT_PROFIT_OVERLAY_OCR_STARTING,
+        json!({"phase": "background_starting", "ts_ms": unix_ts_ms()}),
+    );
+    let app_for_bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let t_ocr = std::time::Instant::now();
+        emit_ocr_overlay_status(&app_for_bg, "startup", "start", json!({"mode": "background"}));
+        let result = {
+            let state = app_for_bg.state::<ChildProcesses>();
+            ensure_profit_ocr_running(app_for_bg.clone(), &state).await
+        };
+        match result {
+            Ok(()) => {
+                push_saved_ocr_analysis_roi_to_http(&app_for_bg).await;
+                emit_profit_overlay_ocr_event(
+                    &app_for_bg,
+                    EVENT_PROFIT_OVERLAY_OCR_READY,
+                    json!({"elapsed_ms": t_ocr.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+                );
+                emit_ocr_overlay_status(
+                    &app_for_bg,
+                    "startup",
+                    "ok",
+                    json!({"elapsed_ms": t_ocr.elapsed().as_millis()}),
+                );
+            }
+            Err(err) => {
+                emit_profit_overlay_ocr_event(
+                    &app_for_bg,
+                    EVENT_PROFIT_OVERLAY_OCR_ERROR,
+                    json!({"error": err.clone(), "elapsed_ms": t_ocr.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+                );
+                emit_ocr_overlay_status(
+                    &app_for_bg,
+                    "startup",
+                    "error",
+                    json!({"error": err, "elapsed_ms": t_ocr.elapsed().as_millis()}),
+                );
+            }
+        }
+    });
 
-    Ok(())
+    Ok(OpenProfitOverlayResult {
+        ok: true,
+        windows_ready_ms: t0.elapsed().as_millis(),
+        ocr_mode: "background_starting".to_string(),
+    })
 }
 
 #[tauri::command]
 pub async fn close_profit_overlay(
     app: tauri::AppHandle,
+    processes: State<'_, ChildProcesses>,
     reason: Option<String>,
 ) -> Result<(), String> {
     let close_reason = reason
@@ -2078,6 +2255,69 @@ pub async fn close_profit_overlay(
         append_runtime_bootstrap_log(&app, "overlay", "hide", "attempt", json!({"label":"profit-overlay-control","reason": close_reason}));
         ctrl.hide().map_err(|e| e.to_string())?;
     }
+    let _ = &processes;
+    schedule_ocr_idle_shutdown(app.clone());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn prewarm_profit_ocr(app: tauri::AppHandle) -> Result<(), String> {
+    {
+        let state = app.state::<ChildProcesses>();
+        cancel_ocr_idle_shutdown(&state);
+    }
+    let app_for_bg = app.clone();
+    tauri::async_runtime::spawn(async move {
+        emit_profit_overlay_ocr_event(
+            &app_for_bg,
+            EVENT_PROFIT_OVERLAY_OCR_STARTING,
+            json!({"phase": "prewarm", "ts_ms": unix_ts_ms()}),
+        );
+        let t0 = std::time::Instant::now();
+        let result = {
+            let state = app_for_bg.state::<ChildProcesses>();
+            ensure_profit_ocr_running(app_for_bg.clone(), &state).await
+        };
+        match result {
+            Ok(()) => {
+                push_saved_ocr_analysis_roi_to_http(&app_for_bg).await;
+                emit_profit_overlay_ocr_event(
+                    &app_for_bg,
+                    EVENT_PROFIT_OVERLAY_OCR_READY,
+                    json!({"phase": "prewarm", "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+                );
+            }
+            Err(err) => {
+                emit_profit_overlay_ocr_event(
+                    &app_for_bg,
+                    EVENT_PROFIT_OVERLAY_OCR_ERROR,
+                    json!({"phase": "prewarm", "error": err, "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+                );
+            }
+        }
+    });
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_profit_overlay_ignore_cursor_events(
+    app: tauri::AppHandle,
+    ignore: bool,
+) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("profit-overlay") else {
+        return Err("profit-overlay window not found".to_string());
+    };
+    append_runtime_bootstrap_log(
+        &app,
+        "overlay",
+        "set_ignore_cursor_events",
+        "attempt",
+        json!({"value": ignore, "reason": "ocr_debug_hud_or_manual_calibrate"}),
+    );
+    win.set_ignore_cursor_events(ignore)
+        .map_err(|e| e.to_string())?;
+    let always_on_top = true;
+    set_overlay_window_flags(always_on_top, ignore);
     Ok(())
 }
 
@@ -2121,12 +2361,7 @@ pub async fn open_ocr_roi_picker(app: tauri::AppHandle) -> Result<(), String> {
     let logical_x = physical_i32_to_logical_f64(monitor_pos.x, monitor_scale);
     let logical_y = physical_i32_to_logical_f64(monitor_pos.y, monitor_scale);
 
-    let url = if cfg!(debug_assertions) {
-        let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
-        WebviewUrl::External(u)
-    } else {
-        WebviewUrl::App(PathBuf::from("index.html"))
-    };
+    let url = resolve_frontend_webview_url()?;
 
     let window = WebviewWindowBuilder::new(&app, "ocr-roi-picker", url)
         .title("Região OCR (análise)")
@@ -3547,12 +3782,7 @@ pub async fn create_widget_window(app: tauri::AppHandle, widget_id: String) -> R
         return Ok(());
     }
 
-    let url = if cfg!(debug_assertions) {
-        let u = url::Url::parse("http://localhost:5173").map_err(|e| e.to_string())?;
-        WebviewUrl::External(u)
-    } else {
-        WebviewUrl::App(PathBuf::from("index.html"))
-    };
+    let url = resolve_frontend_webview_url()?;
 
     let title = widget_title(&widget_id);
     let mut config = read_config(app.clone()).await?;

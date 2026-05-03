@@ -2,6 +2,7 @@
 
 **Current Milestone:** M9 - RAG em Tempo Real
 **Status:** In Progress (fase 2 evoluída em código: pipeline local + injeção de contexto + fallback local→cloud opcional em Pinecone/Vectara + views materializadas com backend memory/sqlite; pendente: validação operacional contínua em pregão e eventual migração para engine SQL dedicado)
+**Overlay VP/OCR (stability track):** In Progress (slice de robustez aplicado: retenção de último estado válido, anti-oscilação, freeze resiliente e cadência 500ms; pendente validação live de campo).
 
 ---
 

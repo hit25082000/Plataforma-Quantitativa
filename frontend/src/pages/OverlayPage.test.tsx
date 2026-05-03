@@ -78,6 +78,8 @@ function makeProps(overrides: Partial<VpOverlayHudProps> = {}): VpOverlayHudProp
     onSubmitManualCalibration: vi.fn(),
     onClearManualCalibration: vi.fn(),
     onReturnAutoAxis: vi.fn(),
+    ocrHudCollapsed: false,
+    onSetOcrHudCollapsed: vi.fn(),
     ...overrides,
   };
 }

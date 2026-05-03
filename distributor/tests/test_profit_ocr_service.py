@@ -425,7 +425,7 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertGreaterEqual(fit["confidence"], 0.0)
         self.assertLessEqual(fit["confidence"], 1.0)
 
-    def test_axis_manager_requires_8_frames_for_large_jump(self) -> None:
+    def test_axis_manager_requires_confirmation_frames_for_jump(self) -> None:
         mgr = profit_ocr_service.StableAxisManager()
         base_candidate = {
             "slope": -1.0,
@@ -447,11 +447,11 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(mgr.status, "STABLE")
 
         jump_candidate = dict(base_candidate)
-        jump_candidate["intercept"] = 80.0
-        for _ in range(7):
+        jump_candidate["intercept"] = 175.0
+        for _ in range(2):
             out = mgr.feed(jump_candidate)
             self.assertIsNotNone(out)
-            self.assertEqual(mgr.status, "RECALIBRATING")
+            self.assertEqual(mgr.status, "CALIBRATING")
         out = mgr.feed(jump_candidate)
         self.assertIsNotNone(out)
         self.assertEqual(mgr.status, "STABLE")
@@ -524,8 +524,12 @@ class TestProfitOcrService(unittest.TestCase):
 
         good_again = mgr.feed(valid)
         self.assertIsNotNone(good_again)
-        self.assertEqual(mgr.status, "STABLE")
+        self.assertEqual(mgr.status, "CALIBRATING")
         self.assertEqual(mgr.bad_frames, 0)
+        self.assertIsNotNone(mgr.feed(valid))
+        self.assertEqual(mgr.status, "CALIBRATING")
+        self.assertIsNotNone(mgr.feed(valid))
+        self.assertEqual(mgr.status, "STABLE")
 
     def test_axis_manager_recalibrating_after_frozen_unfreeze(self) -> None:
         mgr = profit_ocr_service.StableAxisManager()
@@ -560,14 +564,14 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(mgr.status, "FROZEN")
 
         mgr.unfreeze()
-        self.assertEqual(mgr.status, "RECALIBRATING")
+        self.assertEqual(mgr.status, "CALIBRATING")
         self.assertEqual(mgr.bad_frames, 0)
 
         big_jump = dict(valid)
-        big_jump["intercept"] = 80.0
-        for _ in range(7):
+        big_jump["intercept"] = 175.0
+        for _ in range(2):
             self.assertIsNotNone(mgr.feed(big_jump))
-            self.assertEqual(mgr.status, "RECALIBRATING")
+            self.assertEqual(mgr.status, "CALIBRATING")
         self.assertIsNotNone(mgr.feed(big_jump))
         self.assertEqual(mgr.status, "STABLE")
 
@@ -592,34 +596,47 @@ class TestProfitOcrService(unittest.TestCase):
             "confidence": 0.99,
             "residual_px": 0.1,
             "max_error_px": 0.3,
+            "value_min": 100.0,
+            "value_max": 180.0,
+            "y_min": 20.0,
+            "y_max": 120.0,
         }
         self.assertTrue(profit_ocr_service.is_candidate_valid(candidate))
 
-    def test_is_candidate_valid_applies_monotonic_only_with_3_plus_labels(self) -> None:
+    def test_is_candidate_valid_requires_minimum_labels_and_monotonic(self) -> None:
         low_labels_candidate = {
-            "labels_count": 2,
+            "labels_count": 3,
             "tick_size": 5.0,
             "tick_valid": True,
-            "monotonic_valid": False,
+            "monotonic_valid": True,
             "confidence": 0.99,
             "residual_px": 0.1,
             "max_error_px": 0.3,
+            "value_min": 100.0,
+            "value_max": 180.0,
+            "y_min": 20.0,
+            "y_max": 120.0,
         }
-        self.assertTrue(profit_ocr_service.is_candidate_valid(low_labels_candidate))
+        self.assertFalse(profit_ocr_service.is_candidate_valid(low_labels_candidate))
 
         many_labels_candidate = dict(low_labels_candidate)
         many_labels_candidate["labels_count"] = 4
+        many_labels_candidate["monotonic_valid"] = False
         self.assertFalse(profit_ocr_service.is_candidate_valid(many_labels_candidate))
 
     def test_is_candidate_valid_accepts_threshold_boundaries(self) -> None:
         candidate = {
-            "labels_count": 3,
+            "labels_count": 4,
             "tick_size": 5.0,
             "tick_valid": True,
             "monotonic_valid": True,
             "confidence": profit_ocr_service.AXIS_MIN_CONFIDENCE,
             "residual_px": profit_ocr_service.AXIS_MAX_RESIDUAL_PX,
             "max_error_px": profit_ocr_service.AXIS_MAX_ERROR_PX,
+            "value_min": 100.0,
+            "value_max": 180.0,
+            "y_min": 20.0,
+            "y_max": 120.0,
         }
         self.assertTrue(profit_ocr_service.is_candidate_valid(candidate))
 
@@ -873,7 +890,7 @@ class TestProfitOcrService(unittest.TestCase):
         with mock.patch.object(profit_ocr_service.time, "monotonic", return_value=profit_ocr_service.AXIS_FROZEN_HOLD_SECS + 0.5):
             out = mgr.feed(None)
         self.assertIsNotNone(out)
-        self.assertEqual(mgr.status, "NO_AXIS")
+        self.assertEqual(mgr.status, "DEGRADED")
 
     def test_status_light_includes_axis_error_and_last_good_age(self) -> None:
         old_ts = profit_ocr_service.axis_manager.last_stable_ts_monotonic

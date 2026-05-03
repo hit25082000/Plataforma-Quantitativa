@@ -1,3 +1,9 @@
+import "../styles/overlayProfitTransparent.css";
+import { OVERLAY_VISUAL_FPS } from "../overlay/overlayConstants";
+import { safeBuildOverlayFrame } from "../overlay/buildOverlayFrame";
+import { readOverlayDiagEnv } from "../overlay/overlayDiagEnv";
+import { safeNumber, safePx } from "../overlay/safeStyle";
+import type { OverlayLayoutSnapshot, OverlayRenderFrame } from "../overlay/overlayFrameTypes";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -7,7 +13,6 @@ import type {
   TapeIntelligenceLevel,
   TapeIntelligenceMessage,
   TopPlayerAvgLine,
-  VolumeProfileLevel,
   VolumeProfileMessage,
   VpOverlayDebugMessage,
   VpOverlayDisplay,
@@ -18,14 +23,21 @@ import type {
 } from "../types/messages";
 import { vpOverlayToTapeIntelligence, vpOverlayToVolumeProfile } from "../utils/vpOverlayAdapters";
 import {
-  type OcrAxisDeltas,
+  type OcrAxisDeltasOrLegacy,
   overlayStatusColor,
   overlayStatusText,
 } from "../utils/ocrStatus";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
 import { listenOcrOverlayStatus } from "../utils/ocrOverlayEvents";
 import { isTauri } from "../utils/tauri";
-import { PQ_CONFIG_SAVED_EVENT } from "../constants/pqTauriEvents";
+import {
+  PQ_CONFIG_SAVED_EVENT,
+  PQ_OVERLAY_OCR_DEBUG_HUD_EVENT,
+  PQ_PROFIT_OVERLAY_OCR_ERROR_EVENT,
+  PQ_PROFIT_OVERLAY_OCR_READY_EVENT,
+  PQ_PROFIT_OVERLAY_OCR_STARTING_EVENT,
+  type PqOverlayOcrDebugHudPayload,
+} from "../constants/pqTauriEvents";
 
 interface OverlayLine {
   value: number;
@@ -86,7 +98,7 @@ interface OverlayData {
   y_min: number | null;
   y_max: number | null;
   chart_rect?: ChartRect | null;
-  axis_deltas?: OcrAxisDeltas | null;
+  axis_deltas?: OcrAxisDeltasOrLegacy | null;
   axis_diagnostics?: {
     raw_labels?: number;
     kept_labels?: number;
@@ -117,6 +129,14 @@ interface OverlayData {
   last_payload_age_ms?: number | null;
 }
 
+type OverlayOcrPhase =
+  | "ocr_starting"
+  | "ocr_connecting"
+  | "ocr_warming"
+  | "axis_waiting"
+  | "axis_stable"
+  | "degraded";
+
 const LABEL_W = 150;
 const LABEL_H = 36;
 const FONT = "'JetBrains Mono', 'Fira Mono', monospace";
@@ -126,15 +146,13 @@ const DEFAULT_OVERLAY_RIGHT_MARGIN_PX = 208;
 const OVERLAY_LINE_LEFT_SHIFT_PX = 36;
 const LABEL_MIN_GAP = LABEL_H + 4;
 const LABEL_MARGIN_PX = 2;
-const VP_PROFILE_WIDTH_RATIO = 0.22;
-const VP_PROFILE_MIN_WIDTH_PX = 104;
-const VP_PROFILE_MAX_WIDTH_PX = 280;
-const VP_PROFILE_RIGHT_GAP_PX = 8;
 const VP_WAITING_BADGE_W = 238;
 const VP_WS_INITIAL_BACKOFF_MS = 500;
 const VP_WS_MAX_BACKOFF_MS = 10_000;
 const VP_DEMO_LOCK_MS = 30_000;
-const VP_OVERLAY_STICKY_MS = 30_000;
+const VP_LAYOUT_UPDATE_MS = 500;
+const PQ_LAST_OVERLAY_WINDOW_ERROR_KEY = "PQ_LAST_OVERLAY_WINDOW_ERROR";
+const PQ_LAST_OVERLAY_PROMISE_ERROR_KEY = "PQ_LAST_OVERLAY_PROMISE_ERROR";
 
 type AppConfigRead = {
   overlay_right_margin_px?: number | null;
@@ -283,7 +301,8 @@ function shouldHoldPreviousLinesOnOcrDropout(
   const ocrTransient =
     status.startsWith("ocr_insufficient_labels") ||
     status === "warming_up" ||
-    status === "connecting";
+    status === "connecting" ||
+    status === "ocr_unreachable_retrying";
   if (ocrTransient || kept <= 1 || rejected >= 1) {
     return { hold: true, reason: "transient_ocr_dropout" };
   }
@@ -369,6 +388,63 @@ function isAxisUsableForOcr(data: OverlayData): { usable: boolean; reason: strin
   if (age > 15000) return { usable: false, reason: "axis_age_no_axis" };
   if (age > 5000) return { usable: true, reason: "axis_age_frozen" };
   return { usable: true, reason: "" };
+}
+
+function overlayFrameLinesDigest(f: OverlayRenderFrame): string {
+  if (f.positionedLines.length === 0) return "0";
+  return f.positionedLines
+    .slice(0, 16)
+    .map((l) => `${l.value}:${Math.round(l.y_screen * 10)}`)
+    .join(",");
+}
+
+function overlayFrameRenderDigest(f: OverlayRenderFrame | null): string {
+  if (!f) return "";
+  const vp = f.volumeProfileOverlay;
+  const vN = vp && Array.isArray(vp.levels) ? vp.levels.length : 0;
+  return [
+    f.viewportWidth,
+    f.viewportHeight,
+    Math.round(f.renderScale * 1000),
+    f.guardStatus,
+    f.positionedLines.length,
+    f.tapeBadges.length,
+    vN,
+    f.effectiveYMin ?? "",
+    f.effectiveYMax ?? "",
+    f.effectiveFallbackReason,
+    f.usingOcrChart,
+    overlayFrameLinesDigest(f),
+  ].join("|");
+}
+
+function overlayVisualCommitDigest(
+  f: OverlayRenderFrame | null,
+  snap: OverlayLayoutSnapshot,
+): string {
+  return [
+    overlayFrameRenderDigest(f),
+    snap.data.status,
+    snap.data.axis_status ?? "",
+    snap.data.normalized_axis_status ?? "",
+    snap.data.last_good_axis_age_ms ?? "",
+  ].join("§");
+}
+
+function sameFrame(a: OverlayRenderFrame | null, b: OverlayRenderFrame | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const itemsA =
+    a.positionedLines.length + a.tapeBadges.length + (a.volumeProfileOverlay?.levels?.length ?? 0);
+  const itemsB =
+    b.positionedLines.length + b.tapeBadges.length + (b.volumeProfileOverlay?.levels?.length ?? 0);
+  return (
+    a.viewportWidth === b.viewportWidth &&
+    a.viewportHeight === b.viewportHeight &&
+    a.guardStatus === b.guardStatus &&
+    itemsA === itemsB &&
+    overlayFrameRenderDigest(a) === overlayFrameRenderDigest(b)
+  );
 }
 
 function scaleChartRect(rect: ChartRect | null | undefined, scale: number): ScaledChartRect | null {
@@ -497,23 +573,6 @@ function alignmentDeltaPx(
   return Math.abs(actual - expected);
 }
 
-function levelTotalVol(level: VolumeProfileLevel): number {
-  const total = Number(level.total_vol);
-  if (Number.isFinite(total) && total > 0) return total;
-  const bid = Number(level.bid_vol);
-  const ask = Number(level.ask_vol);
-  return Math.max(0, (Number.isFinite(bid) ? bid : 0) + (Number.isFinite(ask) ? ask : 0));
-}
-
-function medianPositive(values: number[]): number | null {
-  const positives = values.filter((v) => Number.isFinite(v) && v > 0).sort((a, b) => a - b);
-  if (positives.length === 0) return null;
-  const mid = Math.floor(positives.length / 2);
-  return positives.length % 2 === 0
-    ? (positives[mid - 1] + positives[mid]) / 2
-    : positives[mid];
-}
-
 function volumeProfilePriceRange(
   volumeProfile: VolumeProfileMessage | null,
 ): { min: number; max: number } | null {
@@ -522,8 +581,15 @@ function volumeProfilePriceRange(
     .map((level) => Number(level.price))
     .filter((price) => Number.isFinite(price));
   if (prices.length === 0) return null;
-  let min = Math.min(...prices, volumeProfile.poc, volumeProfile.vah, volumeProfile.val);
-  let max = Math.max(...prices, volumeProfile.poc, volumeProfile.vah, volumeProfile.val);
+  const av = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const anchors = [av(volumeProfile.poc), av(volumeProfile.vah), av(volumeProfile.val)].filter((n) =>
+    Number.isFinite(n),
+  );
+  let min = Math.min(...prices, ...(anchors.length ? anchors : prices));
+  let max = Math.max(...prices, ...(anchors.length ? anchors : prices));
   if (min === max) {
     min -= 1;
     max += 1;
@@ -561,8 +627,9 @@ function formatProfilePrice(v: number): string {
 }
 
 function volumeProfileLevelColor(level: VolumeProfileRenderableLevel, poc: number): string {
+  const pocF = safeNumber(poc, safeNumber(level.price, 0));
   if (level.isPoc) return "rgba(245,158,11,0.96)";
-  if (level.price >= poc) {
+  if (level.price >= pocF) {
     return level.inValueArea ? "rgba(239,68,68,0.84)" : "rgba(239,68,68,0.52)";
   }
   return level.inValueArea ? "rgba(168,85,247,0.82)" : "rgba(168,85,247,0.48)";
@@ -766,6 +833,11 @@ export default function OverlayPage() {
   const vpWsBackoffRef = useRef(VP_WS_INITIAL_BACKOFF_MS);
   const wsStartRef = useRef<number | null>(null);
   const wsOpenLoggedRef = useRef(false);
+  const firstAxisStableLoggedRef = useRef(false);
+  const firstLinesRenderedLoggedRef = useRef(false);
+  const [startupEventState, setStartupEventState] = useState<"idle" | "starting" | "ready" | "error">(
+    "idle",
+  );
   const [overlayRightMarginPx, setOverlayRightMarginPx] = useState<number>(
     DEFAULT_OVERLAY_RIGHT_MARGIN_PX,
   );
@@ -776,17 +848,21 @@ export default function OverlayPage() {
   const [vpFallbackPriceBot, setVpFallbackPriceBot] = useState<number | null>(null);
   const [fallbackYLock, setFallbackYLock] = useState<{ min: number; max: number } | null>(null);
   const lastVpTickerRef = useRef<string | undefined>(undefined);
+  const overlayHeartbeatRef = useRef<Record<string, unknown>>({});
+  const snapshotDraftRef = useRef<OverlayLayoutSnapshot | null>(null);
+  const lastGoodSvgFrameRef = useRef<OverlayRenderFrame | null>(null);
+  const displayedSvgFrameRef = useRef<OverlayRenderFrame | null>(null);
+  const lastRenderErrRef = useRef<string | null>(null);
   const [viewport, setViewport] = useState({
     width: window.innerWidth,
     height: window.innerHeight,
+    dpr: window.devicePixelRatio || 1,
   });
+  const [svgRafNonce, setSvgRafNonce] = useState(0);
   const vpOverlayPrimaryRef = useRef(false);
   const vpOvWsRef = useRef<WebSocket | null>(null);
   const vpOvBackoffRef = useRef(VP_WS_INITIAL_BACKOFF_MS);
   const vpOvRetryTimer = useRef<ReturnType<typeof setTimeout>>();
-  const lastGoodVpOverlayRef = useRef<{ ts: number; model: VolumeProfileOverlayModel } | null>(
-    null,
-  );
   const [vpOverlayDisplay, setVpOverlayDisplay] = useState<VpOverlayDisplay | null>(null);
   const [vpOverlayPrefs, setVpOverlayPrefs] = useState<VpOverlayPrefsConfig | null>(null);
   const [vpOverlayHealth, setVpOverlayHealth] = useState<VpOverlayDebugMessage["health"] | null>(null);
@@ -803,6 +879,7 @@ export default function OverlayPage() {
     bounds: true,
   });
   const [manualCalibrateMode, setManualCalibrateMode] = useState(false);
+  const [ocrHudCollapsed, setOcrHudCollapsed] = useState(true);
   const [manualPointA, setManualPointA] = useState<{ y: number; value: string } | null>(null);
   const [manualPointB, setManualPointB] = useState<{ y: number; value: string } | null>(null);
   const [manualCalibrateHint, setManualCalibrateHint] = useState<string | null>(null);
@@ -810,10 +887,69 @@ export default function OverlayPage() {
   const [lastPayloadAtMs, setLastPayloadAtMs] = useState<number | null>(null);
   const overlayPerfLastRef = useRef(performance.now());
   const overlayPerfBootRef = useRef(true);
+  const lastSvgVisualDigestRef = useRef<string | null>(null);
+  const rafLastPushedFrameRef = useRef<OverlayRenderFrame | null>(null);
+  const frozenByNoAxisRef = useRef(false);
+  const vpCommitAtRef = useRef(0);
+  const tapeCommitAtRef = useRef(0);
+  const pendingVpRef = useRef<VolumeProfileMessage | null>(null);
+  const pendingTapeRef = useRef<TapeIntelligenceMessage | null>(null);
+  const vpFlushTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const tapeFlushTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const effectiveVpDisplay = useMemo(
     () => mergeVpOverlayDisplay(vpOverlayDisplay, vpOverlayPrefs),
     [vpOverlayDisplay, vpOverlayPrefs],
   );
+
+  const scheduleVolumeProfileCommit = useCallback((msg: VolumeProfileMessage) => {
+    const now = Date.now();
+    const elapsed = now - vpCommitAtRef.current;
+    if (elapsed >= VP_LAYOUT_UPDATE_MS) {
+      vpCommitAtRef.current = now;
+      pendingVpRef.current = null;
+      if (vpFlushTimerRef.current) {
+        clearTimeout(vpFlushTimerRef.current);
+        vpFlushTimerRef.current = undefined;
+      }
+      setVolumeProfile(msg);
+      return;
+    }
+    pendingVpRef.current = msg;
+    if (vpFlushTimerRef.current) return;
+    vpFlushTimerRef.current = setTimeout(() => {
+      vpFlushTimerRef.current = undefined;
+      const pending = pendingVpRef.current;
+      if (!pending) return;
+      pendingVpRef.current = null;
+      vpCommitAtRef.current = Date.now();
+      setVolumeProfile(pending);
+    }, Math.max(0, VP_LAYOUT_UPDATE_MS - elapsed));
+  }, []);
+
+  const scheduleTapeIntelligenceCommit = useCallback((msg: TapeIntelligenceMessage) => {
+    const now = Date.now();
+    const elapsed = now - tapeCommitAtRef.current;
+    if (elapsed >= VP_LAYOUT_UPDATE_MS) {
+      tapeCommitAtRef.current = now;
+      pendingTapeRef.current = null;
+      if (tapeFlushTimerRef.current) {
+        clearTimeout(tapeFlushTimerRef.current);
+        tapeFlushTimerRef.current = undefined;
+      }
+      setTapeIntelligence(msg);
+      return;
+    }
+    pendingTapeRef.current = msg;
+    if (tapeFlushTimerRef.current) return;
+    tapeFlushTimerRef.current = setTimeout(() => {
+      tapeFlushTimerRef.current = undefined;
+      const pending = pendingTapeRef.current;
+      if (!pending) return;
+      pendingTapeRef.current = null;
+      tapeCommitAtRef.current = Date.now();
+      setTapeIntelligence(pending);
+    }, Math.max(0, VP_LAYOUT_UPDATE_MS - elapsed));
+  }, []);
 
   const patchVpOverlayPref = useCallback((patch: Partial<VpOverlayPrefsConfig>) => {
     setVpOverlayPrefs((prev) => ({ ...(prev ?? {}), ...patch }));
@@ -859,6 +995,12 @@ export default function OverlayPage() {
     let unlisten: (() => void) | undefined;
     void listenOcrOverlayStatus((payload) => {
       if (cancelled) return;
+      if (payload.action === "startup") {
+        if (payload.status === "start") setStartupEventState("starting");
+        else if (payload.status === "ok") setStartupEventState("ready");
+        else if (payload.status === "error") setStartupEventState("error");
+        return;
+      }
       if (payload.action === "recalibrate") {
         if (payload.status === "start") setRecalibrateHint("recalibrando...");
         else if (payload.status === "ok") setRecalibrateHint("recalibrado");
@@ -893,6 +1035,34 @@ export default function OverlayPage() {
     return () => {
       cancelled = true;
       unlisten?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    const unlisten: Array<() => void> = [];
+    void (async () => {
+      const onStarting = await listen(PQ_PROFIT_OVERLAY_OCR_STARTING_EVENT, () => {
+        if (!cancelled) setStartupEventState("starting");
+      });
+      const onReady = await listen(PQ_PROFIT_OVERLAY_OCR_READY_EVENT, () => {
+        if (!cancelled) setStartupEventState("ready");
+      });
+      const onError = await listen(PQ_PROFIT_OVERLAY_OCR_ERROR_EVENT, () => {
+        if (!cancelled) setStartupEventState("error");
+      });
+      if (cancelled) {
+        onStarting();
+        onReady();
+        onError();
+        return;
+      }
+      unlisten.push(onStarting, onReady, onError);
+    })();
+    return () => {
+      cancelled = true;
+      for (const fn of unlisten) fn();
     };
   }, []);
 
@@ -934,8 +1104,8 @@ export default function OverlayPage() {
     } else if (demoLockUntilRef.current > now) {
       return;
     }
-    setVolumeProfile(msg);
-  }, []);
+    scheduleVolumeProfileCommit(msg);
+  }, [scheduleVolumeProfileCommit]);
 
   const applyTapeIntelligenceMessage = useCallback((msg: TapeIntelligenceMessage) => {
     const now = Date.now();
@@ -944,8 +1114,8 @@ export default function OverlayPage() {
     } else if (demoLockUntilRef.current > now) {
       return;
     }
-    setTapeIntelligence(msg);
-  }, []);
+    scheduleTapeIntelligenceCommit(msg);
+  }, [scheduleTapeIntelligenceCommit]);
 
   const ingestVpOverlayMessage = useCallback((msg: VpOverlayMessage) => {
     const now = Date.now();
@@ -964,16 +1134,32 @@ export default function OverlayPage() {
       setVpOverlayAgeMs(null);
     }
     const d = msg.display;
-    setVpOverlayDisplay(d && typeof d === "object" ? (d as VpOverlayDisplay) : null);
+    setVpOverlayDisplay((prev) =>
+      d && typeof d === "object" ? (d as VpOverlayDisplay) : prev,
+    );
     const h = msg.health;
     setVpOverlayHealth(h && typeof h === "object" ? (h as VpOverlayDebugMessage["health"]) : null);
-    setVolumeProfile(vpOverlayToVolumeProfile(msg));
-    setTapeIntelligence(vpOverlayToTapeIntelligence(msg));
+    scheduleVolumeProfileCommit(vpOverlayToVolumeProfile(msg));
+    scheduleTapeIntelligenceCommit(vpOverlayToTapeIntelligence(msg));
+  }, [scheduleTapeIntelligenceCommit, scheduleVolumeProfileCommit]);
+
+  useEffect(() => {
+    return () => {
+      if (vpFlushTimerRef.current) clearTimeout(vpFlushTimerRef.current);
+      if (tapeFlushTimerRef.current) clearTimeout(tapeFlushTimerRef.current);
+      pendingVpRef.current = null;
+      pendingTapeRef.current = null;
+    };
   }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
-    setData((prev) => ({ ...prev, status: "connecting" }));
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
+    setData((prev) => ({ ...prev, status: "ocr_connecting" }));
     if (wsStartRef.current == null) wsStartRef.current = performance.now();
     const openWs = async () => {
       let wsUrl = OCR_WS_URL;
@@ -992,10 +1178,10 @@ export default function OverlayPage() {
         wsRetryRef.current = 0;
         if (!wsOpenLoggedRef.current && wsStartRef.current != null) {
           const ms = Math.round(performance.now() - wsStartRef.current);
-          console.info(`[overlay-latency] overlay_page_ws_open elapsed_ms=${ms}`);
+          console.info(`[overlay-metric] ws_ocr_open_ms=${ms}`);
           wsOpenLoggedRef.current = true;
         }
-        setData((prev) => ({ ...prev, status: "connecting" }));
+        setData((prev) => ({ ...prev, status: "ocr_connecting" }));
       };
 
       ws.onmessage = (ev) => {
@@ -1125,10 +1311,10 @@ export default function OverlayPage() {
           250, 500, 800, 1200, 1600, 2000, 2500, 3000, 3500, 4000, 4500,
         ];
         const i = Math.min(wsRetryRef.current++, delays.length - 1);
-        const ms = delays[i] ?? 4500;
+        const ms = (delays[i] ?? 4500) + Math.floor(Math.random() * 120);
         setData((prev) => ({
           ...prev,
-          status: wsRetryRef.current > 32 ? "ocr_unreachable_retrying" : "warming_up",
+          status: wsRetryRef.current > 32 ? "degraded" : "ocr_warming",
         }));
         retryTimer.current = setTimeout(connect, ms);
       };
@@ -1139,6 +1325,9 @@ export default function OverlayPage() {
   }, []);
 
   useEffect(() => {
+    if (isTauri()) {
+      void invoke("prewarm_profit_ocr").catch(() => {});
+    }
     connect();
     return () => {
       wsRef.current?.close();
@@ -1238,7 +1427,6 @@ export default function OverlayPage() {
         if (vpOvWsRef.current === ws) vpOvWsRef.current = null;
         vpOverlayPrimaryRef.current = false;
         if (!cancelled) {
-          setVpOverlayDisplay(null);
           setVpOverlayHealth(null);
           setVpOverlayRawTicker(null);
           setVpOverlayAgeMs(null);
@@ -1261,7 +1449,6 @@ export default function OverlayPage() {
       vpOvWsRef.current?.close();
       vpOvWsRef.current = null;
       vpOverlayPrimaryRef.current = false;
-      lastGoodVpOverlayRef.current = null;
       setVpOverlayRawTicker(null);
       setVpOverlayAgeMs(null);
     };
@@ -1276,10 +1463,56 @@ export default function OverlayPage() {
         devicePixelRatio: window.devicePixelRatio || 1,
       });
       // #endregion
-      setViewport({ width: window.innerWidth, height: window.innerHeight });
+      setViewport({
+        width: window.innerWidth,
+        height: window.innerHeight,
+        dpr: window.devicePixelRatio || 1,
+      });
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const ignore = false;
+    void invoke("set_profit_overlay_ignore_cursor_events", { ignore }).catch(() => {});
+  }, [ocrHudCollapsed, manualCalibrateMode]);
+
+  useEffect(() => {
+    let mounted = true;
+    const onExpand = (detail: unknown) => {
+      if (!mounted) return;
+      const p = detail as PqOverlayOcrDebugHudPayload | undefined;
+      if (p && typeof p === "object" && p.expanded === true) setOcrHudCollapsed(false);
+    };
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    if (isTauri()) {
+      void (async () => {
+        const fn = await listen(PQ_OVERLAY_OCR_DEBUG_HUD_EVENT, (ev) => {
+          onExpand(ev.payload);
+        });
+        if (cancelled) {
+          fn();
+          return;
+        }
+        unlisten = fn;
+      })();
+    } else {
+      const handler = (e: Event) => {
+        const ce = e as CustomEvent<unknown>;
+        onExpand(ce.detail);
+      };
+      window.addEventListener(PQ_OVERLAY_OCR_DEBUG_HUD_EVENT, handler as EventListener);
+      unlisten = () =>
+        window.removeEventListener(PQ_OVERLAY_OCR_DEBUG_HUD_EVENT, handler as EventListener);
+    }
+    return () => {
+      mounted = false;
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -1371,25 +1604,50 @@ export default function OverlayPage() {
     };
   }, []);
 
+  useEffect(() => {
+    document.documentElement.classList.add("pq-overlay-profit");
+    return () => document.documentElement.classList.remove("pq-overlay-profit");
+  }, []);
+
   const renderScale = useMemo(() => {
-    const dpr = window.devicePixelRatio || 1;
+    const dpr = viewport.dpr || 1;
     if (!Number.isFinite(dpr) || dpr <= 0) return 1;
     return 1 / dpr;
-  }, []);
+  }, [viewport.dpr]);
+
+  const W = viewport.width;
+  const H = viewport.height;
+  const safeOverlayLines = useMemo(
+    () => (Array.isArray(data.lines) ? data.lines : []),
+    [data.lines],
+  );
   const scaledLines = useMemo(
     () =>
-      data.lines.map((line) => ({
+      safeOverlayLines.map((line) => ({
         ...line,
         y_screen: line.y_screen * renderScale,
         chart_left: line.chart_left * renderScale,
         chart_right: line.chart_right * renderScale,
       })),
-    [data.lines, renderScale],
+    [safeOverlayLines, renderScale],
   );
-  const W = viewport.width;
-  const H = viewport.height;
   const positionedLines = useMemo(() => layoutOverlayLines(scaledLines, H), [scaledLines, H]);
   const axisUsability = useMemo(() => isAxisUsableForOcr(data), [data]);
+  const overlayPhase = useMemo<OverlayOcrPhase>(() => {
+    if (data.axis_error_code || startupEventState === "error") return "degraded";
+    if (startupEventState === "starting") return "ocr_starting";
+    if (data.status === "ocr_connecting" || data.status === "connecting") return "ocr_connecting";
+    if (
+      data.status === "ocr_warming" ||
+      data.status === "warming_up" ||
+      data.status === "ocr_axis_warming"
+    ) {
+      return "ocr_warming";
+    }
+    if (!axisUsability.usable) return "axis_waiting";
+    if (axisUsability.usable) return "axis_stable";
+    return "degraded";
+  }, [axisUsability.usable, data.axis_error_code, data.status, startupEventState]);
   const scaledChartRect = useMemo(
     () => (axisUsability.usable ? scaleChartRect(data.chart_rect, renderScale) : null),
     [axisUsability.usable, data.chart_rect, renderScale],
@@ -1402,7 +1660,7 @@ export default function OverlayPage() {
     () => (volumeProfile ? fallbackChartRectForVp(W, H) : null),
     [H, W, volumeProfile],
   );
-  const effectiveChartRect = scaledChartRect ?? fallbackVpChartRect;
+  const liveEffectiveChartRect = scaledChartRect ?? fallbackVpChartRect;
   const effectiveFallbackReason = useMemo(() => {
     if (scaledChartRect) return "";
     return axisUsability.reason || "axis_unavailable";
@@ -1418,6 +1676,8 @@ export default function OverlayPage() {
     if (t !== lastVpTickerRef.current) {
       lastVpTickerRef.current = t;
       setFallbackYLock(null);
+      lastGoodSvgFrameRef.current = null;
+      displayedSvgFrameRef.current = null;
     }
   }, [volumeProfile?.ticker]);
 
@@ -1456,388 +1716,311 @@ export default function OverlayPage() {
       : fallbackYLock
         ? fallbackYLock.max
         : (vpRange?.max ?? null);
-  const usingOcrChart = scaledChartRect != null;
-  const volumeProfileOverlay = useMemo<VolumeProfileOverlayModel | null>(() => {
-    if (
-      !showVolumeProfileOverlay ||
-      !volumeProfile ||
-      !effectiveChartRect ||
-      effectiveVpDisplay?.overlay_enabled === false
-    ) {
-      return null;
-    }
-    const chartForVp = effectiveChartRect;
-    const minForVp = effectiveYMin;
-    const maxForVp = effectiveYMax;
-    const ySource = usingOcrChart ? "ocr" : "fallback";
-    const preferExplicitY = usingOcrChart;
-    const rawLevels = Array.isArray(volumeProfile.levels) ? volumeProfile.levels : [];
-    const levelsWithExplicitY = rawLevels.filter((level) => isFiniteNumber(level.y)).length;
-    const levelsWithY = rawLevels
-      .map((level) => {
-        const y = scaledPriceY(
-          preferExplicitY ? level.y : undefined,
-          Number(level.price),
-          chartForVp,
-          renderScale,
-          minForVp,
-          maxForVp,
-        );
-        const totalVol = levelTotalVol(level);
-        if (y == null || totalVol <= 0 || !Number.isFinite(level.price)) return null;
-        return {
-          level,
-          y,
-          totalVol,
-        };
-      })
-      .filter((x): x is { level: VolumeProfileLevel; y: number; totalVol: number } => x != null)
-      .filter(
-        ({ y }) => y >= chartForVp.top - 4 && y <= chartForVp.bottom + 4,
-      )
-      .sort((a, b) => a.y - b.y);
-    if (levelsWithY.length === 0) return null;
 
-    const profileWidth = Math.min(
-      Math.max(chartForVp.width * VP_PROFILE_WIDTH_RATIO, VP_PROFILE_MIN_WIDTH_PX),
-      Math.min(VP_PROFILE_MAX_WIDTH_PX, Math.max(48, chartForVp.width - 16)),
-    );
-    const maxRight = chartForVp.right - VP_PROFILE_RIGHT_GAP_PX;
-    const minRight = chartForVp.left + profileWidth + VP_PROFILE_RIGHT_GAP_PX;
-    const targetRight =
-      chartForVp.right - overlayRightMarginPx - OVERLAY_LINE_LEFT_SHIFT_PX;
-    const profileRight =
-      maxRight >= minRight ? clamp(targetRight, minRight, maxRight) : maxRight;
-    const profileLeft = profileRight - profileWidth;
-    const stretch = effectiveVpDisplay?.stretch_lines === true;
-    const lineEndX = stretch
-      ? clamp(
-          chartForVp.right - overlayRightMarginPx - OVERLAY_LINE_LEFT_SHIFT_PX,
-          profileLeft + 32,
-          chartForVp.right - 6,
-        )
-      : profileRight;
-    const maxVol = Math.max(1, ...levelsWithY.map((x) => x.totalVol));
-    const yGaps: number[] = [];
-    for (let i = 1; i < levelsWithY.length; i++) {
-      yGaps.push(Math.abs(levelsWithY[i].y - levelsWithY[i - 1].y));
+  const overlaySnap = useMemo<OverlayLayoutSnapshot>(
+    () => ({
+      viewportWidth: W,
+      viewportHeight: H,
+      devicePixelRatio: viewport.dpr || 1,
+      overlayRightMarginPx,
+      showVolumeProfileOverlay,
+      showTapeIntelligenceOverlay,
+      vpFallbackMode,
+      fallbackYLock,
+      manualTop,
+      manualBot,
+      data: {
+        lines: safeOverlayLines,
+        status: data.status,
+        y_min: data.y_min,
+        y_max: data.y_max,
+        chart_rect: data.chart_rect ?? null,
+        axis_status: data.axis_status ?? null,
+        normalized_axis_status:
+          data.normalized_axis_status ?? normalizeAxisStatus(data.axis_status ?? ""),
+        last_good_axis_age_ms: data.last_good_axis_age_ms ?? null,
+        parsed_labels_count: data.parsed_labels_count ?? null,
+      },
+      volumeProfile,
+      tapeIntelligence,
+      effectiveVpDisplay,
+      axisUsableForOcr: axisUsability.usable,
+      axisUnusableReason: axisUsability.reason,
+    }),
+    [
+      W,
+      H,
+      viewport.dpr,
+      overlayRightMarginPx,
+      showVolumeProfileOverlay,
+      showTapeIntelligenceOverlay,
+      vpFallbackMode,
+      fallbackYLock,
+      manualTop,
+      manualBot,
+      safeOverlayLines,
+      data.status,
+      data.y_min,
+      data.y_max,
+      data.chart_rect,
+      data.axis_status,
+      data.normalized_axis_status,
+      data.last_good_axis_age_ms,
+      data.parsed_labels_count,
+      volumeProfile,
+      tapeIntelligence,
+      effectiveVpDisplay,
+      axisUsability.usable,
+      axisUsability.reason,
+    ],
+  );
+
+  useEffect(() => {
+    const hasUsableAxis = axisUsability.usable;
+    const hasLastFrame = lastGoodSvgFrameRef.current != null;
+    if (!hasUsableAxis && hasLastFrame) {
+      if (frozenByNoAxisRef.current) return;
+      frozenByNoAxisRef.current = true;
+      setSvgRafNonce((n) => n + 1);
+      return;
     }
-    const fallbackStepHeight =
-      isFiniteNumber(volumeProfile.price_step) &&
-      isFiniteNumber(minForVp) &&
-      isFiniteNumber(maxForVp) &&
-      minForVp !== maxForVp
-        ? (Math.abs(volumeProfile.price_step) / Math.abs(maxForVp - minForVp)) *
-          chartForVp.height
-        : 5;
-    const levelHeight = clamp(
-      (medianPositive(yGaps) ?? fallbackStepHeight) * 0.78,
-      1.25,
-      4.5,
-    );
-    const val = Math.min(volumeProfile.val, volumeProfile.vah);
-    const vah = Math.max(volumeProfile.val, volumeProfile.vah);
-    const renderLevels = levelsWithY.map(({ level, y, totalVol }) => {
-      const width = Math.max(2, (totalVol / maxVol) * profileWidth);
-      return {
-        price: Number(level.price),
-        y,
-        width,
-        totalVol,
-        bidVol: Math.max(0, Number(level.bid_vol) || 0),
-        askVol: Math.max(0, Number(level.ask_vol) || 0),
-        isPoc: Number(level.price) === volumeProfile.poc,
-        inValueArea: Number(level.price) >= val && Number(level.price) <= vah,
-      };
-    });
-    const histogramCandidates = renderLevels.length;
-    const rawMaxHist = effectiveVpDisplay?.max_visible_histogram_levels;
-    const maxHist =
-      typeof rawMaxHist === "number" && Number.isFinite(rawMaxHist)
-        ? Math.min(2000, Math.max(8, rawMaxHist))
-        : 400;
-    let cappedLevels =
-      renderLevels.length <= maxHist
-        ? renderLevels
-        : [...renderLevels]
-            .sort((a, b) => b.totalVol - a.totalVol)
-            .slice(0, maxHist)
-            .sort((a, b) => a.y - b.y);
-    const denseThresholdPx = Math.max(3, levelHeight * 1.35);
-    if (cappedLevels.length > 1) {
-      const grouped: typeof cappedLevels = [];
-      let current = { ...cappedLevels[0] };
-      for (let i = 1; i < cappedLevels.length; i++) {
-        const next = cappedLevels[i];
-        const gap = Math.abs(next.y - current.y);
-        if (gap <= denseThresholdPx) {
-          const mergedVol = current.totalVol + next.totalVol;
-          const mergedWeight = Math.max(1, mergedVol);
-          current = {
-            ...current,
-            y: (current.y * current.totalVol + next.y * next.totalVol) / mergedWeight,
-            totalVol: mergedVol,
-            bidVol: current.bidVol + next.bidVol,
-            askVol: current.askVol + next.askVol,
-            isPoc: current.isPoc || next.isPoc,
-            inValueArea: current.inValueArea || next.inValueArea,
-            price: current.price,
-          };
-          continue;
-        }
-        grouped.push(current);
-        current = { ...next };
+    if (hasUsableAxis) {
+      frozenByNoAxisRef.current = false;
+    }
+  }, [axisUsability.usable]);
+
+  useLayoutEffect(() => {
+    snapshotDraftRef.current = overlaySnap;
+  }, [overlaySnap]);
+
+  useEffect(() => {
+    let rafId = 0;
+    let lastTs = 0;
+    const loop = (now: number) => {
+      rafId = requestAnimationFrame(loop);
+      if (now - lastTs < 1000 / OVERLAY_VISUAL_FPS) return;
+      lastTs = now;
+      const snap = snapshotDraftRef.current;
+      if (!snap) return;
+      const r = safeBuildOverlayFrame(snap);
+      if (r.error) {
+        lastRenderErrRef.current = r.error.message ?? String(r.error);
+      } else {
+        lastRenderErrRef.current = null;
       }
-      grouped.push(current);
-      cappedLevels = grouped;
-    }
-    const maxVolDraw = Math.max(1, ...cappedLevels.map((x) => x.totalVol));
-    cappedLevels = cappedLevels.map((row) => ({
-      ...row,
-      width: Math.max(2, (row.totalVol / maxVolDraw) * profileWidth),
-    }));
-    return {
-      chart: chartForVp,
-      profileLeft,
-      profileRight,
-      lineEndX,
-      profileWidth,
-      levelHeight,
-      levels: cappedLevels,
-      histogramCandidates,
-      histogramRendered: cappedLevels.length,
-      histogramCoalesced: Math.max(0, renderLevels.length - cappedLevels.length),
-      pocY: scaledPriceY(
-        preferExplicitY ? volumeProfile.poc_y : undefined,
-        volumeProfile.poc,
-        chartForVp,
-        renderScale,
-        minForVp,
-        maxForVp,
-      ),
-      vahY: scaledPriceY(
-        preferExplicitY ? volumeProfile.vah_y : undefined,
-        volumeProfile.vah,
-        chartForVp,
-        renderScale,
-        minForVp,
-        maxForVp,
-      ),
-      valY: scaledPriceY(
-        preferExplicitY ? volumeProfile.val_y : undefined,
-        volumeProfile.val,
-        chartForVp,
-        renderScale,
-        minForVp,
-        maxForVp,
-      ),
-      poc: volumeProfile.poc,
-      vah: volumeProfile.vah,
-      val: volumeProfile.val,
-      totalVol: Number.isFinite(volumeProfile.total_vol)
-        ? volumeProfile.total_vol
-        : levelsWithY.reduce((acc, x) => acc + x.totalVol, 0),
-      period: volumeProfile.period ?? "day",
-      ySource:
-        ySource === "ocr" &&
-        isFiniteNumber(volumeProfile.poc_y) &&
-        isFiniteNumber(volumeProfile.vah_y) &&
-        isFiniteNumber(volumeProfile.val_y) &&
-        levelsWithExplicitY > 0
-          ? "ocr"
-          : "fallback",
+      if (!r.viewportInvalid && r.frame && !r.error) {
+        lastGoodSvgFrameRef.current = r.frame;
+      }
+      const nextFrame = !r.viewportInvalid && r.frame ? r.frame : lastGoodSvgFrameRef.current;
+      displayedSvgFrameRef.current = nextFrame;
+
+      const ws = wsRef.current;
+      const vpOv = vpOvWsRef.current;
+      const diag = readOverlayDiagEnv();
+      const gf = displayedSvgFrameRef.current;
+      const gl = snap.data.last_good_axis_age_ms;
+      const vpSnap = snap.volumeProfile;
+      const vpSnapLevels = vpSnap?.levels;
+      const wsConnectedDiag =
+        ws != null &&
+        ws.readyState === WebSocket.OPEN &&
+        vpOv != null &&
+        vpOv.readyState === WebSocket.OPEN;
+      const positionedN = gf && Array.isArray(gf.positionedLines) ? gf.positionedLines.length : 0;
+      const tapeN = gf && Array.isArray(gf.tapeBadges) ? gf.tapeBadges.length : 0;
+      const vpLevelsN =
+        gf?.volumeProfileOverlay?.levels != null && Array.isArray(gf.volumeProfileOverlay.levels)
+          ? gf.volumeProfileOverlay.levels.length
+          : 0;
+      overlayHeartbeatRef.current = {
+        overlay_mounted: true,
+        window_width: snap.viewportWidth,
+        window_height: snap.viewportHeight,
+        device_pixel_ratio: snap.devicePixelRatio,
+        axis_status: snap.data.axis_status ?? null,
+        last_good_axis_exists:
+          typeof gl === "number" && Number.isFinite(gl) && gl >= 0 && gl < 86400000,
+        last_valid_vp_exists: Array.isArray(vpSnapLevels) && vpSnapLevels.length > 0,
+        last_render_frame_exists: lastGoodSvgFrameRef.current != null,
+        render_items_count: gf ? positionedN + tapeN + vpLevelsN : 0,
+        last_render_error: lastRenderErrRef.current,
+        ws_connected: wsConnectedDiag,
+        black_screen_guard_active: !!(gf != null && gf.guardStatus !== "OK"),
+        pq_diag_static_badge: diag.diagStaticBadge,
+      };
+      window.__PQ_OVERLAY_CONTEXT__ = {
+        axis_status: snap.data.axis_status ?? null,
+        last_good_axis: snap.data.last_good_axis_age_ms ?? null,
+        last_valid_vp: {
+          exists: Array.isArray(vpSnapLevels) && vpSnapLevels.length > 0,
+          ticker: typeof vpSnap?.ticker === "string" ? vpSnap.ticker : undefined,
+          levels: Array.isArray(vpSnapLevels) ? vpSnapLevels.length : 0,
+        },
+        last_render_frame: {
+          exists: lastGoodSvgFrameRef.current != null,
+          guardStatus: gf?.guardStatus,
+        },
+        render_items_count: gf ? positionedN + tapeN + vpLevelsN : 0,
+        ws_connected: wsConnectedDiag,
+        overlay_status: snap.data.status,
+      };
+      const nextCommitted = displayedSvgFrameRef.current;
+      const nextDigest = overlayVisualCommitDigest(nextCommitted, snap);
+      if (
+        sameFrame(rafLastPushedFrameRef.current, nextCommitted) &&
+        nextDigest === lastSvgVisualDigestRef.current
+      ) {
+        return;
+      }
+      rafLastPushedFrameRef.current = nextCommitted;
+      lastSvgVisualDigestRef.current = nextDigest;
+      setSvgRafNonce((n) => n + 1);
     };
-  }, [
-    effectiveChartRect,
-    effectiveYMax,
-    effectiveYMin,
-    overlayRightMarginPx,
-    renderScale,
-    showVolumeProfileOverlay,
-    usingOcrChart,
-    volumeProfile,
-    effectiveVpDisplay,
-  ]);
-  const effectiveVolumeProfileOverlay = useMemo(() => {
-    const now = Date.now();
-    if (volumeProfileOverlay) {
-      lastGoodVpOverlayRef.current = { ts: now, model: volumeProfileOverlay };
-      return volumeProfileOverlay;
-    }
-    const sticky = lastGoodVpOverlayRef.current;
-    if (!sticky) return null;
-    if (now - sticky.ts > VP_OVERLAY_STICKY_MS) return null;
-    return sticky.model;
-  }, [volumeProfileOverlay, data.payload_seq, volumeProfile?.timestamp]);
+    rafId = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(rafId);
+  }, []);
+
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      console.debug("[overlay-heartbeat]", { ...overlayHeartbeatRef.current });
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    const onWindowError = (ev: ErrorEvent) => {
+      const payload: Record<string, unknown> = {
+        ts: Date.now(),
+        message: ev.message ?? "",
+        filename: ev.filename ?? "",
+        lineno: ev.lineno,
+        colno: ev.colno,
+      };
+      if (ev.error instanceof Error && typeof ev.error.stack === "string") {
+        payload.stack = ev.error.stack;
+      }
+      try {
+        localStorage.setItem(PQ_LAST_OVERLAY_WINDOW_ERROR_KEY, JSON.stringify(payload));
+      } catch {
+        // ignore
+      }
+      window.__PQ_LAST_OVERLAY_WINDOW_ERROR__ = payload;
+    };
+    const onUnhandledRejection = (ev: PromiseRejectionEvent) => {
+      const reason = ev.reason;
+      const message = reason instanceof Error ? reason.message : String(reason ?? "unknown");
+      const payload: Record<string, unknown> = { ts: Date.now(), message };
+      if (reason instanceof Error && typeof reason.stack === "string") {
+        payload.stack = reason.stack;
+      }
+      try {
+        localStorage.setItem(PQ_LAST_OVERLAY_PROMISE_ERROR_KEY, JSON.stringify(payload));
+      } catch {
+        // ignore
+      }
+      window.__PQ_LAST_OVERLAY_PROMISE_ERROR__ = payload;
+    };
+    window.addEventListener("error", onWindowError);
+    window.addEventListener("unhandledrejection", onUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", onWindowError);
+      window.removeEventListener("unhandledrejection", onUnhandledRejection);
+    };
+  }, []);
+
+  void svgRafNonce;
+
+  const gf = displayedSvgFrameRef.current;
+  const effectiveVolumeProfileOverlay = gf?.volumeProfileOverlay ?? null;
   const histogramVisible =
-    effectiveVpDisplay?.histogram_visible !== false && showVolumeProfileOverlay;
-  const topAvgLinesVisible = false;
+    gf?.histogramVisible ??
+    (effectiveVpDisplay?.histogram_visible !== false && showVolumeProfileOverlay);
+  const topAvgLinesVisible =
+    effectiveVpDisplay?.top_avg_visible !== false && showTapeIntelligenceOverlay;
   const maxAvgLinesSetting =
     typeof effectiveVpDisplay?.max_avg_lines === "number" &&
     Number.isFinite(effectiveVpDisplay.max_avg_lines)
       ? Math.min(24, Math.max(1, effectiveVpDisplay.max_avg_lines))
       : 6;
-  const topAvgLineCandidates = tapeIntelligence?.top_player_avg_lines?.length ?? 0;
+  const topAvgLineCandidates =
+    tapeIntelligence != null && Array.isArray(tapeIntelligence.top_player_avg_lines)
+      ? tapeIntelligence.top_player_avg_lines.length
+      : 0;
   const topAvgLineVisibleCount = topAvgLinesVisible
     ? Math.min(maxAvgLinesSetting, topAvgLineCandidates)
     : 0;
-  const tapeBadges = useMemo<TapeBadgeModel[]>(() => {
-    if (
-      !showTapeIntelligenceOverlay ||
-      !tapeIntelligence ||
-      !effectiveChartRect ||
-      !effectiveVolumeProfileOverlay ||
-      effectiveVpDisplay?.labels_visible === false
-    ) {
-      return [];
-    }
-    const chartForTape = effectiveChartRect;
-    const preferExplicitY = usingOcrChart;
-    const baseX = Math.max(chartForTape.left + 12, effectiveVolumeProfileOverlay.profileLeft - 124);
-    const initialBadges: TapeBadgeModel[] = [
-      {
-        key: "poc",
-        label: "POC",
-        player: tapeIntelligence.poc_player,
-        playerName: tapeIntelligence.poc_player_name,
-        side: "",
-        y:
-          scaledPriceY(
-            preferExplicitY ? tapeIntelligence.poc_y : undefined,
-            tapeIntelligence.poc_price,
-            chartForTape,
-            renderScale,
-            effectiveYMin,
-            effectiveYMax,
-          ) ?? effectiveVolumeProfileOverlay.pocY ?? chartForTape.top,
-        x: baseX,
-        color: "#FDBA74",
-        top3: tapeIntelligence.poc_top3 ?? [],
-      },
-      {
-        key: "val",
-        label: "FUNDO",
-        player: tapeIntelligence.val_buyer,
-        playerName: tapeIntelligence.val_buyer_name,
-        side: "B",
-        y:
-          scaledPriceY(
-            preferExplicitY ? tapeIntelligence.val_y : undefined,
-            tapeIntelligence.val_price,
-            chartForTape,
-            renderScale,
-            effectiveYMin,
-            effectiveYMax,
-          ) ?? effectiveVolumeProfileOverlay.valY ?? chartForTape.bottom,
-        x: baseX,
-        color: "#e53935",
-        top3: tapeIntelligence.val_top3 ?? [],
-      },
-      {
-        key: "vah",
-        label: "TOPO",
-        player: tapeIntelligence.vah_seller,
-        playerName: tapeIntelligence.vah_seller_name,
-        side: "S",
-        y:
-          scaledPriceY(
-            preferExplicitY ? tapeIntelligence.vah_y : undefined,
-            tapeIntelligence.vah_price,
-            chartForTape,
-            renderScale,
-            effectiveYMin,
-            effectiveYMax,
-          ) ?? effectiveVolumeProfileOverlay.vahY ?? chartForTape.top,
-        x: baseX,
-        color: "#e53935",
-        top3: tapeIntelligence.vah_top3 ?? [],
-      },
-    ];
-    const pocVis = effectiveVpDisplay?.poc_visible !== false;
-    const vvVis = effectiveVpDisplay?.val_vah_visible !== false;
-    const raw = initialBadges
-      .filter((b) => (b.key === "poc" ? pocVis : true))
-      .filter((b) => (b.key === "val" || b.key === "vah" ? vvVis : true))
-      .filter((badge) => Number.isFinite(badge.y))
-      .sort((a, b) => a.y - b.y);
-    for (let i = 1; i < raw.length; i++) {
-      if (raw[i].y - raw[i - 1].y < 22) raw[i].y = raw[i - 1].y + 22;
-    }
-    for (let i = raw.length - 2; i >= 0; i--) {
-      if (raw[i + 1].y - raw[i].y < 22) raw[i].y = raw[i + 1].y - 22;
-    }
-    return raw.map((badge) => ({
-      ...badge,
-      y: clamp(badge.y, chartForTape.top + 12, chartForTape.bottom - 12),
-    }));
-  }, [
-    effectiveChartRect,
-    effectiveYMax,
-    effectiveYMin,
-    renderScale,
-    showTapeIntelligenceOverlay,
-    tapeIntelligence,
-    usingOcrChart,
-    effectiveVolumeProfileOverlay,
-    effectiveVpDisplay?.labels_visible,
-    effectiveVpDisplay?.poc_visible,
-    effectiveVpDisplay?.val_vah_visible,
-  ]);
+  const positionedLinesCommitted = gf?.positionedLines ?? [];
+  const overlayLinesDrawBase = gf != null ? positionedLinesCommitted : positionedLines;
+  const overlayLinesDraw = axisUsability.usable ? overlayLinesDrawBase : [];
+  const showLegacyOverlayIndicators =
+    gf?.showLegacyOverlayIndicators ?? !effectiveVolumeProfileOverlay;
+  const visibleLegacyLineCount = showLegacyOverlayIndicators
+    ? overlayLinesDraw.length
+    : 0;
+  const legacyLabelCollisionsCount = showLegacyOverlayIndicators
+    ? countDenseLabelCollisions(safeOverlayLines)
+    : 0;
+  const tapeBadgesCommitted = gf?.tapeBadges ?? [];
+  const tapeOverlayDraw = gf != null ? tapeBadgesCommitted : [];
+  /** Prefer last committed SVG frame geometry; fallback to live for debug / bootstrap. */
+  const effectiveChartRect = gf?.effectiveChartRect ?? liveEffectiveChartRect;
   const overlayAlignmentMaxDeltaPx = useMemo(() => {
-    if (!effectiveVolumeProfileOverlay || !effectiveChartRect) return null;
+    void svgRafNonce;
+    const chart = displayedSvgFrameRef.current?.effectiveChartRect;
+    const vpo = displayedSvgFrameRef.current?.volumeProfileOverlay;
+    if (!vpo || !chart) return null;
+    const yMinSvg = displayedSvgFrameRef.current?.effectiveYMin ?? effectiveYMin;
+    const yMaxSvg = displayedSvgFrameRef.current?.effectiveYMax ?? effectiveYMax;
     const deltas = [
-      alignmentDeltaPx(
-        effectiveVolumeProfileOverlay.pocY ?? undefined,
-        effectiveVolumeProfileOverlay.poc,
-        effectiveChartRect,
-        renderScale,
-        effectiveYMin,
-        effectiveYMax,
-      ),
-      alignmentDeltaPx(
-        effectiveVolumeProfileOverlay.valY ?? undefined,
-        effectiveVolumeProfileOverlay.val,
-        effectiveChartRect,
-        renderScale,
-        effectiveYMin,
-        effectiveYMax,
-      ),
-      alignmentDeltaPx(
-        effectiveVolumeProfileOverlay.vahY ?? undefined,
-        effectiveVolumeProfileOverlay.vah,
-        effectiveChartRect,
-        renderScale,
-        effectiveYMin,
-        effectiveYMax,
-      ),
+      alignmentDeltaPx(vpo.pocY ?? undefined, vpo.poc, chart, renderScale, yMinSvg, yMaxSvg),
+      alignmentDeltaPx(vpo.valY ?? undefined, vpo.val, chart, renderScale, yMinSvg, yMaxSvg),
+      alignmentDeltaPx(vpo.vahY ?? undefined, vpo.vah, chart, renderScale, yMinSvg, yMaxSvg),
     ].filter((v): v is number => typeof v === "number" && Number.isFinite(v));
     if (deltas.length === 0) return null;
     return Math.max(...deltas);
-  }, [effectiveChartRect, effectiveYMax, effectiveYMin, renderScale, effectiveVolumeProfileOverlay]);
+  }, [svgRafNonce, effectiveYMax, effectiveYMin, renderScale]);
 
   useEffect(() => {
-    if (data.lines.length === 0) return;
-    const incoming = data.lines.slice(0, 3).map((line) => line.y_screen);
+    if (firstAxisStableLoggedRef.current) return;
+    if (!axisUsability.usable) return;
+    if (wsStartRef.current == null) return;
+    const ms = Math.round(performance.now() - wsStartRef.current);
+    console.info(`[overlay-metric] first_axis_stable_ms=${ms}`);
+    firstAxisStableLoggedRef.current = true;
+  }, [axisUsability.usable]);
+
+  useEffect(() => {
+    if (firstLinesRenderedLoggedRef.current) return;
+    if (!axisUsability.usable || overlayLinesDraw.length === 0) return;
+    if (wsStartRef.current == null) return;
+    const ms = Math.round(performance.now() - wsStartRef.current);
+    console.info(`[overlay-metric] first_lines_rendered_ms=${ms}`);
+    firstLinesRenderedLoggedRef.current = true;
+  }, [axisUsability.usable, overlayLinesDraw.length]);
+
+  useEffect(() => {
+    if (safeOverlayLines.length === 0) return;
+    const incoming = safeOverlayLines.slice(0, 3).map((line) => line.y_screen);
     const scaled = scaledLines.slice(0, 3).map((line) => line.y_screen);
     // #region agent log
     debugOverlayLog("pre-fix", "H3", "OverlayPage.tsx:293", "scale_transform_snapshot", {
       devicePixelRatio: window.devicePixelRatio || 1,
       renderScale,
-      lineCountIncoming: data.lines.length,
+      lineCountIncoming: safeOverlayLines.length,
       lineCountScaled: scaledLines.length,
       incomingYSample: incoming,
       scaledYSample: scaled,
     });
     // #endregion
-  }, [data.lines, scaledLines, renderScale]);
+  }, [safeOverlayLines, scaledLines, renderScale]);
 
   useEffect(() => {
-    if (positionedLines.length === 0) return;
+    if (overlayLinesDraw.length === 0) return;
     // #region agent log
     debugOverlayLog("pre-fix", "H4", "OverlayPage.tsx:311", "label_layout_snapshot", {
       viewportHeight: H,
-      lineCount: positionedLines.length,
-      sample: positionedLines.slice(0, 4).map((line) => ({
+      lineCount: overlayLinesDraw.length,
+      sample: overlayLinesDraw.slice(0, 4).map((line) => ({
         yScreen: line.y_screen,
         labelY: line.labelY,
         dense: line.dense,
@@ -1846,9 +2029,9 @@ export default function OverlayPage() {
       })),
     });
     // #endregion
-  }, [positionedLines, H]);
+  }, [overlayLinesDraw, H]);
 
-  useLayoutEffect(() => {
+  useEffect(() => {
     const t = performance.now();
     if (overlayPerfBootRef.current) {
       overlayPerfBootRef.current = false;
@@ -1858,10 +2041,12 @@ export default function OverlayPage() {
     const dt = t - overlayPerfLastRef.current;
     overlayPerfLastRef.current = t;
     if (dt > 0.2 && dt < 8000) {
-      setOverlayCommitMs(Math.round(dt * 10) / 10);
-      setOverlayCommitHz(Math.min(144, Math.round(1000 / dt)));
+      const ms = Math.round(dt * 10) / 10;
+      const hz = Math.min(144, Math.round(1000 / dt));
+      setOverlayCommitMs((prev) => (Object.is(prev, ms) ? prev : ms));
+      setOverlayCommitHz((prev) => (Object.is(prev, hz) ? prev : hz));
     }
-  });
+  }, [svgRafNonce]);
 
   const captureManualPoint = useCallback(
     (y: number) => {
@@ -1923,10 +2108,14 @@ export default function OverlayPage() {
       );
     window.setTimeout(() => setManualCalibrateHint(null), 5000);
   }, []);
+  const closeOverlayFromHud = useCallback(() => {
+    if (!isTauri()) return;
+    void invoke("close_profit_overlay", { reason: "overlay_hud_close_button" }).catch(() => {});
+  }, []);
 
   const lineStatusSummary = useMemo(() => {
     const counters: Record<string, number> = {};
-    for (const line of data.lines) {
+    for (const line of safeOverlayLines) {
       const key = canonicalizeLineStatus(line.status, line.out_of_bounds);
       counters[key] = (counters[key] ?? 0) + 1;
     }
@@ -1940,9 +2129,12 @@ export default function OverlayPage() {
       parts.push(`${k}:${v}`);
     }
     return parts.join(" · ");
-  }, [data.lines]);
+  }, [safeOverlayLines]);
+  const pqDiag = readOverlayDiagEnv();
+
   return (
     <div
+      className="overlay-root overlay-window"
       style={{
         position: "fixed",
         inset: 0,
@@ -1957,8 +2149,30 @@ export default function OverlayPage() {
         forcedColorAdjust: "none",
       }}
     >
+      {pqDiag.diagStaticBadge ? (
+        <div
+          style={{
+            position: "absolute",
+            top: 6,
+            left: 8,
+            padding: "3px 8px",
+            borderRadius: 4,
+            fontSize: 10,
+            fontFamily: FONT,
+            fontWeight: 700,
+            background: "rgba(14,116,144,0.45)",
+            color: "rgba(224,242,254,0.96)",
+            border: "1px solid rgba(103,232,249,0.45)",
+            pointerEvents: "none",
+            zIndex: 2,
+          }}
+        >
+          PQ_OVERLAY_DIAG_STATIC
+        </div>
+      ) : null}
       <svg
         xmlns="http://www.w3.org/2000/svg"
+        className="overlay-canvas overlay-window"
         width={W}
         height={H}
         viewBox={`0 0 ${W} ${H}`}
@@ -2041,7 +2255,11 @@ export default function OverlayPage() {
             </text>
           </g>
         ) : null}
-        {showVisualDebug && debugLayerVisibility.ocrLabels && debugVisual?.labels.length ? (
+        {showVisualDebug &&
+        debugLayerVisibility.ocrLabels &&
+        debugVisual?.labels &&
+        Array.isArray(debugVisual.labels) &&
+        debugVisual.labels.length ? (
           <g>
             {debugVisual.labels.map((label, idx) => (
               <g key={`dbg-ocr-label-${idx}`}>
@@ -2107,12 +2325,16 @@ export default function OverlayPage() {
             <VolumeProfileWaitingBadge chart={effectiveChartRect} volumeProfile={volumeProfile} />
           )
         )}
-        {tapeBadges.map((badge) => (
+        {tapeOverlayDraw.map((badge) => (
           <TapeBadge key={badge.key} badge={badge} />
         ))}
-        {effectiveChartRect && effectiveVolumeProfileOverlay && tapeIntelligence?.top_player_avg_lines?.length ? (
+        {effectiveChartRect &&
+        effectiveVolumeProfileOverlay &&
+        tapeIntelligence &&
+        Array.isArray(tapeIntelligence.top_player_avg_lines) &&
+        tapeIntelligence.top_player_avg_lines.length ? (
           <TopPlayerAvgLinesLayer
-            lines={(tapeIntelligence.top_player_avg_lines ?? []) as TopPlayerAvgLine[]}
+            lines={tapeIntelligence.top_player_avg_lines as TopPlayerAvgLine[]}
             chart={effectiveChartRect}
             lineEndX={effectiveVolumeProfileOverlay.lineEndX}
             effectiveYMin={effectiveYMin}
@@ -2123,11 +2345,13 @@ export default function OverlayPage() {
           />
         ) : null}
 
-        {positionedLines.map((line, i) => (
-          <OverlayLineEl key={i} line={line} rightMarginPx={overlayRightMarginPx} />
-        ))}
-        {showVisualDebug
-          ? positionedLines.map((line, i) => {
+        {showLegacyOverlayIndicators
+          ? overlayLinesDraw.map((line, i) => (
+              <OverlayLineEl key={i} line={line} rightMarginPx={overlayRightMarginPx} />
+            ))
+          : null}
+        {showVisualDebug && showLegacyOverlayIndicators
+          ? overlayLinesDraw.map((line, i) => {
               const status = canonicalizeLineStatus(line.status, line.out_of_bounds);
               return (
                 <text
@@ -2162,21 +2386,31 @@ export default function OverlayPage() {
         ) : null}
 
         <StatusBadge
-          status={data.status}
+          status={overlayPhase}
+          overlayGuard={
+            gf?.guardStatus === "OK"
+              ? null
+              : `${gf?.guardStatus ?? "?"} · frame ${gf != null ? "on" : "off"} · err ${lastRenderErrRef.current ?? "—"}`
+          }
           y_min={data.y_min}
           y_max={data.y_max}
           axis_deltas={data.axis_deltas}
           axis_diagnostics={data.axis_diagnostics}
           alignmentMaxDeltaPx={overlayAlignmentMaxDeltaPx}
           viewportHeight={H}
-          visibleLineCount={positionedLines.length}
-          visibleHistogramLevels={effectiveVolumeProfileOverlay?.levels.length ?? 0}
+          visibleLineCount={visibleLegacyLineCount}
+          visibleHistogramLevels={
+            effectiveVolumeProfileOverlay?.levels != null &&
+            Array.isArray(effectiveVolumeProfileOverlay.levels)
+              ? effectiveVolumeProfileOverlay.levels.length
+              : 0
+          }
           histogramCandidates={effectiveVolumeProfileOverlay?.histogramCandidates ?? 0}
           histogramRendered={effectiveVolumeProfileOverlay?.histogramRendered ?? 0}
           histogramCoalesced={effectiveVolumeProfileOverlay?.histogramCoalesced ?? 0}
           avgLineVisibleCount={topAvgLineVisibleCount}
           avgLineCandidates={topAvgLineCandidates}
-          labelCollisionsCount={countDenseLabelCollisions(data.lines)}
+          labelCollisionsCount={legacyLabelCollisionsCount}
           overlayCommitMs={overlayCommitMs}
           overlayCommitHz={overlayCommitHz}
           axisStatus={data.axis_status ?? null}
@@ -2202,8 +2436,7 @@ export default function OverlayPage() {
           lastPayloadAgeMs={effectiveLastPayloadAgeMs}
         />
       </svg>
-      {false ? (
-        <VpOverlayHud
+      <VpOverlayHud
         effective={effectiveVpDisplay}
         showVp={showVolumeProfileOverlay}
         showTi={showTapeIntelligenceOverlay}
@@ -2242,8 +2475,10 @@ export default function OverlayPage() {
           setManualPointB(null);
         }}
         onReturnAutoAxis={returnToAutoAxis}
+        onCloseOverlay={closeOverlayFromHud}
+        ocrHudCollapsed={ocrHudCollapsed}
+        onSetOcrHudCollapsed={setOcrHudCollapsed}
       />
-      ) : null}
     </div>
   );
 }
@@ -2299,6 +2534,9 @@ export interface VpOverlayHudProps {
   onSubmitManualCalibration: () => void;
   onClearManualCalibration: () => void;
   onReturnAutoAxis: () => void;
+  onCloseOverlay: () => void;
+  ocrHudCollapsed: boolean;
+  onSetOcrHudCollapsed: (collapsed: boolean) => void;
 }
 
 export function VpOverlayHud({
@@ -2332,6 +2570,9 @@ export function VpOverlayHud({
   onSubmitManualCalibration,
   onClearManualCalibration,
   onReturnAutoAxis,
+  onCloseOverlay,
+  ocrHudCollapsed,
+  onSetOcrHudCollapsed,
 }: VpOverlayHudProps) {
   const chk = (k: keyof VpOverlayPrefsConfig, def: boolean) => {
     const v =
@@ -2481,7 +2722,7 @@ export function VpOverlayHud({
         position: "fixed",
         top: 8,
         right: 8,
-        pointerEvents: "auto",
+        pointerEvents: ocrHudCollapsed ? "none" : "auto",
         zIndex: 50,
         fontFamily: FONT,
         fontSize: 11,
@@ -2489,15 +2730,63 @@ export function VpOverlayHud({
         background: "rgba(12,14,18,0.88)",
         border: "1px solid rgba(255,255,255,0.12)",
         borderRadius: 6,
-        padding: "8px 10px",
+        padding: ocrHudCollapsed ? "6px 10px" : "8px 10px",
         minWidth: 200,
         maxWidth: 280,
         boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
       }}
     >
-      <div style={{ fontWeight: 800, marginBottom: 6, letterSpacing: "0.06em", fontSize: 10 }}>
-        OCR OVERLAY DEBUG
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          marginBottom: ocrHudCollapsed ? 0 : 6,
+        }}
+      >
+        <div style={{ fontWeight: 800, letterSpacing: "0.06em", fontSize: 10 }}>OCR OVERLAY DEBUG</div>
+        {!ocrHudCollapsed ? (
+          <button
+            type="button"
+            onClick={() => onSetOcrHudCollapsed(true)}
+            aria-label="Colapsar painel OCR overlay debug"
+            style={{
+              border: "1px solid rgba(255,255,255,0.22)",
+              background: "rgba(0,0,0,0.45)",
+              color: "inherit",
+              borderRadius: 4,
+              fontSize: 10,
+              padding: "2px 6px",
+              cursor: "pointer",
+            }}
+          >
+            Colapsar
+          </button>
+        ) : null}
       </div>
+      {ocrHudCollapsed ? (
+        <button
+          type="button"
+          onClick={() => onSetOcrHudCollapsed(false)}
+          aria-label="Expandir painel OCR overlay debug"
+          style={{
+            marginTop: 4,
+            width: "100%",
+            border: "1px solid rgba(255,255,255,0.22)",
+            background: "rgba(0,0,0,0.45)",
+            color: "inherit",
+            borderRadius: 4,
+            fontSize: 10,
+            padding: "4px 8px",
+            cursor: "pointer",
+            pointerEvents: "auto",
+          }}
+        >
+          Expandir OCR Debug
+        </button>
+      ) : null}
+      {!ocrHudCollapsed ? (
+        <>
       <label style={{ ...vpHudRowStyle, flexWrap: "wrap" }}>
         <span style={{ flex: "1 1 100%", marginBottom: 2, opacity: 0.78, fontSize: 10 }}>
           Período VP (engine)
@@ -2922,6 +3211,25 @@ export function VpOverlayHud({
           Voltar para eixo automático
         </button>
       ) : null}
+      {isTauri() ? (
+        <button
+          type="button"
+          onClick={onCloseOverlay}
+          aria-label="Fechar overlay"
+          style={{
+            ...vpHudActionBtn,
+            marginTop: 8,
+            width: "100%",
+            border: "1px solid rgba(248,113,113,0.55)",
+            background: "rgba(248,113,113,0.12)",
+            color: "rgba(254,202,202,0.98)",
+          }}
+        >
+          Fechar overlay
+        </button>
+      ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
@@ -3117,7 +3425,7 @@ function TopPlayerAvgLinesLayer({
   maxLines: number;
   visible: boolean;
 }) {
-  if (!visible || lines.length === 0) return null;
+  if (!visible || !Array.isArray(lines) || lines.length === 0) return null;
   const ordered = [...lines].sort((a, b) => a.avg_price - b.avg_price);
   const deduped: TopPlayerAvgLine[] = [];
   for (const ln of ordered) {
@@ -3215,14 +3523,28 @@ function VolumeProfileLayer({
   showHistogram: boolean;
 }) {
   const chart = overlay.chart;
+  const levelsSafe = Array.isArray(overlay.levels) ? overlay.levels : [];
+  if (
+    !chart ||
+    !Number.isFinite(chart.left) ||
+    !Number.isFinite(chart.top) ||
+    !Number.isFinite(chart.right) ||
+    !Number.isFinite(chart.bottom) ||
+    !Number.isFinite(overlay.profileLeft) ||
+    !Number.isFinite(overlay.profileRight)
+  ) {
+    return <g />;
+  }
+  const levelH = safePx(overlay.levelHeight, 2);
   const vaTop =
-    overlay.vahY != null && overlay.valY != null
+    overlay.vahY != null && overlay.valY != null && Number.isFinite(overlay.vahY) && Number.isFinite(overlay.valY)
       ? clamp(Math.min(overlay.vahY, overlay.valY), chart.top, chart.bottom)
       : null;
   const vaBottom =
-    overlay.vahY != null && overlay.valY != null
+    overlay.vahY != null && overlay.valY != null && Number.isFinite(overlay.vahY) && Number.isFinite(overlay.valY)
       ? clamp(Math.max(overlay.vahY, overlay.valY), chart.top, chart.bottom)
       : null;
+  const vaWidth = Math.max(0, safeNumber(overlay.profileRight - chart.left, 0));
 
   return (
     <g>
@@ -3230,8 +3552,8 @@ function VolumeProfileLayer({
         <rect
           x={chart.left}
           y={vaTop}
-          width={overlay.profileRight - chart.left}
-          height={vaBottom - vaTop}
+          width={vaWidth}
+          height={Math.max(0, vaBottom - vaTop)}
           fill="rgba(168,85,247,0.035)"
         />
       ) : null}
@@ -3241,13 +3563,19 @@ function VolumeProfileLayer({
         x2={overlay.profileLeft}
         y2={chart.bottom}
         stroke="rgba(239,68,68,0.72)"
-        strokeWidth={2}
+        strokeWidth={safePx(2, 2)}
       />
       {showHistogram
-        ? overlay.levels.map((level) => {
-            const y = clamp(level.y, chart.top, chart.bottom);
-            const x2 = Math.min(overlay.profileRight, overlay.profileLeft + level.width);
+        ? levelsSafe.map((level) => {
+            const y = clamp(safeNumber(level.y, chart.top), chart.top, chart.bottom);
+            const lvlW = Math.max(0, safeNumber(level.width, 0));
+            const x2 = safeNumber(
+              Math.min(overlay.profileRight, overlay.profileLeft + lvlW),
+              overlay.profileLeft,
+            );
             const color = volumeProfileLevelColor(level, overlay.poc);
+            const strikeBack = safePx(levelH + 1.2, 2);
+            const strikeFront = safePx(levelH, 1.25);
             return (
               <g key={`${level.price}-${Math.round(level.y)}`}>
                 <line
@@ -3256,7 +3584,7 @@ function VolumeProfileLayer({
                   x2={x2}
                   y2={y}
                   stroke="rgba(0,0,0,0.55)"
-                  strokeWidth={overlay.levelHeight + 1.2}
+                  strokeWidth={strikeBack}
                 />
                 <line
                   x1={overlay.profileLeft}
@@ -3264,7 +3592,7 @@ function VolumeProfileLayer({
                   x2={x2}
                   y2={y}
                   stroke={color}
-                  strokeWidth={overlay.levelHeight}
+                  strokeWidth={strikeFront}
                 />
               </g>
             );
@@ -3299,7 +3627,7 @@ function VolumeProfileLayer({
       <rect
         x={overlay.profileLeft}
         y={chart.top + 6}
-        width={Math.min(124, overlay.profileWidth)}
+        width={safePx(Math.min(124, overlay.profileWidth), 48)}
         height={28}
         rx={2}
         fill="rgba(0,0,0,0.66)"
@@ -3332,7 +3660,7 @@ function VolumeProfileLayer({
         fontSize={8}
         fontFamily={FONT}
       >
-        {`vis ${overlay.levels.length} · merge ${overlay.histogramCoalesced}`}
+        {`vis ${levelsSafe.length} · merge ${overlay.histogramCoalesced ?? 0}`}
       </text>
     </g>
   );
@@ -3355,48 +3683,51 @@ function VolumeProfileLine({
   color: string;
   dashed?: boolean;
 }) {
-  if (y == null || y < chart.top || y > chart.bottom) return null;
+  if (y == null || !Number.isFinite(y) || y < chart.top || y > chart.bottom) return null;
+  const yDraw = safeNumber(y, chart.top + chart.height / 2);
   const labelW = 84;
-  const labelX = Math.max(chart.left + 4, lineEndX - labelW - 4);
+  const labelX = safeNumber(Math.max(chart.left + 4, lineEndX - labelW - 4), chart.left + 4);
+  const lx1 = safeNumber(chart.left, 0);
+  const lx2 = safeNumber(lineEndX, lx1 + 80);
   return (
     <g>
       <line
-        x1={chart.left}
-        y1={y}
-        x2={lineEndX}
-        y2={y}
+        x1={lx1}
+        y1={yDraw}
+        x2={lx2}
+        y2={yDraw}
         stroke="rgba(0,0,0,0.55)"
-        strokeWidth={3.2}
+        strokeWidth={safePx(3.2, 3)}
         strokeDasharray={dashed ? "7 5" : undefined}
       />
       <line
-        x1={chart.left}
-        y1={y}
-        x2={lineEndX}
-        y2={y}
+        x1={lx1}
+        y1={yDraw}
+        x2={lx2}
+        y2={yDraw}
         stroke={color}
-        strokeWidth={1.6}
+        strokeWidth={safePx(1.6, 1.5)}
         strokeDasharray={dashed ? "7 5" : undefined}
       />
       <rect
         x={labelX}
-        y={y - 9}
+        y={safeNumber(yDraw - 9, chart.top)}
         width={labelW}
         height={18}
         rx={2}
         fill="rgba(0,0,0,0.70)"
         stroke={color}
-        strokeWidth={1}
+        strokeWidth={safePx(1, 1)}
       />
       <text
         x={labelX + 5}
-        y={y + 4}
+        y={safeNumber(yDraw + 4, yDraw)}
         fill={color}
         fontSize={10}
         fontFamily={FONT}
         fontWeight="800"
       >
-        {label} {formatProfilePrice(price)}
+        {label} {formatProfilePrice(safeNumber(price, 0))}
       </text>
     </g>
   );
@@ -3438,26 +3769,28 @@ function VolumeProfileWaitingBadge({
 }
 
 function TapeBadge({ badge }: { badge: TapeBadgeModel }) {
-  const leader = badge.top3[0];
+  const leader = Array.isArray(badge.top3) ? badge.top3[0] : undefined;
   const volText = leader ? formatCompactVol(leader.total_vol) : "";
   const who = brokerDisplayName(
     badge.player,
     badge.playerName ?? leader?.player_name,
   );
+  const bx = safeNumber(badge.x, 0);
+  const by = safeNumber(badge.y, 0);
   return (
     <g>
       <line
-        x1={badge.x + 114}
-        y1={badge.y}
-        x2={badge.x + 132}
-        y2={badge.y}
+        x1={bx + 114}
+        y1={by}
+        x2={bx + 132}
+        y2={by}
         stroke={badge.color}
-        strokeWidth={1}
+        strokeWidth={safePx(1, 1)}
         opacity={0.75}
       />
       <rect
-        x={badge.x}
-        y={badge.y - 10}
+        x={bx}
+        y={safeNumber(by - 10, 0)}
         width={116}
         height={20}
         rx={3}
@@ -3466,8 +3799,8 @@ function TapeBadge({ badge }: { badge: TapeBadgeModel }) {
         strokeWidth={1}
       />
       <text
-        x={badge.x + 6}
-        y={badge.y + 4}
+        x={bx + 6}
+        y={safeNumber(by + 4, by)}
         fill={badge.color}
         fontSize={10}
         fontFamily={FONT}
@@ -3478,8 +3811,8 @@ function TapeBadge({ badge }: { badge: TapeBadgeModel }) {
       </text>
       {volText ? (
         <text
-          x={badge.x + 110}
-          y={badge.y + 4}
+          x={bx + 110}
+          y={safeNumber(by + 4, by)}
           fill="rgba(255,255,255,0.70)"
           fontSize={9}
           fontFamily={FONT}
@@ -3495,6 +3828,7 @@ function TapeBadge({ badge }: { badge: TapeBadgeModel }) {
 
 function StatusBadge({
   status,
+  overlayGuard,
   y_min,
   y_max,
   axis_deltas,
@@ -3534,9 +3868,10 @@ function StatusBadge({
   lastPayloadAgeMs,
 }: {
   status: string;
+  overlayGuard?: string | null;
   y_min: number | null;
   y_max: number | null;
-  axis_deltas?: OcrAxisDeltas | null;
+  axis_deltas?: OcrAxisDeltasOrLegacy | null;
   axis_diagnostics?: {
     raw_labels?: number;
     kept_labels?: number;
@@ -3629,17 +3964,33 @@ function StatusBadge({
     .filter(Boolean)
     .join(" · ");
   const linesDbg = lineStatusSummary ? `lines ${lineStatusSummary}` : "";
+  const guardDbg = overlayGuard ? `guard ${overlayGuard}` : "";
+  const vh = safeNumber(viewportHeight, 400);
 
   return (
     <g>
-      <rect x={8} y={viewportHeight - 44} width={940} height={36} rx={3} fill="rgba(0,0,0,0.65)" />
-      <text x={14} y={viewportHeight - 13} fill={color} fontSize={11} fontFamily={FONT} fontWeight="600">
+      <rect
+        x={8}
+        y={safeNumber(vh - 44, 8)}
+        width={safeNumber(940, 400)}
+        height={36}
+        rx={3}
+        fill="rgba(0,0,0,0.65)"
+      />
+      <text
+        x={14}
+        y={safeNumber(vh - 13, 36)}
+        fill={color}
+        fontSize={11}
+        fontFamily={FONT}
+        fontWeight="600"
+      >
         {text}
       </text>
       {diagText ? (
         <text
           x={14}
-          y={viewportHeight - 29}
+          y={safeNumber(vh - 29, 20)}
           fill="rgba(210,220,230,0.86)"
           fontSize={10}
           fontFamily={FONT}
@@ -3662,14 +4013,15 @@ function StatusBadge({
               fallbackDbg,
               healthDbg,
               linesDbg,
+              guardDbg,
             ])
             .filter(Boolean)
             .join(" · ")}
         </text>
-      ) : lineDbg || vpDbg || histCoalDbg || avgDbg || collDbg || alignDbg || perfDbg ? (
+      ) : lineDbg || vpDbg || histCoalDbg || avgDbg || collDbg || alignDbg || perfDbg || guardDbg ? (
         <text
           x={14}
-          y={viewportHeight - 29}
+          y={safeNumber(vh - 29, 20)}
           fill="rgba(210,220,230,0.86)"
           fontSize={10}
           fontFamily={FONT}
@@ -3698,6 +4050,7 @@ function StatusBadge({
             fallbackDbg,
             healthDbg,
             linesDbg,
+            guardDbg,
           ]
             .filter(Boolean)
             .join(" · ")}

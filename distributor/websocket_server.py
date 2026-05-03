@@ -114,7 +114,7 @@ def _ocr_overlay_url(path: str) -> str:
 
 
 _OCR_CONFIG_LIMITS: dict[str, tuple[float, float]] = {
-    "refresh_ms": (120.0, 800.0),
+    "refresh_ms": (120.0, 2000.0),
     "ws_publish_min_ms": (100.0, 2000.0),
     "axis_max_bad_frames": (1.0, 120.0),
     "line_y_smooth_alpha": (0.0, 1.0),

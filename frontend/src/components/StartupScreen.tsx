@@ -31,14 +31,11 @@ export function StartupScreen({ status, error }: StartupScreenProps) {
             </p>
           </div>
         )}
-        <div className="mt-4 h-1 w-32 mx-auto bg-border rounded overflow-hidden">
-          <div
-            className="h-full bg-emerald-500/80 transition-all duration-300"
-            style={{
-              width: status === "error" ? "0%" : "50%",
-            }}
-          />
-        </div>
+        {(status === "idle" || status === "starting") && (
+          <div className="mt-4 flex justify-center">
+            <div className="h-6 w-6 animate-spin rounded-full border-2 border-border border-t-emerald-500" />
+          </div>
+        )}
       </div>
     </div>
   );

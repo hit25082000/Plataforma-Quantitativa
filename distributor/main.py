@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -39,6 +40,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stdout,
 )
+try:
+    VP_OVERLAY_POSITION_UPDATE_MS = int(os.environ.get("PQ_OVERLAY_POSITION_UPDATE_MS", "500"))
+except ValueError:
+    VP_OVERLAY_POSITION_UPDATE_MS = 500
+VP_OVERLAY_POSITION_UPDATE_MS = max(120, min(2000, VP_OVERLAY_POSITION_UPDATE_MS))
 
 
 async def consume_loop(queue: asyncio.Queue[str], router: MessageRouter) -> None:
@@ -106,7 +112,9 @@ if __name__ == "__main__":
         client_queue_maxsize=1,
         dropped_metric_key="vp_overlay_client_queue_dropped",
     )
-    vp_overlay_consolidator = VpOverlayConsolidator(publish_interval_ms=125)
+    vp_overlay_consolidator = VpOverlayConsolidator(
+        publish_interval_ms=VP_OVERLAY_POSITION_UPDATE_MS
+    )
     agent007_engine = Agent007Engine()
     rag_engine = create_rag_engine_from_config()
     router = MessageRouter(

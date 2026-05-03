@@ -12,7 +12,10 @@ function asPayload(value: unknown): PqOcrOverlayStatusPayload | null {
   const raw = value as Record<string, unknown>;
   const action = raw.action;
   const status = raw.status;
-  if ((action !== "recalibrate" && action !== "freeze") || typeof status !== "string") {
+  if (
+    (action !== "recalibrate" && action !== "freeze" && action !== "startup") ||
+    typeof status !== "string"
+  ) {
     return null;
   }
   if (!["start", "ok", "error", "released"].includes(status)) {
@@ -45,8 +48,14 @@ export async function listenOcrOverlayStatus(
     const payload = asPayload(custom.detail);
     if (payload) onEvent(payload);
   };
-  window.addEventListener(PQ_OCR_OVERLAY_STATUS_EVENT, handler as EventListener);
+  window.addEventListener(
+    PQ_OCR_OVERLAY_STATUS_EVENT,
+    handler as EventListener,
+  );
   return () => {
-    window.removeEventListener(PQ_OCR_OVERLAY_STATUS_EVENT, handler as EventListener);
+    window.removeEventListener(
+      PQ_OCR_OVERLAY_STATUS_EVENT,
+      handler as EventListener,
+    );
   };
 }

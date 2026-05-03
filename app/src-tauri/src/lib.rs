@@ -31,6 +31,8 @@ pub fn run() {
             commands::create_widget_window,
             commands::open_profit_overlay,
             commands::close_profit_overlay,
+            commands::prewarm_profit_ocr,
+            commands::set_profit_overlay_ignore_cursor_events,
             commands::set_overlay_positions,
             commands::open_ocr_roi_picker,
             commands::close_ocr_roi_picker,
@@ -49,6 +51,12 @@ pub fn run() {
         ])
         .setup(|app| {
             shared_memory_ipc::start_reader(app.handle().clone());
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = commands::prewarm_profit_ocr(handle).await;
+                });
+            }
             #[cfg(debug_assertions)]
             {
                 if let Some(window) = app.get_webview_window("main") {

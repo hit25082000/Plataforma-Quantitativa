@@ -93,7 +93,11 @@ class TestVpOverlayEndpoints(unittest.TestCase):
                     "participation_pct": 55.0,
                 },
             },
-            "levels": [{"price": 100000.0, "total_vol": 120, "bid_vol": 60, "ask_vol": 60, "pct_of_max": 1.0}],
+            "levels": [
+                {"price": 100010.0, "total_vol": 80, "bid_vol": 40, "ask_vol": 40, "pct_of_max": 0.66},
+                {"price": 100000.0, "total_vol": 120, "bid_vol": 60, "ask_vol": 60, "pct_of_max": 1.0},
+                {"price": 99990.0, "total_vol": 70, "bid_vol": 35, "ask_vol": 35, "pct_of_max": 0.58},
+            ],
             "top_player_avg_lines": [],
             "display": {
                 "overlay_enabled": True,

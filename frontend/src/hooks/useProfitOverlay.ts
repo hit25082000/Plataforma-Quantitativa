@@ -13,13 +13,14 @@ import {
   topBuyerByVolFin,
   topSellerByVolFin,
 } from "../utils/agentVolume";
+import type { OcrAxisDeltasOrLegacy } from "../utils/ocrStatus";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
 
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
 
 const STORAGE_SELECTED_METRICS = "pq-overlay-selected-metrics";
-const OPEN_OVERLAY_TIMEOUT_MS = 190_000;
+const OPEN_OVERLAY_TIMEOUT_MS = 45_000;
 
 export type OverlayMetricId = "ubs" | "best_bid" | "best_ask";
 
@@ -166,17 +167,7 @@ export interface OverlayState {
   lines: OverlayLine[];
   y_min: number | null;
   y_max: number | null;
-  axis_deltas: {
-    delta_first_last_value: number;
-    delta_first_last_y: number;
-    delta_intervals: Array<{
-      i: number;
-      value_delta: number;
-      y_delta: number;
-      value_per_px_segment: number;
-    }>;
-    labels_count: number;
-  } | null;
+  axis_deltas: OcrAxisDeltasOrLegacy | null;
   axis_diagnostics: Record<string, unknown> | null;
   analysisRoi: OcrAnalysisRoi | null;
   analysisSample: OcrAnalysisSample | null;
@@ -539,7 +530,12 @@ export function useProfitOverlay() {
   );
 
   const connectWs = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    if (
+      wsRef.current?.readyState === WebSocket.OPEN ||
+      wsRef.current?.readyState === WebSocket.CONNECTING
+    ) {
+      return;
+    }
     if (activeRef.current) {
       setState((prev) => ({
         ...prev,
@@ -566,7 +562,7 @@ export function useProfitOverlay() {
         wsTotalRetryRef.current = 0;
         if (!wsOpenLoggedRef.current && openStartMsRef.current != null) {
           const ms = Math.round(performance.now() - openStartMsRef.current);
-          console.info(`[overlay-latency] ws_open elapsed_ms=${ms}`);
+          console.info(`[overlay-metric] ws_ocr_open_ms=${ms}`);
           wsOpenLoggedRef.current = true;
         }
         setState((prev) => {
@@ -633,7 +629,7 @@ export function useProfitOverlay() {
         ];
         const i = Math.min(wsRetryAttemptRef.current++, delays.length - 1);
         wsTotalRetryRef.current += 1;
-        const ms = delays[i] ?? 4500;
+        const ms = (delays[i] ?? 4500) + Math.floor(Math.random() * 120);
         if (activeRef.current) {
           setState((prev) => ({
             ...prev,
@@ -652,6 +648,10 @@ export function useProfitOverlay() {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    void invoke("prewarm_profit_ocr").catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -757,8 +757,11 @@ export function useProfitOverlay() {
             ),
           );
         }, OPEN_OVERLAY_TIMEOUT_MS);
-        invoke("open_profit_overlay")
-          .then(() => {
+        invoke<{ ok?: boolean; windows_ready_ms?: number; ocr_mode?: string }>("open_profit_overlay")
+          .then((result) => {
+            if (typeof result?.windows_ready_ms === "number") {
+              console.info(`[overlay-metric] windows_ready_ms=${Math.round(result.windows_ready_ms)}`);
+            }
             window.clearTimeout(timer);
             resolve();
           })

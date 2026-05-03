@@ -3,6 +3,10 @@ const WAITING_STATUSES = new Set([
   "warming_up",
   "idle",
   "ocr_axis_warming",
+  "ocr_starting",
+  "ocr_connecting",
+  "ocr_warming",
+  "axis_waiting",
 ]);
 
 export interface OcrAxisDeltaInterval {
@@ -19,6 +23,9 @@ export interface OcrAxisDeltas {
   labels_count: number;
 }
 
+/** Payload legado / parcial do WS; `overlayStatusText` só usa deltas completos. */
+export type OcrAxisDeltasOrLegacy = OcrAxisDeltas | Record<string, unknown>;
+
 function extractInsufficientLabels(status: string): number | null {
   const m = /^ocr_insufficient_labels:(\d+)$/i.exec(status.trim());
   if (!m) return null;
@@ -32,17 +39,28 @@ export function overlayStatusColor(status: string): string {
   return "#FF4444";
 }
 
+function isFullOcrAxisDeltas(v: OcrAxisDeltasOrLegacy | null | undefined): v is OcrAxisDeltas {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  const d = v as OcrAxisDeltas;
+  return (
+    typeof d.delta_first_last_value === "number" &&
+    Number.isFinite(d.delta_first_last_value) &&
+    Array.isArray(d.delta_intervals) &&
+    typeof d.labels_count === "number"
+  );
+}
+
 export function overlayStatusText(
   status: string,
   yMin: number | null,
   yMax: number | null,
-  axisDeltas?: OcrAxisDeltas | null,
+  axisDeltas?: OcrAxisDeltasOrLegacy | null,
 ): string {
   if (status === "ok") {
     const base = `OCR OK ${yMin?.toFixed(0)} - ${yMax?.toFixed(0)}`;
-    if (!axisDeltas) return base;
+    if (!axisDeltas || !isFullOcrAxisDeltas(axisDeltas)) return base;
     const d = axisDeltas.delta_first_last_value;
-    const n = axisDeltas.delta_intervals?.length ?? 0;
+    const n = axisDeltas.delta_intervals.length;
     const sign = d > 0 ? "+" : "";
     return `${base} | Δ1-n ${sign}${d.toFixed(2)} | seg ${n}`;
   }
@@ -67,6 +85,24 @@ export function overlayStatusText(
   }
   if (status === "ocr_unreachable_retrying") {
     return "OCR indisponível (tentando reconectar; em PC lento aguarde mais 1–2 min).";
+  }
+  if (status === "ocr_starting") {
+    return "OCR: iniciando em background...";
+  }
+  if (status === "ocr_connecting") {
+    return "OCR: conectando websocket...";
+  }
+  if (status === "ocr_warming") {
+    return "OCR: aquecendo modelo/eixo...";
+  }
+  if (status === "axis_waiting") {
+    return "OCR: aguardando eixo estável para renderizar linhas.";
+  }
+  if (status === "axis_stable") {
+    return "OCR: eixo estável.";
+  }
+  if (status === "degraded") {
+    return "OCR degradado: mantendo overlay sem linhas até estabilizar.";
   }
   if (status.startsWith("error:")) {
     return status.replace(/^error:\s*/i, "Erro OCR: ");

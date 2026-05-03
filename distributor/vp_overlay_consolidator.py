@@ -5,10 +5,48 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+MAX_VP_LEVELS = max(8, int(os.environ.get("PQ_OVERLAY_MAX_VP_LEVELS", "80")))
+
+
+def _validate_levels(levels_raw: Any) -> tuple[list[dict[str, Any]], str]:
+    if not isinstance(levels_raw, list) or not levels_raw:
+        return [], "vp_rejected: empty_levels"
+    clean: list[dict[str, Any]] = []
+    for row in levels_raw:
+        if not isinstance(row, dict):
+            continue
+        price = _f(row.get("price"))
+        total_vol = _i(row.get("total_vol"), -1)
+        bid_vol = _i(row.get("bid_vol"), 0)
+        ask_vol = _i(row.get("ask_vol"), 0)
+        if not isinstance(price, float) or not (price == price):
+            continue
+        if total_vol < 0:
+            continue
+        clean.append(
+            {
+                "price": price,
+                "total_vol": total_vol,
+                "bid_vol": max(0, bid_vol),
+                "ask_vol": max(0, ask_vol),
+                "pct_of_max": _f(row.get("pct_of_max"), 0.0),
+            }
+        )
+    if len(clean) < 3:
+        return [], "vp_rejected: invalid_price"
+    max_vol = max(int(r["total_vol"]) for r in clean)
+    if max_vol <= 0:
+        return [], "vp_rejected: max_volume_zero"
+    clean.sort(key=lambda r: int(r["total_vol"]), reverse=True)
+    if len(clean) > MAX_VP_LEVELS:
+        clean = clean[:MAX_VP_LEVELS]
+    clean.sort(key=lambda r: float(r["price"]), reverse=True)
+    return clean, ""
 
 
 def _payload_identity_hash(payload: dict[str, Any]) -> str:
@@ -176,29 +214,15 @@ def build_vp_overlay_payload(
     val_label = f"VAL {val_p:.0f}" + (f" — #{val_id}" if val_id else "")
     vah_label = f"VAH {vah_p:.0f}" + (f" — #{vah_id}" if vah_id else "")
 
-    levels_raw = vp.get("levels") or []
-    levels_out: list[dict[str, Any]] = []
-    if isinstance(levels_raw, list):
-        for row in levels_raw:
-            if not isinstance(row, dict):
-                continue
-            levels_out.append(
-                {
-                    "price": _f(row.get("price")),
-                    "total_vol": _i(row.get("total_vol"), 0),
-                    "bid_vol": _i(row.get("bid_vol"), 0),
-                    "ask_vol": _i(row.get("ask_vol"), 0),
-                    "pct_of_max": _f(row.get("pct_of_max"), 0.0),
-                }
-            )
+    levels_out, reject_reason = _validate_levels(vp.get("levels") or [])
 
     top_avg = tape.get("top_player_avg_lines")
     if not isinstance(top_avg, list):
         top_avg = []
 
     health_status = "ok"
-    if not levels_out:
-        health_status = "missing_vp"
+    if reject_reason:
+        health_status = "waiting_data"
     elif not tape.get("timestamp"):
         health_status = "missing_tape"
 
@@ -263,6 +287,7 @@ def build_vp_overlay_payload(
             "last_overlay_publish_age_sec": 0.0,
             "overlay_age_state": _overlay_age_state(0),
             "ocr_confidence": 0.0,
+            "vp_rejected_reason": reject_reason or "",
         },
     }
     if demo:
@@ -277,6 +302,9 @@ class VpOverlayConsolidator:
         self._publish_interval_ms = max(0, int(publish_interval_ms))
         self._vp: dict[str, dict[str, Any]] = {}
         self._tape: dict[str, dict[str, Any]] = {}
+        self._last_valid_vp: dict[str, dict[str, Any]] = {}
+        self._last_valid_vp_ts: dict[str, float] = {}
+        self._vp_rejected_reason: dict[str, str] = {}
         self._seq: dict[str, int] = {}
         self._last_emit_mono: dict[str, float] = {}
         self._last_hash: dict[str, str] = {}
@@ -284,11 +312,13 @@ class VpOverlayConsolidator:
         self._last_critical_fp: dict[str, str] = {}
         self._emit_count = 0
         self._skipped_same_hash = 0
+        self._vp_rejected_count = 0
 
     def metrics(self) -> dict[str, int]:
         return {
             "vp_overlay_emit_count": self._emit_count,
             "vp_overlay_skipped_same_hash": self._skipped_same_hash,
+            "vp_overlay_vp_rejected_count": self._vp_rejected_count,
         }
 
     def debug_state(self, symbol: str) -> dict[str, Any]:
@@ -303,9 +333,15 @@ class VpOverlayConsolidator:
         health = last_payload.get("health") if isinstance(last_payload, dict) else {}
         if not isinstance(health, dict):
             health = {}
+        vp_age_ms = None
+        vp_ts = self._last_valid_vp_ts.get(k)
+        if vp_ts is not None:
+            vp_age_ms = int(round((time.monotonic() - vp_ts) * 1000.0))
         return {
             "symbol": k,
             "has_vp_cache": k in self._vp,
+            "last_valid_vp_exists": k in self._last_valid_vp,
+            "last_valid_vp_age_ms": vp_age_ms,
             "has_tape_cache": k in self._tape,
             "vp_cache_size": len(self._vp),
             "tape_cache_size": len(self._tape),
@@ -316,8 +352,10 @@ class VpOverlayConsolidator:
             "last_trade_age_ms": health.get("last_trade_age_ms"),
             "ocr_confidence": health.get("ocr_confidence"),
             "data_status": health.get("data_status"),
+            "vp_rejected_reason": self._vp_rejected_reason.get(k, ""),
             "vp_overlay_emit_count": self._emit_count,
             "vp_overlay_skipped_same_hash": self._skipped_same_hash,
+            "vp_overlay_vp_rejected_count": self._vp_rejected_count,
         }
 
     def last_payload(self, symbol: str) -> Optional[dict[str, Any]]:
@@ -327,6 +365,9 @@ class VpOverlayConsolidator:
         if symbol:
             k = symbol.strip().upper()
             self._vp.pop(k, None)
+            self._last_valid_vp.pop(k, None)
+            self._last_valid_vp_ts.pop(k, None)
+            self._vp_rejected_reason.pop(k, None)
             self._tape.pop(k, None)
             self._seq.pop(k, None)
             self._last_emit_mono.pop(k, None)
@@ -335,6 +376,9 @@ class VpOverlayConsolidator:
             self._last_critical_fp.pop(k, None)
         else:
             self._vp.clear()
+            self._last_valid_vp.clear()
+            self._last_valid_vp_ts.clear()
+            self._vp_rejected_reason.clear()
             self._tape.clear()
             self._seq.clear()
             self._last_emit_mono.clear()
@@ -365,7 +409,19 @@ class VpOverlayConsolidator:
             return None
         now = time.monotonic()
         if mtype == "volume_profile":
-            self._vp[ticker] = msg
+            levels, reason = _validate_levels(msg.get("levels") or [])
+            if reason:
+                self._vp_rejected_reason[ticker] = reason
+                self._vp_rejected_count += 1
+                if ticker in self._last_valid_vp:
+                    self._vp[ticker] = dict(self._last_valid_vp[ticker])
+                return None
+            fixed_vp = dict(msg)
+            fixed_vp["levels"] = levels
+            self._vp[ticker] = fixed_vp
+            self._last_valid_vp[ticker] = fixed_vp
+            self._last_valid_vp_ts[ticker] = now
+            self._vp_rejected_reason[ticker] = ""
         else:
             self._tape[ticker] = msg
 

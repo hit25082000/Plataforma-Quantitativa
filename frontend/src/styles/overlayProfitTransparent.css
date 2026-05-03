@@ -1,0 +1,22 @@
+/* Profit overlay window only — wins over Tailwind/global body (--bg). */
+html.pq-overlay-profit,
+html.pq-overlay-profit body,
+html.pq-overlay-profit #root {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  overflow: hidden !important;
+}
+
+.overlay-root.overlay-window,
+.overlay-root .overlay-window,
+.overlay-window {
+  background: transparent !important;
+  background-color: transparent !important;
+  background-image: none !important;
+  overflow: hidden !important;
+}
+
+svg.overlay-canvas.overlay-window {
+  background: transparent !important;
+}

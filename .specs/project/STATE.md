@@ -1,8 +1,8 @@
 # State
 
-**Last Updated:** 2026-05-02
-**Latest Update:** 2026-05-02 (mitigação P0 overlay preto) — o overlay full-screen foi simplificado para camada visual transparente, o watchdog de bounds/recalibração automática passou a ser opt-in (`PQ_ENABLE_OVERLAY_WATCHDOG=1`), médias automáticas/top players foram removidas do acionamento padrão e os checks locais passaram (`typecheck`, `build`, teste focado do overlay e testes Rust do watchdog/DPI). Gate ainda pendente: confirmação visual live com Profit aberto.
-**Current Work:** M9 em andamento. Streaming e Context Engine operacionais com vector store local + backends cloud opcionais (Pinecone/Vectara); views materializadas com backend memory/sqlite e rotina de evidência contínua em pregão entregue e robustecida. Na frente VP Sato + OCR overlay, o foco imediato está em fechar QA de campo (especialmente multi-monitor/DPI), consolidar observabilidade final e converter itens hoje parciais para concluídos com aceite operacional.
+**Last Updated:** 2026-05-03
+**Latest Update:** 2026-05-03 (overlay VP seguro/básico/estável) — OCR e VP passaram para retenção de último estado válido (`last_good_axis`/`last_valid_vp`), anti-oscilação com confirmação e limites de drift, freeze em falha temporária sem limpeza indevida, projeção de preço por snapshot de eixo estável, throttling de atualização em 500ms e cap de níveis no frontend. Validação local concluída em testes focados e build frontend.
+**Current Work:** M9 em andamento. Streaming e Context Engine operacionais com vector store local + backends cloud opcionais (Pinecone/Vectara); views materializadas com backend memory/sqlite e rotina de evidência contínua em pregão entregue e robustecida. Na frente VP Sato + OCR overlay, o foco imediato está em fechar QA de campo live (Profit aberto) para concluir os gates operacionais finais.
 
 ---
 
@@ -76,7 +76,7 @@
 ## Active Blockers
 
 - `GAP-P0-OVERLAY-BLACK-WEBVIEW` (2026-05-02): mitigado em código local após evidência de `runtime-bootstrap.log` com `watchdog_tick` contínuo e recalibração imediata; watchdog agora é opt-in, a janela full-screen não exibe HUD opaco e o fluxo padrão não publica médias automáticas. Pendente confirmação visual live no Profit.
-- `GAP-P0-AXIS-NOT-FOUND-REAL` (2026-05-02): ainda requer confirmação de campo para eixo OCR real; a UI não deve sumir nem virar tela preta quando evoluir para `STABLE -> FROZEN -> NO_AXIS`.
+- `GAP-P0-AXIS-NOT-FOUND-REAL` (2026-05-03): ainda requer confirmação de campo para eixo OCR real; a UI não deve sumir nem virar tela preta quando evoluir para `STABLE -> FROZEN -> DEGRADED`.
 
 ---
 
@@ -99,6 +99,7 @@
 
 ## Validation
 
+- 2026-05-03 (overlay VP seguro/básico/estável): `python -m unittest distributor.tests.test_profit_ocr_service distributor.tests.test_vp_overlay_consolidator distributor.tests.test_websocket_vp_overlay_endpoints` OK (52 testes); `python -m unittest distributor.tests.test_vp_overlay_contract distributor.tests.test_websocket_vp_tape_endpoints distributor.tests.test_message_router_vp_tape` OK (8 testes); `rtk npm run build --prefix frontend` OK.
 - 2026-05-02 (mitigação P0 overlay preto): `rtk npm run typecheck --prefix frontend` OK; `rtk npm run build --prefix frontend` OK; `rtk npm run test --prefix frontend -- src/pages/OverlayPage.test.tsx` OK (11 testes); `rtk cargo check --manifest-path app/src-tauri/Cargo.toml` OK após encerrar runtime local que bloqueava `profit_ocr_service.exe`; `rtk cargo test --manifest-path app/src-tauri/Cargo.toml overlay_watchdog_is_opt_in -- --nocapture` OK; `rtk cargo test --manifest-path app/src-tauri/Cargo.toml physical_to_logical_conversion_uses_safe_scale -- --nocapture` OK.
 - 2026-04-24 (M9 operacional contínuo 30min c/ rerun — reteste): `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-m9-rag-operational-evidence.ps1 -BaseUrl http://127.0.0.1:8000 -Ticker WINFUT -DurationSeconds 1800 -IntervalSeconds 5 -WarmupSeconds 60 -WarmupMinOkSamples 3 -WatchdogConsecutiveHttpFailures 8 -MaxAttempts 3 -RerunBackoffSeconds 10 -SqlitePath distributor/logs/rag_views_pregao.sqlite3 -ExpectViewsBackend sqlite -MaxHttpFailures 400 -MaxLagMs 600000 -MinViewsIngestedDelta 50` concluído com `overall_ok=0` em `distributor/logs/m9-rag-operational-evidence-20260424-122034/summary.json` (attempt-01 `watchdog_health_drop`; attempt-02/03 `warmup_not_ready`)
 - 2026-04-29 (VP OCR overlay Sato): `python scripts/check_vp_sato_overlay.py --json` OK com `ok=true`, `overlay_ok=true` e `ocr_ok=true` após separar o gate demo/overlay do ramo Profit real; OCR respondeu `status=ok`, `axis_labels=3` e `chart_rect` válido.

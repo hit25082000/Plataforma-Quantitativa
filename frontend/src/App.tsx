@@ -8,6 +8,7 @@ import { StartupScreen } from "./components/StartupScreen";
 import OverlayEmergencyControlPage from "./pages/OverlayEmergencyControlPage";
 import OcrRoiPickerPage from "./pages/OcrRoiPickerPage";
 import OverlayPage from "./pages/OverlayPage";
+import { OverlayErrorBoundary } from "./components/OverlayErrorBoundary";
 import { useAlerts } from "./hooks/useAlerts";
 import { useTauriStartup } from "./hooks/useTauriStartup";
 import { useWebSocket } from "./hooks/useWebSocket";
@@ -224,7 +225,11 @@ function App() {
   }
 
   if (isTauri() && isOverlayWindow) {
-    return <OverlayPage />;
+    return (
+      <OverlayErrorBoundary>
+        <OverlayPage />
+      </OverlayErrorBoundary>
+    );
   }
 
   if (isTauri() && isOverlayControlWindow) {

@@ -67,7 +67,7 @@ export default function OverlayControl() {
 
   const statusColor = activating ? "#FFB800" : overlayStatusColor(status);
   const statusText = activating
-    ? "Overlay: a ligar o serviço (aguarde; em PC lento pode demorar até ~2 min)…"
+    ? "Overlay: a ligar o serviço (aguarde; timeout em ~45s)…"
     : overlayStatusText(status, y_min, y_max);
 
   useEffect(() => {

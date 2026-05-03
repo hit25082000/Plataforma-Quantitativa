@@ -1,4 +1,4 @@
-import type { OcrAxisDeltas } from "./ocrStatus";
+import type { OcrAxisDeltas, OcrAxisDeltasOrLegacy } from "./ocrStatus";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -21,7 +21,7 @@ export interface OverlayUpdateCompatPayload {
   lines: OverlayCompatLine[];
   yMin: number | null;
   yMax: number | null;
-  axisDeltas: OcrAxisDeltas | null;
+  axisDeltas: OcrAxisDeltasOrLegacy | null;
   axisDiagnostics: Record<string, unknown> | null;
   analysisRoi: Record<string, unknown> | null;
   analysisSample: Record<string, unknown> | null;
@@ -123,6 +123,15 @@ function asAxisDeltas(value: unknown): OcrAxisDeltas | null {
   };
 }
 
+/** Deltas no formato completo do OCR, ou objeto legado/arbitrário preservado para debug. */
+function parseAxisDeltasCompat(value: unknown): OcrAxisDeltasOrLegacy | null {
+  const strict = asAxisDeltas(value);
+  if (strict) return strict;
+  const row = asRecord(value);
+  if (!row || Object.keys(row).length === 0) return null;
+  return row;
+}
+
 export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompatPayload | null {
   const envelope = asRecord(message);
   if (!envelope) return null;
@@ -217,7 +226,7 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     yMin,
     yMax,
     axisDeltas:
-      asAxisDeltas(data.axis_deltas) ?? asAxisDeltas(histogramBlock?.axis_deltas),
+      parseAxisDeltasCompat(data.axis_deltas) ?? parseAxisDeltasCompat(histogramBlock?.axis_deltas),
     axisDiagnostics:
       asRecord(data.axis_diagnostics) ?? asRecord(histogramBlock?.axis_diagnostics),
     analysisRoi,
