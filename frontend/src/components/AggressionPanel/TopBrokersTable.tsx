@@ -6,7 +6,6 @@ import {
   formatPrice,
   formatQty,
 } from "../../utils/formatters";
-import { isTauri } from "../../utils/tauri";
 import { buildAgentSaldoRows } from "../../utils/agentVolume";
 
 /** Verdes/vermelhos próximos ao Profit (Times & Trades / Saldo): texto forte + fundos da coluna Média. */
@@ -45,11 +44,10 @@ export function TopBrokersTable() {
     [agentBuyTotals, agentSellTotals, agentBuyFinancial, agentSellFinancial],
   );
 
-  /** No Tauri usa nome abreviado; no browser usa nome completo. Profit costuma exibir siglas em caixa alta. */
+  /** Sigla primeiro (Profit); fallback nome longo; último recurso #id. */
   const agentLabel = (agentId: number) => {
-    const raw = isTauri()
-      ? (agentShortNames[agentId] ?? agentNames[agentId] ?? `#${agentId}`)
-      : (agentNames[agentId] ?? `#${agentId}`);
+    const raw =
+      agentShortNames[agentId] ?? agentNames[agentId] ?? `#${agentId}`;
     return raw.trim().toUpperCase();
   };
 

@@ -246,6 +246,7 @@ interface TapeBadgeModel {
 function brokerDisplayName(id: number, name?: string | null): string {
   const n = (name ?? "").trim();
   if (n.length > 0 && !n.startsWith("#")) return n;
+  if (/^#\d+$/.test(n)) return `ID:${id}`;
   if (n.startsWith("#")) {
     const rest = n.slice(1).trim();
     if (rest.length > 0) return `ID:${rest}`;

@@ -75,15 +75,16 @@ std::string resolve_with_cache(
     return resolved;
 }
 
-void enrich_tape_intelligence_agent_names(
+/** Enriquece labels de corretora para VP/tape (UI): preferir sigla (short) via resolver. */
+void enrich_tape_intelligence_display_names(
     nlohmann::json& ti,
-    const std::function<std::string(int32_t)>& agent_name_resolver,
-    std::unordered_map<int32_t, std::string>& agent_name_cache,
+    const std::function<std::string(int32_t)>& display_resolver,
+    std::unordered_map<int32_t, std::string>& display_cache,
     std::mutex& agent_cache_mutex)
 {
-    if (!agent_name_resolver) return;
+    if (!display_resolver) return;
     auto resolve = [&](int32_t id) {
-        return resolve_with_cache(id, agent_name_resolver, agent_name_cache, agent_cache_mutex);
+        return resolve_with_cache(id, display_resolver, display_cache, agent_cache_mutex);
     };
     if (ti.contains("poc_player")) {
         const int32_t id = ti["poc_player"].get<int32_t>();
@@ -462,10 +463,16 @@ void ZmqPublisher::run() {
                         last_ti_val_ = val;
                         last_ti_anchor_valid_ = true;
                         nlohmann::json ti_body = *ti_msg;
-                        enrich_tape_intelligence_agent_names(
+                        const auto& display_resolver = agent_short_name_resolver_
+                            ? agent_short_name_resolver_
+                            : agent_name_resolver_;
+                        auto& display_cache = agent_short_name_resolver_
+                            ? agent_short_name_cache_
+                            : agent_name_cache_;
+                        enrich_tape_intelligence_display_names(
                             ti_body,
-                            agent_name_resolver_,
-                            agent_name_cache_,
+                            display_resolver,
+                            display_cache,
                             agent_cache_mutex_);
                         zmq::message_t ti_out(ti_body.dump());
                         pub.send(ti_out, zmq::send_flags::none);

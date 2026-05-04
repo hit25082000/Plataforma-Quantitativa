@@ -46,8 +46,8 @@ class FlowTracker:
         ts_ms = _parse_ts(ts_str)
         qty = int(msg.get("qty") or 0)
         net_aggression = int(msg.get("net_aggression") or 0)
-        buy_agent = (msg.get("buy_agent_name") or msg.get("buy_agent_short_name") or "").strip()
-        sell_agent = (msg.get("sell_agent_name") or msg.get("sell_agent_short_name") or "").strip()
+        buy_agent = (msg.get("buy_agent_short_name") or msg.get("buy_agent_name") or "").strip()
+        sell_agent = (msg.get("sell_agent_short_name") or msg.get("sell_agent_name") or "").strip()
 
         trade_contrib: dict[str, int] = {}
         if net_aggression > 0 and buy_agent in self._current_deltas:

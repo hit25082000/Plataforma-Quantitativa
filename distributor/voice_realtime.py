@@ -101,6 +101,7 @@ GEMINI_SYSTEM_PROMPT = (
     "máximo 2 frases por resposta. "
     "Use as funções disponíveis para consultar dados de mercado antes de "
     "responder sobre preço, sinal ou fluxo. "
+    "Ao citar corretoras, use sempre a sigla (ex.: BTG, UBS, XP), nunca o ID numérico. "
     "Nunca invente números; se não tiver dados, diga 'ainda sem dados de mercado'. "
     "Tom: direto, técnico, sem rodeios — como um operador experiente."
 )

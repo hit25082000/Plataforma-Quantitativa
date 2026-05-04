@@ -1,3 +1,4 @@
+#include "mock_broker_catalog.h"
 #include "mock_feed.h"
 #include "profit_types.h"
 #include <chrono>
@@ -18,7 +19,6 @@ constexpr double BASE_PRICE = 100000.0;
 constexpr double TICK_SIZE = 5.0;
 constexpr int NUM_LEVELS = 5;
 constexpr int64_t QTY_BASE = 100;
-constexpr int32_t AGENT_BASE = 1000;
 constexpr int64_t OFFER_ID_BASE = 50000;
 
 } // namespace
@@ -89,7 +89,7 @@ void MockFeed::run() {
             ev.nPosition = static_cast<int32_t>(i);
             ev.side = profit::SideBuy;
             ev.nQtd = QTY_BASE + qty_dist(rng);
-            ev.nAgent = AGENT_BASE + (i % 10);
+            ev.nAgent = mock_broker_id_at(static_cast<size_t>(i));
             ev.nOfferID = offer_id++;
             ev.sPrice = bid_price;
             queue_.push(ev);
@@ -103,7 +103,7 @@ void MockFeed::run() {
             ev.nPosition = static_cast<int32_t>(i);
             ev.side = profit::SideSell;
             ev.nQtd = QTY_BASE + qty_dist(rng);
-            ev.nAgent = AGENT_BASE + 10 + (i % 10);
+            ev.nAgent = mock_broker_id_at(static_cast<size_t>(i + 5));
             ev.nOfferID = offer_id++;
             ev.sPrice = ask_price;
             queue_.push(ev);
@@ -140,8 +140,8 @@ void MockFeed::run() {
             ? mid_price + TICK_SIZE
             : mid_price - TICK_SIZE;
         int64_t qty = qty_dist(rng);
-        int32_t buy_agent = AGENT_BASE + agent_dist(rng);
-        int32_t sell_agent = AGENT_BASE + 10 + agent_dist(rng);
+        int32_t buy_agent = mock_broker_id_at(static_cast<size_t>(agent_dist(rng)));
+        int32_t sell_agent = mock_broker_id_at(static_cast<size_t>(agent_dist(rng) + 5));
 
         event_bus::TradeEvent tev{};
         tev.ticker = TICKER;
@@ -189,7 +189,7 @@ void MockFeed::run() {
             ev.nPosition = 0;
             ev.side = side;
             ev.nQtd = qty_dist(rng);
-            ev.nAgent = AGENT_BASE + agent_dist(rng);
+            ev.nAgent = mock_broker_id_at(static_cast<size_t>(agent_dist(rng)));
             ev.nOfferID = offer_id++;
             ev.sPrice = price;
             queue_.push(ev);

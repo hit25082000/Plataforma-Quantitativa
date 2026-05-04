@@ -386,11 +386,21 @@ std::string ProfitBridge::get_agent_name(int32_t agent_id) const {
 
 std::string ProfitBridge::get_agent_short_name(int32_t agent_id) const {
     std::lock_guard<std::mutex> lock(dll_mutex_);
-    if (!fn_GetAgentShortNameByID_) return "#" + std::to_string(agent_id);
-    const wchar_t* name = fn_GetAgentShortNameByID_(agent_id);
-    if (!name || !*name) return "#" + std::to_string(agent_id);
-    std::string utf8 = wide_to_utf8(name);
-    return utf8.empty() ? "#" + std::to_string(agent_id) : utf8;
+    if (fn_GetAgentShortNameByID_) {
+        const wchar_t* sname = fn_GetAgentShortNameByID_(agent_id);
+        if (sname && *sname) {
+            std::string utf8 = wide_to_utf8(sname);
+            if (!utf8.empty()) return utf8;
+        }
+    }
+    if (fn_GetAgentNameByID_) {
+        const wchar_t* lname = fn_GetAgentNameByID_(agent_id);
+        if (lname && *lname) {
+            std::string utf8 = wide_to_utf8(lname);
+            if (!utf8.empty()) return utf8;
+        }
+    }
+    return "#" + std::to_string(agent_id);
 }
 
 bool ProfitBridge::wait_for_market_connected(std::chrono::milliseconds timeout) {
