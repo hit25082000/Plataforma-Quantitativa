@@ -3715,7 +3715,8 @@ function TopPlayerAvgLinesLayer({
               : ln.mode === "net"
                 ? "rgba(251,191,36,0.90)"
                 : "rgba(147,197,253,0.90)";
-        const label = (ln.label ?? "").trim() || `${ln.mode}:${ln.player_id}`;
+        const brokerShort = (ln.player_name ?? "").trim();
+        const label = brokerShort || (ln.label ?? "").trim() || `${ln.mode}:${ln.player_id}`;
         return (
           <g key={`tpavg-${ln.player_id}-${ln.mode}-${i}`}>
             <line
