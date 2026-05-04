@@ -50,24 +50,28 @@ const fakeDiag: OverlayDiagFlags = {
   diagStaticBadge: false,
   axisMode: "fake",
   vpMode: "fake",
+  debugAxisLabels: false,
 };
 
 const diagReal: OverlayDiagFlags = {
   diagStaticBadge: false,
   axisMode: "real",
   vpMode: "real",
+  debugAxisLabels: false,
 };
 
 const diagAxisFakeOnly: OverlayDiagFlags = {
   diagStaticBadge: false,
   axisMode: "fake",
   vpMode: "real",
+  debugAxisLabels: false,
 };
 
 const diagVpFakeOnly: OverlayDiagFlags = {
   diagStaticBadge: false,
   axisMode: "real",
   vpMode: "fake",
+  debugAxisLabels: false,
 };
 
 function minimalTape(vp: VolumeProfileMessage): TapeIntelligenceMessage {
@@ -201,5 +205,30 @@ describe("buildOverlayFrame scenarios", () => {
     const r = buildOverlayFrame(s, diagAxisFakeOnly);
     expect(r.error).toBeNull();
     expect(r.frame?.volumeProfileOverlay).not.toBeNull();
+  });
+
+  it("ocr_labels_fake builds VP from axis_samples when axis usable", () => {
+    const s = baseSnapshot();
+    s.data.chart_rect = { left: 100, top: 100, width: 800, height: 400 };
+    s.data.y_min = 90;
+    s.data.y_max = 120;
+    s.data.axis_status = "stable";
+    s.data.normalized_axis_status = "stable";
+    s.data.parsed_labels_count = 8;
+    s.data.axis_samples = [
+      { value: 100, y_screen: 400, y_chart: 100 },
+      { value: 110, y_screen: 300, y_chart: 200 },
+    ];
+    s.axisUsableForOcr = true;
+    s.axisUnusableReason = "";
+    const diagOcrVp: OverlayDiagFlags = {
+      diagStaticBadge: false,
+      axisMode: "real",
+      vpMode: "ocr_labels_fake",
+      debugAxisLabels: false,
+    };
+    const r = buildOverlayFrame(s, diagOcrVp);
+    expect(r.error).toBeNull();
+    expect((r.frame?.volumeProfileOverlay?.levels.length ?? 0) > 0).toBe(true);
   });
 });

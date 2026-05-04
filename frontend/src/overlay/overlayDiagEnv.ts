@@ -22,23 +22,34 @@ function truthy(raw: string | null | undefined): boolean {
   return v === "1" || v === "true" || v === "yes";
 }
 
-export type OverlayAxisVpMode = "real" | "fake";
+export type OverlayAxisVpMode = "real" | "fake" | "ocr_labels_fake";
 
-function modeFrom(raw: string | null | undefined, viteKey: string): OverlayAxisVpMode {
+function axisModeFrom(raw: string | null | undefined, viteKey: string): OverlayAxisVpMode {
   const v = (raw ?? envVite(viteKey) ?? "").trim().toLowerCase();
   return v === "fake" ? "fake" : "real";
+}
+
+function vpModeFrom(raw: string | null | undefined, viteKey: string): OverlayAxisVpMode {
+  const v = (raw ?? envVite(viteKey) ?? "").trim().toLowerCase();
+  if (v === "fake") return "fake";
+  if (v === "ocr_labels_fake") return "ocr_labels_fake";
+  return "real";
 }
 
 export interface OverlayDiagFlags {
   diagStaticBadge: boolean;
   axisMode: OverlayAxisVpMode;
   vpMode: OverlayAxisVpMode;
+  debugAxisLabels: boolean;
 }
 
 export function readOverlayDiagEnv(): OverlayDiagFlags {
   return {
     diagStaticBadge: truthy(readStorage("PQ_OVERLAY_DIAG_STATIC_BADGE")),
-    axisMode: modeFrom(readStorage("PQ_OVERLAY_AXIS_MODE"), "VITE_PQ_OVERLAY_AXIS_MODE"),
-    vpMode: modeFrom(readStorage("PQ_OVERLAY_VP_MODE"), "VITE_PQ_OVERLAY_VP_MODE"),
+    axisMode: axisModeFrom(readStorage("PQ_OVERLAY_AXIS_MODE"), "VITE_PQ_OVERLAY_AXIS_MODE"),
+    vpMode: vpModeFrom(readStorage("PQ_OVERLAY_VP_MODE"), "VITE_PQ_OVERLAY_VP_MODE"),
+    debugAxisLabels:
+      truthy(readStorage("PQ_OVERLAY_DEBUG_AXIS_LABELS")) ||
+      truthy(envVite("VITE_PQ_OVERLAY_DEBUG_AXIS_LABELS")),
   };
 }

@@ -228,6 +228,15 @@ export interface OverlayDebugVisualPayload {
   regression?: OverlayDebugVisualRegression;
   analysis_roi?: OverlayDebugVisualRect;
   chart_bounds?: OverlayDebugVisualRect;
+  axis_samples?: Array<{
+    value: number;
+    y_capture?: number;
+    y_screen: number;
+    y_chart?: number;
+    y_predicted?: number;
+    error_px?: number;
+  }>;
+  axis_fit_canonical?: Record<string, unknown>;
 }
 
 export interface VpOverlayHealthDebug {

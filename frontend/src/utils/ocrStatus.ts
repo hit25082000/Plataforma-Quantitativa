@@ -7,6 +7,7 @@ const WAITING_STATUSES = new Set([
   "ocr_connecting",
   "ocr_warming",
   "axis_waiting",
+  "geometry_calibrating",
 ]);
 
 export interface OcrAxisDeltaInterval {
@@ -97,6 +98,9 @@ export function overlayStatusText(
   }
   if (status === "axis_waiting") {
     return "OCR: aguardando eixo estável para renderizar linhas.";
+  }
+  if (status === "geometry_calibrating") {
+    return "OCR: geometria alterada — recalibrando eixo (sem linhas até estabilizar).";
   }
   if (status === "axis_stable") {
     return "OCR: eixo estável.";

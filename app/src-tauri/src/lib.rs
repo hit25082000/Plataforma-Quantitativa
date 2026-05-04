@@ -41,6 +41,7 @@ pub fn run() {
             commands::agent007_chat_invoke,
             commands::collect_diagnostics_bundle,
             commands::get_ocr_runtime_port,
+            commands::push_profit_overlay_rect_to_ocr,
             commands::recalibrate_profit_ocr,
             commands::freeze_profit_ocr,
             commands::unfreeze_profit_ocr,

@@ -7,6 +7,8 @@ import {
   computeEffectiveYRange,
   computeVolumeProfileOverlayModel,
   fallbackChartRectForVp,
+  overlayLineYCss,
+  overlayPhysXToCss,
   scaleChartRect,
   volumeProfilePriceRange,
 } from "./chartGeom";
@@ -17,9 +19,11 @@ import { readOverlayDiagEnv } from "./overlayDiagEnv";
 import type {
   BuildOverlayFrameResult,
   ChartRect,
+  OverlayAxisLabelSample,
+  OverlayGeometryPayload,
   OverlayLayoutSnapshot,
-  OverlayRenderFrame,
   OverlayLine,
+  OverlayRenderFrame,
 } from "./overlayFrameTypes";
 import { isFiniteChartRect, isOverlayWindowRenderable } from "./overlayViewportGuards";
 
@@ -79,6 +83,37 @@ function fakeVolumeProfileMessage(): VolumeProfileMessage {
     val: 29_850,
     total_vol: 50000,
     price_step: 5,
+    levels,
+  };
+}
+
+function volumeProfileFromOcrAxisSamples(samples: OverlayAxisLabelSample[]): VolumeProfileMessage | null {
+  const prices = samples.map((s) => Number(s.value)).filter((p) => Number.isFinite(p));
+  if (prices.length === 0) return null;
+  const sorted = [...prices].sort((a, b) => a - b);
+  const poc = sorted[Math.floor(sorted.length / 2)]!;
+  const val = sorted[0]!;
+  const vah = sorted[sorted.length - 1]!;
+  const stepRaw = sorted.length > 1 ? Math.abs(sorted[1]! - sorted[0]!) : 1;
+  const price_step = Number.isFinite(stepRaw) && stepRaw > 0 ? stepRaw : 1;
+  const levels: VolumeProfileLevel[] = sorted.map((price) => ({
+    price,
+    total_vol: 1000,
+    bid_vol: 400,
+    ask_vol: 400,
+    pct_of_max: 1,
+  }));
+  return {
+    topic: "market",
+    type: "volume_profile",
+    ticker: "OCR_LABELS",
+    period: "day",
+    timestamp: Date.now(),
+    poc,
+    vah,
+    val,
+    total_vol: 1000 * levels.length,
+    price_step,
     levels,
   };
 }
@@ -154,6 +189,19 @@ export function buildOverlayFrame(
     }
   }
 
+  if (diag.vpMode === "ocr_labels_fake") {
+    const samples = (data.axis_samples ?? []) as OverlayAxisLabelSample[];
+    const built = volumeProfileFromOcrAxisSamples(samples);
+    if (built) {
+      volumeProfile = built;
+      tapeIntelligence = fakeTapeIntelligence(volumeProfile);
+      vpRange = volumeProfilePriceRange(volumeProfile);
+      if (!effectiveChartRect) {
+        effectiveChartRect = fallbackChartRectForVp(W, H);
+      }
+    }
+  }
+
   const manualCalibrationOk =
     (snapshot.vpFallbackMode || "auto").trim().toLowerCase() === "manual" &&
     typeof snapshot.manualTop === "number" &&
@@ -189,11 +237,30 @@ export function buildOverlayFrame(
     guardStatus = "FROZEN";
   }
 
-  const scaledLines = data.lines.map((line) => ({
+  const geom = (data.geometry ?? null) as OverlayGeometryPayload | null;
+  const axisNorm = (data.normalized_axis_status ?? data.axis_status ?? "").trim().toLowerCase();
+  const allowCanonicalProjection =
+    (axisNorm === "stable" || axisNorm === "frozen" || axisNorm === "manual_locked") &&
+    data.axis_fit != null &&
+    typeof data.axis_fit.slope === "number" &&
+    Number.isFinite(data.axis_fit.slope) &&
+    geom?.overlay_rect_screen != null &&
+    geom?.chart_rect_screen != null;
+  const axisIdCurrent = data.axis_id ?? null;
+  let linesForRender = data.lines.filter((ln) => {
+    if (axisIdCurrent == null) return true;
+    if (ln.frame_axis_id == null) return true;
+    return ln.frame_axis_id === axisIdCurrent;
+  });
+  if (data.lines.length > 0 && linesForRender.length === 0 && axisIdCurrent != null) {
+    guardStatus = "FROZEN";
+  }
+
+  const scaledLines = linesForRender.map((line) => ({
     ...line,
-    y_screen: line.y_screen * renderScale,
-    chart_left: line.chart_left * renderScale,
-    chart_right: line.chart_right * renderScale,
+    y_screen: overlayLineYCss(line, geom, renderScale, allowCanonicalProjection),
+    chart_left: overlayPhysXToCss(line.chart_left, geom, renderScale),
+    chart_right: overlayPhysXToCss(line.chart_right, geom, renderScale),
   }));
   const positionedLines = layoutOverlayLines(scaledLines, H);
 
@@ -209,6 +276,9 @@ export function buildOverlayFrame(
     overlayEnabled: snapshot.effectiveVpDisplay?.overlay_enabled,
     effectiveVpStretchLines: snapshot.effectiveVpDisplay?.stretch_lines,
     maxVisibleHistogramLevels: snapshot.effectiveVpDisplay?.max_visible_histogram_levels,
+    axisFit: data.axis_fit ?? null,
+    geometry: geom,
+    allowCanonicalProjection,
   });
 
   const histogramVisible =
@@ -225,6 +295,9 @@ export function buildOverlayFrame(
     renderScale,
     effectiveYMin,
     effectiveYMax,
+    axisFit: data.axis_fit ?? null,
+    geometry: geom,
+    allowCanonicalProjection,
   });
 
   const effectiveFallbackReason = scaledChartRect

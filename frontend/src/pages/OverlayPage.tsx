@@ -1,9 +1,16 @@
 import "../styles/overlayProfitTransparent.css";
 import { OVERLAY_VISUAL_FPS } from "../overlay/overlayConstants";
 import { safeBuildOverlayFrame } from "../overlay/buildOverlayFrame";
+import { overlayLineYCss } from "../overlay/chartGeom";
 import { readOverlayDiagEnv } from "../overlay/overlayDiagEnv";
 import { safeNumber, safePx } from "../overlay/safeStyle";
-import type { OverlayLayoutSnapshot, OverlayRenderFrame } from "../overlay/overlayFrameTypes";
+import type {
+  OverlayAxisFitCanonical,
+  OverlayAxisLabelSample,
+  OverlayGeometryPayload,
+  OverlayLayoutSnapshot,
+  OverlayRenderFrame,
+} from "../overlay/overlayFrameTypes";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { invoke } from "@tauri-apps/api/core";
@@ -90,6 +97,8 @@ interface DebugVisualBlock {
   regression?: DebugRegression | null;
   analysis_roi?: DebugAnalysisRoi | null;
   chart_bounds?: DebugChartBounds | null;
+  axis_samples?: unknown;
+  axis_fit_canonical?: unknown;
 }
 
 interface OverlayData {
@@ -98,6 +107,10 @@ interface OverlayData {
   y_min: number | null;
   y_max: number | null;
   chart_rect?: ChartRect | null;
+  geometry?: OverlayGeometryPayload | null;
+  axis_fit?: OverlayAxisFitCanonical | null;
+  axis_id?: number | null;
+  axis_samples?: OverlayAxisLabelSample[] | null;
   axis_deltas?: OcrAxisDeltasOrLegacy | null;
   axis_diagnostics?: {
     raw_labels?: number;
@@ -133,6 +146,7 @@ type OverlayOcrPhase =
   | "ocr_starting"
   | "ocr_connecting"
   | "ocr_warming"
+  | "geometry_calibrating"
   | "axis_waiting"
   | "axis_stable"
   | "degraded";
@@ -356,21 +370,152 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
 }
 
+function normalizeGeometryFromPayload(row: unknown): OverlayGeometryPayload | null {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+  const r = row as Record<string, unknown>;
+  const num = (v: unknown) => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : NaN;
+  };
+  const rectXY = (key: string): OverlayGeometryPayload["overlay_rect_screen"] => {
+    const b = r[key];
+    if (!b || typeof b !== "object") return null;
+    const o = b as Record<string, unknown>;
+    const x = num(o.x ?? o.left);
+    const y = num(o.y ?? o.top);
+    const w = num(o.width);
+    const h = num(o.height);
+    if (![x, y, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return null;
+    return { x, y, width: w, height: h };
+  };
+  const chart = r.chart_rect_screen;
+  let chart_rect_screen: OverlayGeometryPayload["chart_rect_screen"] = null;
+  if (chart && typeof chart === "object") {
+    const c = chart as Record<string, unknown>;
+    const left = num(c.left);
+    const top = num(c.top);
+    const width = num(c.width);
+    const height = num(c.height);
+    if ([left, top, width, height].every(Number.isFinite) && width > 0 && height > 0) {
+      chart_rect_screen = { left, top, width, height };
+    }
+  }
+  const sf = num(r.scale_factor);
+  const scale_factor = Number.isFinite(sf) && sf > 0 ? sf : 1;
+  const sig = r.geometry_signature;
+  const mon = r.monitor_id;
+  return {
+    capture_rect_screen: rectXY("capture_rect_screen") ?? undefined,
+    chart_rect_screen,
+    overlay_rect_screen: rectXY("overlay_rect_screen") ?? undefined,
+    scale_factor,
+    monitor_id: typeof mon === "string" ? mon : mon != null ? String(mon) : null,
+    geometry_signature: typeof sig === "string" ? sig : undefined,
+  };
+}
+
+function normalizeAxisFitFromPayload(row: unknown): OverlayAxisFitCanonical | null {
+  if (!row || typeof row !== "object" || Array.isArray(row)) return null;
+  const o = row as Record<string, unknown>;
+  const slope = Number(o.slope);
+  const intercept = Number(o.intercept);
+  const price_ref = Number(o.price_ref);
+  const axis_id = Number(o.axis_id);
+  const labels_count = Number(o.labels_count);
+  const avg_error_px = Number(o.avg_error_px);
+  const max_error_px = Number(o.max_error_px);
+  const model = typeof o.model === "string" ? o.model : "y_chart_linear_v1";
+  if (
+    !Number.isFinite(slope) ||
+    !Number.isFinite(intercept) ||
+    !Number.isFinite(price_ref) ||
+    !Number.isFinite(axis_id)
+  ) {
+    return null;
+  }
+  return {
+    axis_id,
+    model,
+    price_ref,
+    slope,
+    intercept,
+    labels_count: Number.isFinite(labels_count) ? labels_count : 0,
+    avg_error_px: Number.isFinite(avg_error_px) ? avg_error_px : 0,
+    max_error_px: Number.isFinite(max_error_px) ? max_error_px : 0,
+    created_at_ms: Number.isFinite(Number(o.created_at_ms)) ? Number(o.created_at_ms) : undefined,
+    geometry_signature: typeof o.geometry_signature === "string" ? o.geometry_signature : undefined,
+  };
+}
+
+function normalizeAxisSamplesFromPayload(raw: unknown): OverlayAxisLabelSample[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: OverlayAxisLabelSample[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const o = item as Record<string, unknown>;
+    const value = Number(o.value);
+    const y_screen = Number(o.y_screen);
+    if (!Number.isFinite(value) || !Number.isFinite(y_screen)) continue;
+    const yc = Number(o.y_chart);
+    const ycap = Number(o.y_capture);
+    const yp = Number(o.y_predicted);
+    const err = Number(o.error_px);
+    out.push({
+      value,
+      y_screen,
+      y_chart: Number.isFinite(yc) ? yc : undefined,
+      y_capture: Number.isFinite(ycap) ? ycap : undefined,
+      y_predicted: Number.isFinite(yp) ? yp : undefined,
+      error_px: Number.isFinite(err) ? err : undefined,
+    });
+  }
+  return out.length ? out : null;
+}
+
 function normalizeAxisStatus(value: unknown): string {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
   if (!raw) return "unknown";
   if (raw === "stable") return "stable";
   if (raw === "frozen" || raw === "freeze" || raw === "locked" || raw === "paused") return "frozen";
+  if (raw === "manual_locked") return "manual_locked";
   if (raw === "recalibrating") return "recalibrating";
   if (raw === "suspect") return "suspect";
   if (raw === "no_axis" || raw === "not_found" || raw === "missing") return "no_axis";
+  if (raw === "geometry_mismatch" || raw === "geometry_calibrating") return "geometry_calibrating";
   return raw;
+}
+
+function overlayGeometryCanonicalReady(data: OverlayData): boolean {
+  const g = data.geometry;
+  if (!g?.chart_rect_screen || !g.overlay_rect_screen) return false;
+  const sf = Number(g.scale_factor);
+  return Number.isFinite(sf) && sf > 0;
+}
+
+function overlayAxisFitReady(data: OverlayData): boolean {
+  const f = data.axis_fit;
+  if (!f || typeof f.slope !== "number" || !Number.isFinite(f.slope)) return false;
+  return true;
 }
 
 function isAxisUsableForOcr(data: OverlayData): { usable: boolean; reason: string } {
   const axisStatus = normalizeAxisStatus(data.normalized_axis_status ?? data.axis_status ?? "");
-  const hasStableStatus = axisStatus === "stable" || axisStatus === "frozen";
+  if (axisStatus === "geometry_calibrating") {
+    return { usable: false, reason: "geometry_mismatch" };
+  }
+  const hasStableStatus =
+    axisStatus === "stable" || axisStatus === "frozen" || axisStatus === "manual_locked";
   if (!hasStableStatus) return { usable: false, reason: `axis_status_${axisStatus}` };
+
+  if (overlayGeometryCanonicalReady(data) && overlayAxisFitReady(data)) {
+    const labelsCount = Number(data.parsed_labels_count ?? 0);
+    if (labelsCount > 0 && labelsCount < 3) return { usable: false, reason: "parsed_labels_lt_3" };
+    const age = Number(data.last_good_axis_age_ms ?? 0);
+    if (!Number.isFinite(age)) return { usable: true, reason: "" };
+    if (age > 15000) return { usable: false, reason: "axis_age_no_axis" };
+    if (age > 5000) return { usable: true, reason: "axis_age_frozen" };
+    return { usable: true, reason: "" };
+  }
 
   const yMin = data.y_min;
   const yMax = data.y_max;
@@ -818,6 +963,10 @@ export default function OverlayPage() {
     y_min: null,
     y_max: null,
     chart_rect: null,
+    geometry: null,
+    axis_fit: null,
+    axis_id: null,
+    axis_samples: null,
     axis_deltas: null,
     axis_diagnostics: null,
   });
@@ -1047,7 +1196,10 @@ export default function OverlayPage() {
         if (!cancelled) setStartupEventState("starting");
       });
       const onReady = await listen(PQ_PROFIT_OVERLAY_OCR_READY_EVENT, () => {
-        if (!cancelled) setStartupEventState("ready");
+        if (!cancelled) {
+          setStartupEventState("ready");
+          void invoke("push_profit_overlay_rect_to_ocr").catch(() => {});
+        }
       });
       const onError = await listen(PQ_PROFIT_OVERLAY_OCR_ERROR_EVENT, () => {
         if (!cancelled) setStartupEventState("error");
@@ -1246,6 +1398,18 @@ export default function OverlayPage() {
                 payload_seq: parsed.payloadSeq ?? prev.payload_seq ?? null,
                 ocr_pid: parsed.ocrPid ?? prev.ocr_pid ?? null,
                 ocr_port: parsed.ocrPort ?? prev.ocr_port ?? null,
+                geometry: normalizeGeometryFromPayload(parsed.geometry) ?? prev.geometry ?? null,
+                axis_fit: normalizeAxisFitFromPayload(parsed.axisFit) ?? prev.axis_fit ?? null,
+                axis_id: parsed.axisId ?? prev.axis_id ?? null,
+                axis_samples:
+                  normalizeAxisSamplesFromPayload(parsed.axisSamples) ??
+                  normalizeAxisSamplesFromPayload(
+                    parsed.debugVisual && typeof parsed.debugVisual === "object"
+                      ? (parsed.debugVisual as { axis_samples?: unknown }).axis_samples
+                      : null,
+                  ) ??
+                  prev.axis_samples ??
+                  null,
                 ws_url: wsUrl,
                 last_payload_age_ms: 0,
               } as OverlayData;
@@ -1334,6 +1498,27 @@ export default function OverlayPage() {
       clearTimeout(retryTimer.current);
     };
   }, [connect]);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    const push = () => {
+      void invoke("push_profit_overlay_rect_to_ocr").catch(() => {});
+    };
+    push();
+    let deb: ReturnType<typeof setTimeout> | null = null;
+    const schedule = () => {
+      if (deb) clearTimeout(deb);
+      deb = setTimeout(push, 120);
+    };
+    window.addEventListener("resize", schedule);
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(schedule) : null;
+    ro?.observe(document.documentElement);
+    return () => {
+      if (deb) clearTimeout(deb);
+      window.removeEventListener("resize", schedule);
+      ro?.disconnect();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1475,7 +1660,7 @@ export default function OverlayPage() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    const ignore = false;
+    const ignore = ocrHudCollapsed && !manualCalibrateMode;
     void invoke("set_profit_overlay_ignore_cursor_events", { ignore }).catch(() => {});
   }, [ocrHudCollapsed, manualCalibrateMode]);
 
@@ -1644,10 +1829,19 @@ export default function OverlayPage() {
     ) {
       return "ocr_warming";
     }
+    const axPhase = normalizeAxisStatus(data.normalized_axis_status ?? data.axis_status ?? "");
+    if (axPhase === "geometry_calibrating") return "geometry_calibrating";
     if (!axisUsability.usable) return "axis_waiting";
     if (axisUsability.usable) return "axis_stable";
     return "degraded";
-  }, [axisUsability.usable, data.axis_error_code, data.status, startupEventState]);
+  }, [
+    axisUsability.usable,
+    data.axis_error_code,
+    data.axis_status,
+    data.normalized_axis_status,
+    data.status,
+    startupEventState,
+  ]);
   const scaledChartRect = useMemo(
     () => (axisUsability.usable ? scaleChartRect(data.chart_rect, renderScale) : null),
     [axisUsability.usable, data.chart_rect, renderScale],
@@ -1735,6 +1929,10 @@ export default function OverlayPage() {
         y_min: data.y_min,
         y_max: data.y_max,
         chart_rect: data.chart_rect ?? null,
+        geometry: data.geometry ?? null,
+        axis_fit: data.axis_fit ?? null,
+        axis_id: data.axis_id ?? null,
+        axis_samples: data.axis_samples ?? null,
         axis_status: data.axis_status ?? null,
         normalized_axis_status:
           data.normalized_axis_status ?? normalizeAxisStatus(data.axis_status ?? ""),
@@ -1763,6 +1961,10 @@ export default function OverlayPage() {
       data.y_min,
       data.y_max,
       data.chart_rect,
+      data.geometry,
+      data.axis_fit,
+      data.axis_id,
+      data.axis_samples,
       data.axis_status,
       data.normalized_axis_status,
       data.last_good_axis_age_ms,
@@ -2131,6 +2333,31 @@ export default function OverlayPage() {
     return parts.join(" · ");
   }, [safeOverlayLines]);
   const pqDiag = readOverlayDiagEnv();
+  const axisDebugLayout = useMemo(() => {
+    if (!pqDiag.debugAxisLabels) return null;
+    const samples = data.axis_samples;
+    const geom = data.geometry;
+    if (!samples?.length || !geom?.overlay_rect_screen || !geom.chart_rect_screen) return null;
+    const sf = geom.scale_factor > 0 && Number.isFinite(geom.scale_factor) ? geom.scale_factor : 1;
+    const labelX = (geom.chart_rect_screen.left - geom.overlay_rect_screen.x) / sf + 4;
+    const toY = (y_chart: number | null | undefined) => {
+      if (y_chart == null || !Number.isFinite(y_chart)) return null;
+      return overlayLineYCss(
+        {
+          value: 0,
+          y_screen: 0,
+          y_chart,
+          color: "#000",
+          chart_left: 0,
+          chart_right: 0,
+        },
+        geom,
+        renderScale,
+        true,
+      );
+    };
+    return { samples, labelX, toY };
+  }, [pqDiag.debugAxisLabels, data.axis_samples, data.geometry, renderScale]);
 
   return (
     <div
@@ -2292,6 +2519,45 @@ export default function OverlayPage() {
             ))}
           </g>
         ) : null}
+        {axisDebugLayout
+          ? axisDebugLayout.samples.map((s, i) => {
+              const chartTop = data.geometry?.chart_rect_screen?.top;
+              const chartY =
+                s.y_chart != null && Number.isFinite(s.y_chart)
+                  ? s.y_chart
+                  : Number.isFinite(s.y_screen) && typeof chartTop === "number" && Number.isFinite(chartTop)
+                    ? s.y_screen - chartTop
+                    : null;
+              const yReal = chartY != null ? axisDebugLayout.toY(chartY) : null;
+              const yPred =
+                s.y_predicted != null && Number.isFinite(s.y_predicted)
+                  ? axisDebugLayout.toY(s.y_predicted)
+                  : null;
+              if (yReal == null || yPred == null) return null;
+              const errRaw =
+                s.error_px != null && Number.isFinite(s.error_px)
+                  ? s.error_px
+                  : Math.abs(yReal - yPred);
+              const lx = axisDebugLayout.labelX;
+              return (
+                <g key={`axis-canonical-dbg-${i}`}>
+                  <circle cx={lx} cy={yReal} r={3} fill="#22d3ee" opacity={0.92} />
+                  <circle cx={lx} cy={yPred} r={3} fill="#e879f9" opacity={0.92} />
+                  <line x1={lx} y1={yReal} x2={lx} y2={yPred} stroke="#ef4444" strokeWidth={1.2} />
+                  <text
+                    x={lx + 8}
+                    y={(yReal + yPred) / 2}
+                    fill="rgba(255,255,255,0.92)"
+                    fontSize={9}
+                    fontFamily={FONT}
+                    fontWeight={700}
+                  >
+                    {`${s.value.toLocaleString("pt-BR", { maximumFractionDigits: 2 })} · ±${errRaw.toFixed(1)}px`}
+                  </text>
+                </g>
+              );
+            })
+          : null}
         {effectiveVolumeProfileOverlay?.ySource === "fallback" ? (
           <g>
             <rect
@@ -2765,25 +3031,9 @@ export function VpOverlayHud({
         ) : null}
       </div>
       {ocrHudCollapsed ? (
-        <button
-          type="button"
-          onClick={() => onSetOcrHudCollapsed(false)}
-          aria-label="Expandir painel OCR overlay debug"
-          style={{
-            marginTop: 4,
-            width: "100%",
-            border: "1px solid rgba(255,255,255,0.22)",
-            background: "rgba(0,0,0,0.45)",
-            color: "inherit",
-            borderRadius: 4,
-            fontSize: 10,
-            padding: "4px 8px",
-            cursor: "pointer",
-            pointerEvents: "auto",
-          }}
-        >
-          Expandir OCR Debug
-        </button>
+        <div style={{ fontSize: 9, opacity: 0.65, marginTop: 4, pointerEvents: "none" }}>
+          Expanda na janela de controlo (EXPANDIR OCR DEBUG).
+        </div>
       ) : null}
       {!ocrHudCollapsed ? (
         <>

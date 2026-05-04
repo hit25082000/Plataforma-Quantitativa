@@ -14,6 +14,46 @@ export interface ScaledChartRect extends ChartRect {
   bottom: number;
 }
 
+/** Retângulo em pixels físicos de ecrã (x,y,width,height). */
+export interface OverlayScreenRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface OverlayGeometryPayload {
+  capture_rect_screen?: OverlayScreenRect | null;
+  chart_rect_screen?: { left: number; top: number; width: number; height: number } | null;
+  overlay_rect_screen?: OverlayScreenRect | null;
+  chart_rect_overlay?: unknown;
+  scale_factor: number;
+  monitor_id?: string | null;
+  geometry_signature?: string;
+}
+
+export interface OverlayAxisFitCanonical {
+  axis_id: number;
+  model: string;
+  price_ref: number;
+  slope: number;
+  intercept: number;
+  labels_count: number;
+  avg_error_px: number;
+  max_error_px: number;
+  created_at_ms?: number;
+  geometry_signature?: string;
+}
+
+export interface OverlayAxisLabelSample {
+  value: number;
+  y_capture?: number;
+  y_screen: number;
+  y_chart?: number;
+  y_predicted?: number;
+  error_px?: number;
+}
+
 export interface OverlayLine {
   value: number;
   y_screen: number;
@@ -24,6 +64,10 @@ export interface OverlayLine {
   status?: string;
   out_of_bounds?: boolean;
   line_id?: string;
+  /** Pixel físico relativo ao topo do chart (eixo canónico). */
+  y_chart?: number;
+  frame_axis_id?: number;
+  axis_source?: string;
 }
 
 export interface PositionedOverlayLine extends OverlayLine {
@@ -85,6 +129,10 @@ export interface OverlayDataSlice {
   y_min: number | null;
   y_max: number | null;
   chart_rect?: ChartRect | null;
+  geometry?: OverlayGeometryPayload | null;
+  axis_fit?: OverlayAxisFitCanonical | null;
+  axis_id?: number | null;
+  axis_samples?: OverlayAxisLabelSample[] | null;
   axis_status?: string | null;
   normalized_axis_status?: string | null;
   last_good_axis_age_ms?: number | null;

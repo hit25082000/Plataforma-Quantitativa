@@ -48,7 +48,13 @@ const EVENT_OCR_OVERLAY_STATUS: &str = "pq:ocr-overlay-status";
 const EVENT_PROFIT_OVERLAY_OCR_STARTING: &str = "profit-overlay://ocr-starting";
 const EVENT_PROFIT_OVERLAY_OCR_READY: &str = "profit-overlay://ocr-ready";
 const EVENT_PROFIT_OVERLAY_OCR_ERROR: &str = "profit-overlay://ocr-error";
-const OCR_IDLE_SHUTDOWN_MS: u64 = 10 * 60 * 1000;
+fn ocr_idle_shutdown_ms() -> u64 {
+    std::env::var("PQ_OCR_IDLE_SHUTDOWN_MS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .filter(|&ms| ms >= 60_000 && ms <= 3_600_000)
+        .unwrap_or(10 * 60 * 1000)
+}
 const OCR_FAST_PROBE_TIMEOUT_MS: u64 = 400;
 const OCR_DEBUG_PROBE_TIMEOUT_MS: u64 = 8_000;
 const BOUNDS_WATCHDOG_INTERVAL_MS: u64 = 750;
@@ -549,6 +555,13 @@ fn ocr_analysis_roi_url() -> String {
     format!("http://127.0.0.1:{}/analysis_roi", ocr_port())
 }
 
+fn ocr_overlay_window_rect_url() -> String {
+    format!(
+        "http://127.0.0.1:{}/api/ocr-overlay/overlay-window-rect",
+        ocr_port()
+    )
+}
+
 fn ocr_recalibrate_url() -> String {
     format!("http://127.0.0.1:{}/api/ocr-overlay/recalibrate", ocr_port())
 }
@@ -1015,10 +1028,10 @@ fn schedule_ocr_idle_shutdown(app: tauri::AppHandle) {
         "ocr",
         "idle_shutdown",
         "scheduled",
-        json!({"delay_ms": OCR_IDLE_SHUTDOWN_MS, "generation": generation}),
+        json!({"delay_ms": ocr_idle_shutdown_ms(), "generation": generation}),
     );
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(OCR_IDLE_SHUTDOWN_MS)).await;
+        tokio::time::sleep(Duration::from_millis(ocr_idle_shutdown_ms())).await;
         let current_generation = app
             .state::<ChildProcesses>()
             .ocr_idle_shutdown_generation
@@ -1135,6 +1148,49 @@ fn logical_to_physical_rect_for_window(
 #[tauri::command]
 pub async fn get_ocr_runtime_port() -> Result<u16, String> {
     Ok(ocr_port())
+}
+
+/// Envia o retângulo físico do WebView `profit-overlay` ao serviço OCR (projeção chart→overlay).
+#[tauri::command]
+pub async fn push_profit_overlay_rect_to_ocr(app: tauri::AppHandle) -> Result<(), String> {
+    let Some(win) = app.get_webview_window("profit-overlay") else {
+        return Ok(());
+    };
+    let pos = match win.outer_position() {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
+    let size = match win.outer_size() {
+        Ok(s) => s,
+        Err(_) => return Ok(()),
+    };
+    let (scale, monitor_id) = match win.current_monitor() {
+        Ok(Some(mon)) => (
+            sanitize_scale_factor(mon.scale_factor()),
+            mon.name().map(|n| n.to_string()).unwrap_or_default(),
+        ),
+        _ => (sanitize_scale_factor(win.scale_factor().unwrap_or(1.0)), String::new()),
+    };
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(Duration::from_millis(800))
+        .build()
+    else {
+        return Ok(());
+    };
+    let body = json!({
+        "left": pos.x,
+        "top": pos.y,
+        "width": size.width.max(1),
+        "height": size.height.max(1),
+        "scale_factor": scale,
+        "monitor_id": monitor_id,
+    });
+    let _ = client
+        .post(ocr_overlay_window_rect_url())
+        .json(&body)
+        .send()
+        .await;
+    Ok(())
 }
 
 /// Limpa EMA do eixo e suavização de Y no `profit_ocr_service` (pós-zoom / re-alinhar).
@@ -2182,6 +2238,10 @@ pub async fn open_profit_overlay(
         t0.elapsed().as_millis()
     );
     start_overlay_bounds_watchdog(app.clone());
+    let app_rect = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = push_profit_overlay_rect_to_ocr(app_rect).await;
+    });
     emit_profit_overlay_ocr_event(
         &app,
         EVENT_PROFIT_OVERLAY_OCR_STARTING,

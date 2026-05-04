@@ -1,7 +1,13 @@
 import type { TapeIntelligenceMessage } from "../types/messages";
 import type { VpOverlayDisplay } from "../types/messages";
-import type { ScaledChartRect, TapeBadgeModel, VolumeProfileOverlayModel } from "./overlayFrameTypes";
-import { clamp, scaledPriceY } from "./chartGeom";
+import type {
+  OverlayAxisFitCanonical,
+  OverlayGeometryPayload,
+  ScaledChartRect,
+  TapeBadgeModel,
+  VolumeProfileOverlayModel,
+} from "./overlayFrameTypes";
+import { clamp, isFiniteNumber, overlayPriceToSvgY, scaledPriceY } from "./chartGeom";
 
 export function computeTapeBadges(params: {
   showTapeIntelligenceOverlay: boolean;
@@ -14,6 +20,9 @@ export function computeTapeBadges(params: {
   renderScale: number;
   effectiveYMin: number | null;
   effectiveYMax: number | null;
+  axisFit?: OverlayAxisFitCanonical | null;
+  geometry?: OverlayGeometryPayload | null;
+  allowCanonicalProjection?: boolean;
 }): TapeBadgeModel[] {
   const {
     showTapeIntelligenceOverlay,
@@ -26,6 +35,9 @@ export function computeTapeBadges(params: {
     renderScale,
     effectiveYMin,
     effectiveYMax,
+    axisFit,
+    geometry,
+    allowCanonicalProjection = false,
   } = params;
   if (
     !showTapeIntelligenceOverlay ||
@@ -38,6 +50,27 @@ export function computeTapeBadges(params: {
   }
   const chartForTape = effectiveChartRect;
   const preferExplicitY = usingOcrChart;
+  const useCanon = Boolean(allowCanonicalProjection && axisFit && geometry);
+  const tapeY = (
+    explicitY: number | undefined,
+    price: number,
+    fallback: number,
+    overlayAnchorY: number | null | undefined,
+  ): number => {
+    if (preferExplicitY && isFiniteNumber(explicitY)) {
+      return (
+        scaledPriceY(explicitY, price, chartForTape, renderScale, effectiveYMin, effectiveYMax) ?? fallback
+      );
+    }
+    if (useCanon) {
+      const cy = overlayPriceToSvgY(price, axisFit ?? null, geometry ?? null, renderScale, true);
+      if (cy != null) return cy;
+    }
+    if (isFiniteNumber(overlayAnchorY)) return overlayAnchorY;
+    return (
+      scaledPriceY(undefined, price, chartForTape, renderScale, effectiveYMin, effectiveYMax) ?? fallback
+    );
+  };
   const baseX = Math.max(chartForTape.left + 12, effectiveVolumeProfileOverlay.profileLeft - 124);
   const initialBadges: TapeBadgeModel[] = [
     {
@@ -46,15 +79,12 @@ export function computeTapeBadges(params: {
       player: tapeIntelligence.poc_player,
       playerName: tapeIntelligence.poc_player_name,
       side: "",
-      y:
-        scaledPriceY(
-          preferExplicitY ? tapeIntelligence.poc_y : undefined,
-          tapeIntelligence.poc_price,
-          chartForTape,
-          renderScale,
-          effectiveYMin,
-          effectiveYMax,
-        ) ?? effectiveVolumeProfileOverlay.pocY ?? chartForTape.top,
+      y: tapeY(
+        tapeIntelligence.poc_y,
+        tapeIntelligence.poc_price,
+        chartForTape.top,
+        effectiveVolumeProfileOverlay.pocY,
+      ),
       x: baseX,
       color: "#FDBA74",
       top3: tapeIntelligence.poc_top3 ?? [],
@@ -65,15 +95,12 @@ export function computeTapeBadges(params: {
       player: tapeIntelligence.val_buyer,
       playerName: tapeIntelligence.val_buyer_name,
       side: "B",
-      y:
-        scaledPriceY(
-          preferExplicitY ? tapeIntelligence.val_y : undefined,
-          tapeIntelligence.val_price,
-          chartForTape,
-          renderScale,
-          effectiveYMin,
-          effectiveYMax,
-        ) ?? effectiveVolumeProfileOverlay.valY ?? chartForTape.bottom,
+      y: tapeY(
+        tapeIntelligence.val_y,
+        tapeIntelligence.val_price,
+        chartForTape.bottom,
+        effectiveVolumeProfileOverlay.valY,
+      ),
       x: baseX,
       color: "#e53935",
       top3: tapeIntelligence.val_top3 ?? [],
@@ -84,15 +111,12 @@ export function computeTapeBadges(params: {
       player: tapeIntelligence.vah_seller,
       playerName: tapeIntelligence.vah_seller_name,
       side: "S",
-      y:
-        scaledPriceY(
-          preferExplicitY ? tapeIntelligence.vah_y : undefined,
-          tapeIntelligence.vah_price,
-          chartForTape,
-          renderScale,
-          effectiveYMin,
-          effectiveYMax,
-        ) ?? effectiveVolumeProfileOverlay.vahY ?? chartForTape.top,
+      y: tapeY(
+        tapeIntelligence.vah_y,
+        tapeIntelligence.vah_price,
+        chartForTape.top,
+        effectiveVolumeProfileOverlay.vahY,
+      ),
       x: baseX,
       color: "#e53935",
       top3: tapeIntelligence.vah_top3 ?? [],

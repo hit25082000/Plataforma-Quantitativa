@@ -12,6 +12,9 @@ export interface OverlayCompatLine {
   status?: string;
   out_of_bounds?: boolean;
   line_id?: string;
+  y_chart?: number;
+  frame_axis_id?: number;
+  axis_source?: string;
 }
 
 export interface OverlayUpdateCompatPayload {
@@ -42,6 +45,10 @@ export interface OverlayUpdateCompatPayload {
   payloadSeq: number | null;
   ocrPid: number | null;
   ocrPort: number | null;
+  geometry: UnknownRecord | null;
+  axisFit: UnknownRecord | null;
+  axisId: number | null;
+  axisSamples: unknown[] | null;
 }
 
 function asRecord(value: unknown): UnknownRecord | null {
@@ -74,6 +81,8 @@ function normalizeAxisStatus(value: unknown): string | null {
   if (v === "suspect") return "suspect";
   if (v === "recalibrating") return "recalibrating";
   if (v === "no_axis" || v === "not_found" || v === "missing") return "no_axis";
+  if (v === "geometry_mismatch" || v === "geometry_calibrating") return "geometry_calibrating";
+  if (v === "manual_locked") return "manual_locked";
   return v;
 }
 
@@ -143,9 +152,14 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
   const linesBlock = asRecord(data.lines) ?? asRecord(structured?.lines);
   const histogramBlock = asRecord(data.histogram) ?? asRecord(structured?.histogram);
   const axisBlock = asRecord(data.axis) ?? asRecord(structured?.axis);
+  const geometryBlock = asRecord(data.geometry) ?? asRecord(structured?.geometry);
   const linesVisualLimits = asRecord(linesBlock?.visual_limits);
   const debugVisualBlock =
     asRecord(data.debug_visual) ?? asRecord(structured?.debug_visual);
+  const axisSamplesRaw = debugVisualBlock
+    ? (debugVisualBlock as { axis_samples?: unknown }).axis_samples
+    : undefined;
+  const axisSamples = Array.isArray(axisSamplesRaw) ? axisSamplesRaw : null;
 
   const lineItemsMaybe = Array.isArray(data.lines)
     ? data.lines
@@ -166,7 +180,13 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
       typeof row.chart_right === "number" &&
       Number.isFinite(row.chart_right)
     );
-  });
+  }) as OverlayCompatLine[];
+
+  const geometry = geometryBlock && Object.keys(geometryBlock).length > 0 ? geometryBlock : null;
+  const axisFit =
+    asRecord(data.axis_fit) ?? asRecord(axisBlock?.axis_fit) ?? null;
+  const axisId =
+    asNumberOrNull(data.axis_id) ?? asNumberOrNull(axisBlock?.axis_id);
 
   const statusLegacy = asStringOrNull(data.status);
   const statusStructured = asStringOrNull(statusBlock?.state);
@@ -248,6 +268,10 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     payloadSeq,
     ocrPid,
     ocrPort,
+    geometry,
+    axisFit,
+    axisId,
+    axisSamples,
   };
 
   if (typeof window !== "undefined") {

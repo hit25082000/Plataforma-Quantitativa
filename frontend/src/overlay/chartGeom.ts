@@ -1,6 +1,12 @@
 import type { VolumeProfileLevel } from "../types/messages";
 import type { VolumeProfileMessage } from "../types/messages";
-import type { ChartRect, ScaledChartRect } from "./overlayFrameTypes";
+import type {
+  ChartRect,
+  OverlayAxisFitCanonical,
+  OverlayGeometryPayload,
+  OverlayLine,
+  ScaledChartRect,
+} from "./overlayFrameTypes";
 import {
   OVERLAY_LINE_LEFT_SHIFT_PX,
   VP_PROFILE_MAX_WIDTH_PX,
@@ -16,6 +22,71 @@ export function clamp(v: number, min: number, max: number): number {
 
 export function isFiniteNumber(v: unknown): v is number {
   return typeof v === "number" && Number.isFinite(v);
+}
+
+/** physical px → CSS px no espaço do overlay WebView */
+export function overlayPhysXToCss(
+  xPhys: number,
+  geometry: OverlayGeometryPayload | null | undefined,
+  renderScale: number,
+): number {
+  if (geometry?.overlay_rect_screen && Number.isFinite(geometry.overlay_rect_screen.x)) {
+    const sf =
+      geometry.scale_factor > 0 && Number.isFinite(geometry.scale_factor) ? geometry.scale_factor : 1;
+    return (xPhys - geometry.overlay_rect_screen.x) / sf;
+  }
+  return xPhys * renderScale;
+}
+
+/** physical px Y → CSS px no espaço do overlay (contrato canónico com y_chart). */
+export function overlayLineYCss(
+  line: OverlayLine,
+  geometry: OverlayGeometryPayload | null | undefined,
+  renderScale: number,
+  allowCanonicalProjection = true,
+): number {
+  if (
+    allowCanonicalProjection &&
+    geometry?.overlay_rect_screen &&
+    geometry?.chart_rect_screen &&
+    typeof line.y_chart === "number" &&
+    Number.isFinite(line.y_chart)
+  ) {
+    const sf =
+      geometry.scale_factor > 0 && Number.isFinite(geometry.scale_factor) ? geometry.scale_factor : 1;
+    return (geometry.chart_rect_screen.top + line.y_chart - geometry.overlay_rect_screen.y) / sf;
+  }
+  return line.y_screen * renderScale;
+}
+
+/** Preço → Y no SVG do overlay usando axis_fit + geometry (physical px). */
+export function overlayPriceToSvgY(
+  price: number,
+  axisFit: OverlayAxisFitCanonical | null | undefined,
+  geometry: OverlayGeometryPayload | null | undefined,
+  renderScale: number,
+  allowCanonicalProjection: boolean,
+): number | null {
+  if (!allowCanonicalProjection || !axisFit || !geometry?.overlay_rect_screen || !geometry.chart_rect_screen) {
+    return null;
+  }
+  const slope = axisFit.slope;
+  const intercept = axisFit.intercept;
+  const price_ref = axisFit.price_ref;
+  if (!Number.isFinite(price) || !Number.isFinite(slope) || !Number.isFinite(intercept) || !Number.isFinite(price_ref)) {
+    return null;
+  }
+  const y_chart = slope * (price - price_ref) + intercept;
+  if (!Number.isFinite(y_chart)) return null;
+  const line: OverlayLine = {
+    value: price,
+    y_screen: 0,
+    y_chart,
+    color: "#000",
+    chart_left: 0,
+    chart_right: 0,
+  };
+  return overlayLineYCss(line, geometry, renderScale, true);
 }
 
 export function scaleChartRect(rect: ChartRect | null | undefined, scale: number): ScaledChartRect | null {
@@ -182,6 +253,9 @@ export function computeVolumeProfileOverlayModel(params: {
   overlayEnabled?: boolean | null;
   effectiveVpStretchLines?: boolean | null;
   maxVisibleHistogramLevels?: number | null;
+  axisFit?: import("./overlayFrameTypes").OverlayAxisFitCanonical | null;
+  geometry?: OverlayGeometryPayload | null;
+  allowCanonicalProjection?: boolean;
 }): import("./overlayFrameTypes").VolumeProfileOverlayModel | null {
   const {
     showVolumeProfileOverlay,
@@ -195,26 +269,34 @@ export function computeVolumeProfileOverlayModel(params: {
     overlayEnabled,
     effectiveVpStretchLines,
     maxVisibleHistogramLevels,
+    axisFit,
+    geometry,
+    allowCanonicalProjection = false,
   } = params;
   if (!showVolumeProfileOverlay || !volumeProfile || !effectiveChartRect || overlayEnabled === false) {
     return null;
   }
   const chartForVp = effectiveChartRect;
   const preferExplicitY = usingOcrChart;
+  const useCanonVp = Boolean(allowCanonicalProjection && axisFit && geometry);
   const rawLevels = Array.isArray(volumeProfile.levels)
     ? volumeProfile.levels.slice(0, VP_MAX_RENDER_LEVELS)
     : [];
   const levelsWithExplicitY = rawLevels.filter((level) => isFiniteNumber(level.y)).length;
   const levelsWithY = rawLevels
     .map((level) => {
-      const y = scaledPriceY(
-        preferExplicitY ? level.y : undefined,
-        Number(level.price),
-        chartForVp,
-        renderScale,
-        minForVp,
-        maxForVp,
-      );
+      const priceN = Number(level.price);
+      const explicit = preferExplicitY && isFiniteNumber(level.y) ? level.y : undefined;
+      let y =
+        explicit !== undefined
+          ? scaledPriceY(explicit, priceN, chartForVp, renderScale, minForVp, maxForVp)
+          : null;
+      if (y == null && useCanonVp) {
+        y = overlayPriceToSvgY(priceN, axisFit ?? null, geometry ?? null, renderScale, true);
+      }
+      if (y == null) {
+        y = scaledPriceY(undefined, priceN, chartForVp, renderScale, minForVp, maxForVp);
+      }
       const totalVol = levelTotalVol(level);
       if (y == null || totalVol <= 0 || !Number.isFinite(level.price)) return null;
       return { level, y, totalVol };
@@ -298,6 +380,16 @@ export function computeVolumeProfileOverlayModel(params: {
   });
   const histogramCandidates = renderLevels.length;
   const rawMaxHist = maxVisibleHistogramLevels;
+  const anchorY = (price: number, explicitY: number | undefined) => {
+    if (preferExplicitY && isFiniteNumber(explicitY)) {
+      return scaledPriceY(explicitY, price, chartForVp, renderScale, minForVp, maxForVp);
+    }
+    if (useCanonVp) {
+      const cy = overlayPriceToSvgY(price, axisFit ?? null, geometry ?? null, renderScale, true);
+      if (cy != null) return cy;
+    }
+    return scaledPriceY(undefined, price, chartForVp, renderScale, minForVp, maxForVp);
+  };
   const maxHist =
     typeof rawMaxHist === "number" && Number.isFinite(rawMaxHist)
       ? Math.min(VP_MAX_RENDER_LEVELS, Math.min(2000, Math.max(8, rawMaxHist)))
@@ -354,30 +446,9 @@ export function computeVolumeProfileOverlayModel(params: {
     histogramCandidates,
     histogramRendered: cappedLevels.length,
     histogramCoalesced: Math.max(0, renderLevels.length - cappedLevels.length),
-    pocY: scaledPriceY(
-      preferExplicitY ? volumeProfile.poc_y : undefined,
-      pocNum,
-      chartForVp,
-      renderScale,
-      minForVp,
-      maxForVp,
-    ),
-    vahY: scaledPriceY(
-      preferExplicitY ? volumeProfile.vah_y : undefined,
-      vahBand,
-      chartForVp,
-      renderScale,
-      minForVp,
-      maxForVp,
-    ),
-    valY: scaledPriceY(
-      preferExplicitY ? volumeProfile.val_y : undefined,
-      valBand,
-      chartForVp,
-      renderScale,
-      minForVp,
-      maxForVp,
-    ),
+    pocY: anchorY(pocNum, volumeProfile.poc_y),
+    vahY: anchorY(vahBand, volumeProfile.vah_y),
+    valY: anchorY(valBand, volumeProfile.val_y),
     poc: pocNum,
     vah: vahBand,
     val: valBand,
