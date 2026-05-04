@@ -3937,7 +3937,7 @@ function VolumeProfileLine({
 }) {
   if (y == null || !Number.isFinite(y) || y < chart.top || y > chart.bottom) return null;
   const yDraw = safeNumber(y, chart.top + chart.height / 2);
-  const labelW = 84;
+  const labelW = 96;
   const labelX = safeNumber(Math.max(chart.left + 4, lineEndX - labelW - 4), chart.left + 4);
   const lx1 = safeNumber(chart.left, 0);
   const lx2 = safeNumber(lineEndX, lx1 + 80);
@@ -3963,19 +3963,19 @@ function VolumeProfileLine({
       />
       <rect
         x={labelX}
-        y={safeNumber(yDraw - 9, chart.top)}
+        y={safeNumber(yDraw - 11, chart.top)}
         width={labelW}
-        height={18}
+        height={22}
         rx={2}
         fill="rgba(0,0,0,0.70)"
         stroke={color}
         strokeWidth={safePx(1, 1)}
       />
       <text
-        x={labelX + 5}
-        y={safeNumber(yDraw + 4, yDraw)}
+        x={labelX + 6}
+        y={safeNumber(yDraw + 5, yDraw)}
         fill={color}
-        fontSize={10}
+        fontSize={11}
         fontFamily={FONT}
         fontWeight="800"
       >
