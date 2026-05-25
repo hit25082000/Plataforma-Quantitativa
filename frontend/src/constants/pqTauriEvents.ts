@@ -32,6 +32,22 @@ export const PQ_PROFIT_OVERLAY_OCR_STARTING_EVENT = "profit-overlay://ocr-starti
 export const PQ_PROFIT_OVERLAY_OCR_READY_EVENT = "profit-overlay://ocr-ready";
 export const PQ_PROFIT_OVERLAY_OCR_ERROR_EVENT = "profit-overlay://ocr-error";
 
+/** Janela principal (WS OCR) → WebView `profit-overlay` (WS direto no overlay pode ficar em CONNECTING no WebView2). */
+export const PQ_PROFIT_OVERLAY_OCR_FRAME_EVENT = "pq:profit-overlay-ocr-frame";
+
+export type PqProfitOverlayOcrFramePayload = {
+  data: string;
+  wsUrl: string;
+};
+
+/** Janela principal (WS engine) → WebView `profit-overlay` (VP overlay WS pode falhar no WebView2). */
+export const PQ_PROFIT_OVERLAY_VP_RELAY_EVENT = "pq:profit-overlay-vp-relay";
+
+export type PqProfitOverlayVpRelayPayload = {
+  kind: "vp_overlay" | "volume_profile";
+  data: string;
+};
+
 export type PqOcrOverlayAction = "recalibrate" | "freeze" | "manual" | "startup";
 export type PqOcrOverlayStatus = "start" | "ok" | "error" | "released";
 

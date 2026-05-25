@@ -324,6 +324,15 @@ class MmapConsumer:
                     self._gap_count += 1
                     self._next_seq = write_seq - capacity + 1
                 if self._next_seq > write_seq:
+                    now = time.monotonic()
+                    if pending and (now - last_flush) >= MMAP_LOOP_BATCH_FLUSH_S:
+                        batch = pending
+                        pending = []
+                        last_flush = now
+                        if loop is not None:
+                            loop.call_soon_threadsafe(self._put_trade_batch, batch)
+                        else:
+                            self._put_trade_batch(batch)
                     time.sleep(POLL_SLEEP_S)
                     continue
 

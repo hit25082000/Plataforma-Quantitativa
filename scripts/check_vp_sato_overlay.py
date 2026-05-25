@@ -63,6 +63,8 @@ def _evaluate(
         top = chart.get("top")
         bottom = chart.get("bottom")
         height = chart.get("height")
+        if height is None and _is_num(top) and _is_num(bottom):
+            height = bottom - top
         if not (_is_num(top) and _is_num(bottom) and _is_num(height) and bottom > top and height > 0):
             return None
         # In the smoke path the payload already carries screen-space Y values.
@@ -84,17 +86,30 @@ def _evaluate(
     overlay_payload_ok = isinstance(vp_snapshot, dict) and bool(vp_snapshot)
     demo_overlay_ok = overlay_payload_ok and len(levels) >= 20
     chart_rect = vp_snapshot.get("chart_rect") if isinstance(vp_snapshot, dict) else None
-    poc_delta_px = _alignment_delta_px(vp_snapshot.get("poc_y"), chart_rect)
-    val_delta_px = _alignment_delta_px(vp_snapshot.get("val_y"), chart_rect)
-    vah_delta_px = _alignment_delta_px(vp_snapshot.get("vah_y"), chart_rect)
+    
+    poc_y = vp_snapshot.get("poc_y")
+    if poc_y is None and isinstance(vp_snapshot.get("poc"), dict):
+        poc_y = vp_snapshot["poc"].get("y")
+        
+    val_y = vp_snapshot.get("val_y")
+    if val_y is None and isinstance(vp_snapshot.get("val"), dict):
+        val_y = vp_snapshot["val"].get("y")
+        
+    vah_y = vp_snapshot.get("vah_y")
+    if vah_y is None and isinstance(vp_snapshot.get("vah"), dict):
+        vah_y = vp_snapshot["vah"].get("y")
+
+    poc_delta_px = _alignment_delta_px(poc_y, chart_rect)
+    val_delta_px = _alignment_delta_px(val_y, chart_rect)
+    vah_delta_px = _alignment_delta_px(vah_y, chart_rect)
     alignment_deltas = [d for d in [poc_delta_px, val_delta_px, vah_delta_px] if d is not None]
     alignment_max_delta_px = max(alignment_deltas) if alignment_deltas else None
     overlay_profit_ok = (
         overlay_payload_ok
         and len(levels) >= 20
-        and _is_num(vp_snapshot.get("poc_y"))
-        and _is_num(vp_snapshot.get("vah_y"))
-        and _is_num(vp_snapshot.get("val_y"))
+        and _is_num(poc_y)
+        and _is_num(vah_y)
+        and _is_num(val_y)
         and alignment_max_delta_px is not None
         and alignment_max_delta_px <= 0.0
     )
@@ -149,7 +164,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Valida OCR + Volume Profile Sato no overlay.")
     parser.add_argument(
         "--ocr-status-url",
-        default=os.environ.get("PQ_OCR_STATUS_URL", "http://127.0.0.1:5558/status"),
+        default=os.environ.get("PQ_OCR_STATUS_URL", "http://127.0.0.1:5558/debug"),
     )
     parser.add_argument(
         "--vp-demo-url",
@@ -169,6 +184,8 @@ def main() -> int:
     args = parser.parse_args()
 
     ocr, ocr_error = _get_json(args.ocr_status_url, args.timeout_seconds)
+    if ocr and isinstance(ocr, dict) and "data" in ocr and isinstance(ocr["data"], dict):
+        ocr = ocr["data"]
     demo, demo_error = _post_json(
         args.vp_demo_url,
         args.timeout_seconds,

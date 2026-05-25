@@ -295,12 +295,12 @@ void ZmqPublisher::run() {
     try {
         pub.bind(address_);
         bound_.store(true);
-        std::cerr << "[ZmqPublisher] Bound to " << address_
+        std::cerr << "[engine.zmq] publisher_bound endpoint=" << address_
                   << " dom_snapshot_publish_min_ms=" << dom_snapshot_publish_min_ms_
                   << std::endl;
     } catch (const zmq::error_t& e) {
-        std::cerr << "[ZmqPublisher] BIND FAILED on " << address_
-                  << ": " << e.what() << " (errno " << e.num() << ")"
+        std::cerr << "[engine.zmq] publisher_bind_failed endpoint=" << address_
+                  << " detail=" << e.what() << " errno=" << e.num()
                   << " — another engine may be using this port!" << std::endl;
         return;
     }
@@ -410,8 +410,7 @@ void ZmqPublisher::run() {
                 if (shm_writer_) {
                     shm_writer_->write_trade(e, acc.vwap(), acc.net_aggression);
                 }
-                zmq::message_t msg(j.dump());
-                pub.send(msg, zmq::send_flags::none);
+                send_payload(pub, j.dump(), "trade");
                 if (vp_msg) {
                     const int64_t poc = vp_snapshot.value("poc", 0);
                     const int64_t vah = vp_snapshot.value("vah", 0);
@@ -434,8 +433,7 @@ void ZmqPublisher::run() {
                         last_vp_vah_ = vah;
                         last_vp_val_ = val;
                         last_vp_anchor_valid_ = true;
-                        zmq::message_t vp_out(vp_msg->dump());
-                        pub.send(vp_out, zmq::send_flags::none);
+                        send_payload(pub, vp_msg->dump(), "volume_profile");
                     } else {
                         volume_profile_throttle_skips_ += 1;
                     }
@@ -474,8 +472,7 @@ void ZmqPublisher::run() {
                             display_resolver,
                             display_cache,
                             agent_cache_mutex_);
-                        zmq::message_t ti_out(ti_body.dump());
-                        pub.send(ti_out, zmq::send_flags::none);
+                        send_payload(pub, ti_body.dump(), "tape_intelligence");
                     } else {
                         tape_intelligence_throttle_skips_ += 1;
                     }
@@ -509,8 +506,7 @@ void ZmqPublisher::run() {
                         {"agent_id", wall_add.agent_id},
                         {"ts", timestamp_iso()}
                     };
-                    zmq::message_t msg(j.dump());
-                    pub.send(msg, zmq::send_flags::none);
+                    send_payload(pub, j.dump(), "wall_add");
                 }
 
                 dom_snapshot::WallRemoveEvent wall_rem;
@@ -525,8 +521,7 @@ void ZmqPublisher::run() {
                         {"was_traded", wall_rem.was_traded},
                         {"ts", timestamp_iso()}
                     };
-                    zmq::message_t msg(j.dump());
-                    pub.send(msg, zmq::send_flags::none);
+                    send_payload(pub, j.dump(), "wall_remove");
                 }
 
                 dom_snapshot::DOMSnapshotEvent snap;
@@ -552,8 +547,7 @@ void ZmqPublisher::run() {
                         for (const auto& [p, q, c] : snap.sell) {
                             j["sell"].push_back({{"price", p}, {"qty", q}, {"count", c}});
                         }
-                        zmq::message_t msg(j.dump());
-                        pub.send(msg, zmq::send_flags::none);
+                        send_payload(pub, j.dump(), "dom_snapshot");
                     } else {
                         dom_snapshot_throttle_skips_ += 1;
                     }
@@ -587,8 +581,7 @@ void ZmqPublisher::run() {
                 };
                 if (!e.trade_date.empty())
                     j["trade_date"] = e.trade_date;
-                zmq::message_t msg(j.dump());
-                pub.send(msg, zmq::send_flags::none);
+                send_payload(pub, j.dump(), "daily");
                 }
             }, ev);
         }
@@ -629,6 +622,24 @@ void ZmqPublisher::run() {
                 << std::endl;
             metrics_next_log_ms_ = now_ms + 5000;
         }
+    }
+}
+
+void ZmqPublisher::send_payload(
+    zmq::socket_t& pub,
+    const std::string& payload,
+    const char* market_type)
+{
+    zmq::message_t msg(payload);
+    pub.send(msg, zmq::send_flags::none);
+    published_total_ += 1;
+    const char* type = (market_type && *market_type) ? market_type : "unknown";
+    if (!first_market_event_published_) {
+        first_market_event_published_ = true;
+        std::cerr << "[engine.market] first_event_published type=" << type << std::endl;
+    }
+    if (published_total_ == 1 || published_total_ % 1000 == 0) {
+        std::cerr << "[engine.market] published_total=" << published_total_ << std::endl;
     }
 }
 

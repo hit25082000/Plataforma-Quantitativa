@@ -29,7 +29,6 @@ function makeProps(overrides: Partial<VpOverlayHudProps> = {}): VpOverlayHudProp
       labels_visible: true,
       top_avg_visible: true,
       stretch_lines: false,
-      max_avg_lines: 6,
       max_visible_histogram_levels: 400,
     },
     showVp: true,
@@ -80,6 +79,7 @@ function makeProps(overrides: Partial<VpOverlayHudProps> = {}): VpOverlayHudProp
     onReturnAutoAxis: vi.fn(),
     ocrHudCollapsed: false,
     onSetOcrHudCollapsed: vi.fn(),
+    onCloseOverlay: vi.fn(),
     ...overrides,
   };
 }
@@ -355,7 +355,7 @@ describe("VpOverlayHud", () => {
     const { container } = mount({ showVp: false, showTi: false });
     expect(byLabel<HTMLInputElement>(container, "Exibir histograma do volume profile").disabled).toBe(true);
     expect(byLabel<HTMLInputElement>(container, "Exibir etiquetas de times and trades").disabled).toBe(true);
-    expect(byLabel<HTMLInputElement>(container, "Exibir médias dos top players").disabled).toBe(true);
+    expect(byLabel<HTMLInputElement>(container, "Exibir linhas monitoradas UBS e líderes").disabled).toBe(true);
   });
 
   it("cobre sequência manual completa de lock/unlock no HUD", () => {

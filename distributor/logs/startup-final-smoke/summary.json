@@ -1,0 +1,17 @@
+{
+  "overall_ok": true,
+  "health_ok_rate": 1.0,
+  "ready_ok_rate": 1.0,
+  "feed_live_seen": false,
+  "messages_received_delta": 0,
+  "messages_sent_delta": 0,
+  "max_feed_lag_ms": 0.0,
+  "max_broadcast_queue_depth": 0,
+  "root_symptom": null,
+  "next_action": null,
+  "samples_total": 149,
+  "duration_seconds": 300,
+  "interval_seconds": 2.0,
+  "ws_clients_max": 0,
+  "errors_count": 0
+}

@@ -47,7 +47,7 @@ function mergeMacdRsiFields(
   return out;
 }
 
-const MAX_ALERTS = 50;
+const MAX_ALERTS = 100;
 const MAX_FLOW_INVERSIONS = 30;
 const MAX_MACD_HISTORY = 50;
 

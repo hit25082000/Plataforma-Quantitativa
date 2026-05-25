@@ -443,6 +443,7 @@ class TestProfitOcrService(unittest.TestCase):
             "y_min": 20.0,
             "y_max": 120.0,
         }
+        self.assertIsNone(mgr.feed(base_candidate))
         self.assertIsNotNone(mgr.feed(base_candidate))
         self.assertEqual(mgr.status, "STABLE")
 
@@ -456,6 +457,33 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertEqual(mgr.status, "STABLE")
         self.assertEqual(mgr.pending_count, 0)
+
+    def test_axis_manager_requires_initial_confirm_frames(self) -> None:
+        mgr = profit_ocr_service.StableAxisManager()
+        candidate = {
+            "slope": -1.0,
+            "intercept": 200.0,
+            "value_per_px": 1.0,
+            "residual_px": 0.4,
+            "max_error_px": 1.2,
+            "confidence": 0.95,
+            "labels_count": 4,
+            "inliers_count": 4,
+            "tick_valid": True,
+            "monotonic_valid": True,
+            "value_min": 100.0,
+            "value_max": 180.0,
+            "y_min": 20.0,
+            "y_max": 120.0,
+        }
+        first = mgr.feed(candidate)
+        self.assertIsNone(first)
+        self.assertEqual(mgr.status, "CALIBRATING")
+        self.assertEqual(mgr.initial_confirm_count, 1)
+        second = mgr.feed(candidate)
+        self.assertIsNotNone(second)
+        self.assertEqual(mgr.status, "STABLE")
+        self.assertEqual(mgr.initial_confirm_count, 0)
 
     def test_axis_manager_bad_frames_goes_frozen(self) -> None:
         mgr = profit_ocr_service.StableAxisManager()
@@ -475,6 +503,7 @@ class TestProfitOcrService(unittest.TestCase):
             "y_min": 20.0,
             "y_max": 120.0,
         }
+        self.assertIsNone(mgr.feed(valid))
         self.assertIsNotNone(mgr.feed(valid))
         invalid = dict(valid)
         invalid["confidence"] = 0.01
@@ -506,6 +535,7 @@ class TestProfitOcrService(unittest.TestCase):
             "y_min": 20.0,
             "y_max": 120.0,
         }
+        self.assertIsNone(mgr.feed(valid))
         baseline = mgr.feed(valid)
         self.assertIsNotNone(baseline)
 
@@ -549,6 +579,7 @@ class TestProfitOcrService(unittest.TestCase):
             "y_min": 20.0,
             "y_max": 120.0,
         }
+        self.assertIsNone(mgr.feed(valid))
         self.assertIsNotNone(mgr.feed(valid))
 
         bad_frame = dict(valid)
@@ -605,7 +636,7 @@ class TestProfitOcrService(unittest.TestCase):
 
     def test_is_candidate_valid_requires_minimum_labels_and_monotonic(self) -> None:
         low_labels_candidate = {
-            "labels_count": 3,
+            "labels_count": max(1, profit_ocr_service.AXIS_MIN_LABELS - 1),
             "tick_size": 5.0,
             "tick_valid": True,
             "monotonic_valid": True,
@@ -620,7 +651,7 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertFalse(profit_ocr_service.is_candidate_valid(low_labels_candidate))
 
         many_labels_candidate = dict(low_labels_candidate)
-        many_labels_candidate["labels_count"] = 4
+        many_labels_candidate["labels_count"] = profit_ocr_service.AXIS_MIN_LABELS
         many_labels_candidate["monotonic_valid"] = False
         self.assertFalse(profit_ocr_service.is_candidate_valid(many_labels_candidate))
 
@@ -796,6 +827,7 @@ class TestProfitOcrService(unittest.TestCase):
         self.assertEqual(data["lines_count"], 1)
         self.assertEqual(data["targets_count"], 1)
         self.assertIn("uptime_sec", data)
+        self.assertIn("session_axis_telemetry_tail", data)
         self.assertNotIn("overlay_update", data)
         self.assertNotIn("lines", data)
 
@@ -867,6 +899,25 @@ class TestProfitOcrService(unittest.TestCase):
         finally:
             profit_ocr_service.state["lines"] = old_lines
 
+    def test_build_render_context_holds_lines_during_axis_warmup(self) -> None:
+        old_lines = profit_ocr_service.state.get("lines")
+        old_axis_status = profit_ocr_service.state.get("axis_status")
+        try:
+            profit_ocr_service.state["lines"] = [{"value": 100.0, "y_screen": 100}]
+            profit_ocr_service.state["axis_status"] = "CALIBRATING"
+            out = profit_ocr_service._build_render_context(
+                {
+                    "status": "ocr_axis_warming",
+                    "chart_rect": {"left": 0, "top": 0, "width": 100, "height": 100},
+                    "axis": {"slope": -1.0, "intercept": 100.0},
+                }
+            )
+            self.assertEqual(out["lines"], [{"value": 100.0, "y_screen": 100}])
+            self.assertTrue(str(out.get("status") or "").startswith("render_hold_"))
+        finally:
+            profit_ocr_service.state["lines"] = old_lines
+            profit_ocr_service.state["axis_status"] = old_axis_status
+
     def test_axis_manager_transitions_to_no_axis_after_timeout(self) -> None:
         mgr = profit_ocr_service.StableAxisManager()
         valid = {
@@ -885,6 +936,7 @@ class TestProfitOcrService(unittest.TestCase):
             "y_min": 20.0,
             "y_max": 120.0,
         }
+        self.assertIsNone(mgr.feed(valid))
         self.assertIsNotNone(mgr.feed(valid))
         mgr.last_stable_ts_monotonic = 0.0
         with mock.patch.object(profit_ocr_service.time, "monotonic", return_value=profit_ocr_service.AXIS_FROZEN_HOLD_SECS + 0.5):

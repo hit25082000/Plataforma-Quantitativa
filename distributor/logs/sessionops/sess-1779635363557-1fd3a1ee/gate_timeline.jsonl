@@ -1,0 +1,11 @@
+{"step":"health","ok":false,"ts":1779635373.564238}
+{"step":"ready","ok":false,"ts":1779635376.079021}
+{"step":"debug_status","ok":false,"ts":1779635378.589}
+{"step":"health","ok":false,"ts":1779635420.3978498}
+{"step":"ready","ok":false,"ts":1779635422.915133}
+{"step":"debug_status","ok":false,"ts":1779635425.4317162}
+{"step":"ocr_status","ok":true,"ts":1779635425.4395335}
+{"step":"ocr_debug","ok":true,"axis_status":"","ts":1779635425.4453003}
+{"step":"ws_health:/ws/vp-overlay","ok":false,"age_s":1000000000,"count":0,"ts":1779635425.445565}
+{"step":"ws_health:/ws/volume-profile","ok":false,"age_s":1000000000,"count":0,"ts":1779635425.4459171}
+{"step":"overlay_continuity","ok":false,"before":0,"after":0,"delta":0,"ts":1779635427.4473636}

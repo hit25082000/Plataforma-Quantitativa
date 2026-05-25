@@ -1,0 +1,69 @@
+{
+  "ok": false,
+  "session_id": "sess-1779635363557-1fd3a1ee",
+  "run_id": "run-1779635363557-f1273482",
+  "started_at_epoch": 1779635417.883278,
+  "ended_at_epoch": 1779635427.4480147,
+  "elapsed_ms": 9564,
+  "steps": [
+    {
+      "step": "health",
+      "ok": false,
+      "ts": 1779635420.3978498
+    },
+    {
+      "step": "ready",
+      "ok": false,
+      "ts": 1779635422.915133
+    },
+    {
+      "step": "debug_status",
+      "ok": false,
+      "ts": 1779635425.4317162
+    },
+    {
+      "step": "ocr_status",
+      "ok": true,
+      "ts": 1779635425.4395335
+    },
+    {
+      "step": "ocr_debug",
+      "ok": true,
+      "axis_status": "",
+      "ts": 1779635425.4453003
+    },
+    {
+      "step": "ws_health:/ws/vp-overlay",
+      "ok": false,
+      "age_s": 1000000000,
+      "count": 0,
+      "ts": 1779635425.445565
+    },
+    {
+      "step": "ws_health:/ws/volume-profile",
+      "ok": false,
+      "age_s": 1000000000,
+      "count": 0,
+      "ts": 1779635425.4459171
+    },
+    {
+      "step": "overlay_continuity",
+      "ok": false,
+      "before": 0,
+      "after": 0,
+      "delta": 0,
+      "ts": 1779635427.4473636
+    }
+  ],
+  "failures": [
+    "health_unavailable",
+    "ready_unavailable",
+    "debug_status_unavailable",
+    "overlay_ws_stale",
+    "overlay_ws_stale"
+  ],
+  "primary_error": "health_unavailable",
+  "artifacts": {
+    "gate_timeline": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\sess-1779635363557-1fd3a1ee\\gate_timeline.jsonl"
+  }
+}

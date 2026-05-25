@@ -10,6 +10,7 @@ from typing import FrozenSet, Optional
 from urllib.parse import urlparse
 
 import zmq
+from startup_state import startup_state
 
 try:
     from egress_allowlist import enforce_endpoint_ip_allowlist
@@ -53,6 +54,8 @@ class ZmqConsumer:
             else os.environ.get("ZMQ_ALLOWED_IPS", "").strip() or None
         )
         self._market_type_allowlist: Optional[FrozenSet[str]] = market_type_allowlist
+        self._received_total = 0
+        self._first_event_logged = False
 
     @staticmethod
     def _topic_and_type(raw: str) -> tuple[str, str]:
@@ -100,7 +103,7 @@ class ZmqConsumer:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
-        logger.info("ZMQ consumer started, connecting to %s", self._address)
+        logger.info("[distributor.consumer] start_requested endpoint=%s mode=zmq", self._address)
 
     def stop(self) -> None:
         """Signal the consumer to stop."""
@@ -115,6 +118,7 @@ class ZmqConsumer:
     def metrics(self) -> dict[str, int]:
         """Best-effort counters for queue pressure diagnostics."""
         return {
+            "received_total": self._received_total,
             "dropped_dom": self._dropped_count,
             "dropped_low_priority": self._dropped_low_priority,
             "rescued_trade_like": self._rescued_trades,
@@ -233,7 +237,13 @@ class ZmqConsumer:
     def _run(self) -> None:
         """Loop in dedicated thread: receive from ZMQ, push to queue; reconecta se a ligacao cair."""
         if not self._check_egress_allowlist():
-            logger.error("ZMQ consumer aborted: endpoint bloqueado por allowlist (ZMQ_ALLOWED_IPS).")
+            logger.error(
+                "[distributor.consumer] error=allowlist_blocked endpoint=%s detail=ZMQ_ALLOWED_IPS",
+                self._address,
+            )
+            startup_state.record_error(
+                f"consumer_allowlist_blocked endpoint={self._address}"
+            )
             return
 
         loop = self._loop
@@ -245,9 +255,20 @@ class ZmqConsumer:
             sock.setsockopt(zmq.RCVTIMEO, RCVTIMEO_MS)
             try:
                 sock.connect(self._address)
-                sock.setsockopt_string(zmq.SUBSCRIBE, "")  # subscribe to all
+                sock.setsockopt(zmq.SUBSCRIBE, b"")
+                logger.info(
+                    "[distributor.consumer] loop_started endpoint=%s mode=zmq",
+                    self._address,
+                )
             except zmq.ZMQError as e:
-                logger.error("ZMQ connect failed: %s", e)
+                logger.error(
+                    "[distributor.consumer] error=connect_failed endpoint=%s detail=%s",
+                    self._address,
+                    e,
+                )
+                startup_state.record_error(
+                    f"consumer_connect_failed endpoint={self._address} detail={e}"
+                )
                 sock.close()
                 ctx.term()
                 if self._stop_event.is_set():
@@ -261,6 +282,22 @@ class ZmqConsumer:
                 while not self._stop_event.is_set():
                     try:
                         raw = sock.recv_string()
+                        self._received_total += 1
+                        if not self._first_event_logged:
+                            topic, msg_type = self._topic_and_type(raw)
+                            logger.info(
+                                "[distributor.consumer] first_event_received endpoint=%s topic=%s type=%s",
+                                self._address,
+                                topic or "?",
+                                msg_type or "?",
+                            )
+                            self._first_event_logged = True
+                        if self._received_total == 1 or self._received_total % 1000 == 0:
+                            logger.info(
+                                "[distributor.consumer] received_total=%s endpoint=%s",
+                                self._received_total,
+                                self._address,
+                            )
                         if not self._allow_raw_fast(raw):
                             continue
                         if loop is not None:
@@ -270,15 +307,32 @@ class ZmqConsumer:
                     except zmq.Again:
                         continue
                     except zmq.ZMQError as e:
-                        logger.warning("ZMQ recv error: %s", e)
+                        logger.error(
+                            "[distributor.consumer] error=recv_failed endpoint=%s detail=%s",
+                            self._address,
+                            e,
+                        )
+                        startup_state.record_error(f"zmq_recv_error: {e}")
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception(
+                            "[distributor.consumer] error=loop_exception endpoint=%s detail=%s",
+                            self._address,
+                            e,
+                        )
+                        startup_state.record_error(f"zmq_loop_error: {e}")
                         break
             finally:
                 sock.close()
                 ctx.term()
 
             if not self._stop_event.is_set():
-                logger.info("ZMQ desligado de %s; reconexao em %.1fs", self._address, reconnect_s)
+                logger.info(
+                    "[distributor.consumer] reconnect_scheduled endpoint=%s delay_s=%.1f",
+                    self._address,
+                    reconnect_s,
+                )
                 time.sleep(reconnect_s)
                 reconnect_s = min(reconnect_s * 1.4, max_reconnect_s)
 
-        logger.info("ZMQ consumer stopped")
+        logger.info("[distributor.consumer] stopped endpoint=%s", self._address)

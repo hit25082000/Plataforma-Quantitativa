@@ -57,18 +57,20 @@ export function computeTapeBadges(params: {
     fallback: number,
     overlayAnchorY: number | null | undefined,
   ): number => {
-    if (preferExplicitY && isFiniteNumber(explicitY)) {
-      return (
-        scaledPriceY(explicitY, price, chartForTape, renderScale, effectiveYMin, effectiveYMax) ?? fallback
-      );
-    }
     if (useCanon) {
       const cy = overlayPriceToSvgY(price, axisFit ?? null, geometry ?? null, renderScale, true);
       if (cy != null) return cy;
     }
+    if (preferExplicitY && isFiniteNumber(explicitY)) {
+      return (
+        scaledPriceY(explicitY, price, chartForTape, renderScale, effectiveYMin, effectiveYMax, geometry) ??
+        fallback
+      );
+    }
     if (isFiniteNumber(overlayAnchorY)) return overlayAnchorY;
     return (
-      scaledPriceY(undefined, price, chartForTape, renderScale, effectiveYMin, effectiveYMax) ?? fallback
+      scaledPriceY(undefined, price, chartForTape, renderScale, effectiveYMin, effectiveYMax, geometry) ??
+      fallback
     );
   };
   const baseX = Math.max(chartForTape.left + 12, effectiveVolumeProfileOverlay.profileLeft - 124);

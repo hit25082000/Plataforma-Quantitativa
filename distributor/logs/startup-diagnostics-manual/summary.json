@@ -1,0 +1,54 @@
+{
+  "ok": false,
+  "root_symptom": "Distributor HTTP indisponível (/health não responde).",
+  "likely_layer": "distributor_bootstrap",
+  "next_action": "Verificar processo na porta 8000 e logs runtime-bootstrap/distributor stderr.",
+  "ports": {
+    "8000": {
+      "listening": false,
+      "listeners": []
+    },
+    "5555": {
+      "listening": false,
+      "listeners": []
+    },
+    "5556": {
+      "listening": false,
+      "listeners": []
+    },
+    "5557": {
+      "listening": false,
+      "listeners": []
+    },
+    "5558": {
+      "listening": false,
+      "listeners": []
+    }
+  },
+  "processes": [],
+  "health": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/health",
+    "status_code": null,
+    "elapsed_ms": 2188.6,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "ready": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/ready",
+    "status_code": null,
+    "elapsed_ms": 2045.89,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "debug_status": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/debug/status",
+    "status_code": null,
+    "elapsed_ms": 2056.73,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "errors": []
+}

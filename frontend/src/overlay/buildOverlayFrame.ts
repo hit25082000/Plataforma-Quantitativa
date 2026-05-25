@@ -13,6 +13,10 @@ import {
   volumeProfilePriceRange,
 } from "./chartGeom";
 import { computeTapeBadges } from "./computeTapeBadges";
+import {
+  filterOverlayLinesForVpMode,
+  filterOverlayLinesWithoutVp,
+} from "./filterMetricOverlayLines";
 import { layoutOverlayLines } from "./layoutLegacyLines";
 import type { OverlayDiagFlags } from "./overlayDiagEnv";
 import { readOverlayDiagEnv } from "./overlayDiagEnv";
@@ -239,8 +243,10 @@ export function buildOverlayFrame(
 
   const geom = (data.geometry ?? null) as OverlayGeometryPayload | null;
   const axisNorm = (data.normalized_axis_status ?? data.axis_status ?? "").trim().toLowerCase();
+  const axisStableForIndicators =
+    axisNorm === "stable" || axisNorm === "manual_locked" || axisNorm === "ocr_validated";
   const allowCanonicalProjection =
-    (axisNorm === "stable" || axisNorm === "frozen" || axisNorm === "manual_locked") &&
+    axisStableForIndicators &&
     data.axis_fit != null &&
     typeof data.axis_fit.slope === "number" &&
     Number.isFinite(data.axis_fit.slope) &&
@@ -262,10 +268,9 @@ export function buildOverlayFrame(
     chart_left: overlayPhysXToCss(line.chart_left, geom, renderScale),
     chart_right: overlayPhysXToCss(line.chart_right, geom, renderScale),
   }));
-  const positionedLines = layoutOverlayLines(scaledLines, H);
 
   const volumeProfileOverlay = computeVolumeProfileOverlayModel({
-    showVolumeProfileOverlay: snapshot.showVolumeProfileOverlay,
+    showVolumeProfileOverlay: snapshot.showVolumeProfileOverlay && axisStableForIndicators,
     volumeProfile,
     effectiveChartRect,
     effectiveYMin,
@@ -281,11 +286,25 @@ export function buildOverlayFrame(
     allowCanonicalProjection,
   });
 
+  const linesForLayout = volumeProfileOverlay
+    ? filterOverlayLinesForVpMode(scaledLines)
+    : filterOverlayLinesWithoutVp(scaledLines);
+  const positionedLines = axisStableForIndicators
+    ? layoutOverlayLines(linesForLayout, H)
+    : [];
+
   const histogramVisible =
-    snapshot.effectiveVpDisplay?.histogram_visible !== false && snapshot.showVolumeProfileOverlay;
-  const showLegacyOverlayIndicators = !volumeProfileOverlay;
+    axisStableForIndicators &&
+    snapshot.effectiveVpDisplay?.histogram_visible !== false &&
+    snapshot.showVolumeProfileOverlay;
+  const showLegacyOverlayIndicators = axisStableForIndicators && !volumeProfileOverlay;
+  const showMetricOverlayLines =
+    axisStableForIndicators &&
+    volumeProfileOverlay != null &&
+    snapshot.effectiveVpDisplay?.top_avg_visible !== false &&
+    positionedLines.length > 0;
   const tapeBadges = computeTapeBadges({
-    showTapeIntelligenceOverlay: snapshot.showTapeIntelligenceOverlay,
+    showTapeIntelligenceOverlay: snapshot.showTapeIntelligenceOverlay && axisStableForIndicators,
     tapeIntelligence,
     effectiveChartRect,
     effectiveVolumeProfileOverlay: volumeProfileOverlay,
@@ -304,6 +323,10 @@ export function buildOverlayFrame(
     ? ""
     : snapshot.axisUnusableReason || "axis_unavailable";
 
+  if (!axisStableForIndicators && guardStatus === "OK") {
+    guardStatus = "FROZEN";
+  }
+
   const frame: OverlayRenderFrame = {
     viewportWidth: W,
     viewportHeight: H,
@@ -317,6 +340,7 @@ export function buildOverlayFrame(
     tapeBadges,
     histogramVisible,
     showLegacyOverlayIndicators,
+    showMetricOverlayLines,
     showVolumeProfileOverlay: snapshot.showVolumeProfileOverlay,
     showTapeIntelligenceOverlay: snapshot.showTapeIntelligenceOverlay,
     usingOcrChart,

@@ -23,6 +23,10 @@ export interface OverlayScreenRect {
 }
 
 export interface OverlayGeometryPayload {
+  chart_rect_screen_physical?: OverlayScreenRect | null;
+  overlay_rect_screen_physical?: OverlayScreenRect | null;
+  axis_rect_screen_physical?: OverlayScreenRect | null;
+  dpi_scale?: number;
   capture_rect_screen?: OverlayScreenRect | null;
   chart_rect_screen?: { left: number; top: number; width: number; height: number } | null;
   overlay_rect_screen?: OverlayScreenRect | null;
@@ -35,12 +39,15 @@ export interface OverlayGeometryPayload {
 export interface OverlayAxisFitCanonical {
   axis_id: number;
   model: string;
-  price_ref: number;
+  coordinate_space?: string;
+  price_ref?: number;
   slope: number;
   intercept: number;
   labels_count: number;
-  avg_error_px: number;
-  max_error_px: number;
+  avg_error_px?: number;
+  max_error_px?: number;
+  rmse?: number;
+  r2?: number;
   created_at_ms?: number;
   geometry_signature?: string;
 }
@@ -57,6 +64,10 @@ export interface OverlayAxisLabelSample {
 export interface OverlayLine {
   value: number;
   y_screen: number;
+  y_capture?: number;
+  y_screen_physical?: number;
+  y_screen_logical?: number;
+  y_overlay_css?: number;
   color: string;
   chart_left: number;
   chart_right: number;
@@ -153,6 +164,8 @@ export interface OverlayRenderFrame {
   tapeBadges: TapeBadgeModel[];
   histogramVisible: boolean;
   showLegacyOverlayIndicators: boolean;
+  /** Linhas OCR de métricas (UBS / líderes) com VP Sato nativo ativo. */
+  showMetricOverlayLines: boolean;
   showVolumeProfileOverlay: boolean;
   showTapeIntelligenceOverlay: boolean;
   usingOcrChart: boolean;

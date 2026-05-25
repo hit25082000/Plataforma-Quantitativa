@@ -35,7 +35,7 @@ inline const char* bolsa_default() {
 }
 
 // ZeroMQ
-inline const char* zmq_address = "tcp://*:5555";
+inline const char* zmq_address = "tcp://127.0.0.1:5555";
 
 // Regras de negócio (M1)
 inline int64_t wall_threshold    = 500;   // qty >= 500 = muralha

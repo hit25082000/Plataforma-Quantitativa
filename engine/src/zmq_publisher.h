@@ -50,6 +50,7 @@ public:
 private:
     void run();
     void publish_alert(zmq::socket_t& pub, const rules::Alert& a);
+    void send_payload(zmq::socket_t& pub, const std::string& payload, const char* market_type);
 
     event_bus::EventQueue&           queue_;
     dom_snapshot::DOMSnapshotEngine& dom_;
@@ -83,6 +84,8 @@ private:
     int64_t offer_events_processed_{0};
     int64_t daily_events_processed_{0};
     int64_t reconcile_duplicates_ignored_{0};
+    int64_t published_total_{0};
+    bool first_market_event_published_{false};
 
     /** Mínimo intervalo entre publicações dom_snapshot no ZMQ (dispatch_dom_snapshot a cada tick); 0 = sem limite. */
     int64_t dom_snapshot_publish_min_ms_{100};

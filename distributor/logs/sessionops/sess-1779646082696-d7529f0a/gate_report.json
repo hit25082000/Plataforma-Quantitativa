@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "session_id": "sess-1779646082696-d7529f0a",
+  "run_id": "run-1779646082696-9958ee3e",
+  "started_at_epoch": 1779646096.421824,
+  "ended_at_epoch": 1779646098.5038824,
+  "elapsed_ms": 2082,
+  "steps": [
+    {
+      "step": "health",
+      "ok": true,
+      "ts": 1779646096.4398558
+    },
+    {
+      "step": "ready",
+      "ok": true,
+      "ts": 1779646096.4429107
+    },
+    {
+      "step": "debug_status",
+      "ok": true,
+      "ts": 1779646096.4457965
+    },
+    {
+      "step": "ocr_status",
+      "ok": true,
+      "ts": 1779646096.4480338
+    },
+    {
+      "step": "ocr_debug",
+      "ok": true,
+      "axis_status": "",
+      "ts": 1779646096.4970176
+    },
+    {
+      "step": "ws_health:/ws/vp-overlay",
+      "ok": true,
+      "age_s": 2.02,
+      "count": 2,
+      "ts": 1779646096.4974496
+    },
+    {
+      "step": "ws_health:/ws/volume-profile",
+      "ok": true,
+      "age_s": 1.011,
+      "count": 3,
+      "ts": 1779646096.4977567
+    },
+    {
+      "step": "overlay_continuity",
+      "ok": true,
+      "before": 6,
+      "after": 12,
+      "delta": 6,
+      "ts": 1779646098.5027082
+    }
+  ],
+  "failures": [],
+  "primary_error": "",
+  "artifacts": {
+    "gate_timeline": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\sess-1779646082696-d7529f0a\\gate_timeline.jsonl"
+  }
+}

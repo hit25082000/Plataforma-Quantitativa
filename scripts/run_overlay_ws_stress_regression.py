@@ -19,6 +19,15 @@ if str(DIST_DIR) not in sys.path:
 
 import profit_ocr_service
 
+# CEN-05 Thresholds
+LATENCY_P95_MAX_MS = 60.0
+LATENCY_P99_MAX_MS = 120.0
+BACKLOG_GROWTH_RATIO_MAX = 1.5
+CONSUMER_FPS_MIN = 90.0
+PUBLISH_RATE_FLOOR_FACTOR_MIN = 0.75
+PUBLISH_RATE_OVERSHOOT_FACTOR_MAX = 1.15
+PUBLISH_INTERVAL_JITTER_CV_MAX = 0.35
+
 
 @dataclass(frozen=True)
 class Scenario:
@@ -260,7 +269,14 @@ def evaluate(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
             failures.append(f"{row['scenario']}: latency_p99_ms={row['latency_p99_ms']} > 120")
         if int(row["published_count"]) <= 0:
             failures.append(f"{row['scenario']}: published_count=0")
-    return {"ok": len(failures) == 0, "failures": failures}
+    return {
+        "ok": len(failures) == 0,
+        "failures": failures,
+        "thresholds": {
+            "queue_max": 1,
+            "latency_p99_ms": 120.0,
+        }
+    }
 
 
 def main() -> int:

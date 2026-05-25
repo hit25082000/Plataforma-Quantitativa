@@ -1,0 +1,13 @@
+{
+  "session_id": "sess-1779646082696-d7529f0a",
+  "run_id": "run-1779646082696-9958ee3e",
+  "contract_version": "v1",
+  "gate_ok": true,
+  "latest_gate_event_id": "8b49c1c0fc5f0bfd4710bac9d39cb60c2d888df2a8b420ec81513ff13349e781",
+  "artifacts": {
+    "session_manifest": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\sess-1779646082696-d7529f0a\\session.manifest.json",
+    "gate_report": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\sess-1779646082696-d7529f0a\\gate_report.json",
+    "gate_timeline": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\sess-1779646082696-d7529f0a\\gate_timeline.jsonl",
+    "events_jsonl": "C:\\Users\\luiz.domingues\\Dev\\Plataforma Quantitativa\\distributor\\logs\\sessionops\\events.jsonl"
+  }
+}

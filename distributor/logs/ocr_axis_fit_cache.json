@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "entries": {
+    "9395198f0aefaa9bebbdca7504666cebfc13150f": {
+      "cache_key": "9395198f0aefaa9bebbdca7504666cebfc13150f",
+      "symbol": "WINFUT",
+      "slope": -0.625,
+      "intercept": 125062.5,
+      "rmse": 0.0,
+      "r2": 1.0,
+      "labels_accepted": 0,
+      "created_at_ms": 1779645622793,
+      "coordinate_space": "screen_physical",
+      "source": "manual",
+      "geometry": {
+        "dpi_scale": 1.0,
+        "scale_factor": 1.0,
+        "monitor_id": "unknown",
+        "overlay_rect_screen_physical": null,
+        "chart_rect_screen_physical": null,
+        "axis_rect_screen_physical": null,
+        "overlay_rect_screen": null,
+        "chart_rect_screen": null,
+        "geometry_signature": "d7e1b31cf158e284818d7a4ac25b4cdce19465eb"
+      }
+    },
+    "f13e9c867ff2632aeae4ba4a65b745f7bfa03aca": {
+      "cache_key": "f13e9c867ff2632aeae4ba4a65b745f7bfa03aca",
+      "symbol": "WINFUT",
+      "slope": -0.2,
+      "intercept": 140.0,
+      "rmse": 0.0,
+      "r2": 1.0,
+      "labels_accepted": 2,
+      "created_at_ms": 1779712173495,
+      "coordinate_space": "screen_physical",
+      "source": "manual",
+      "geometry": {
+        "dpi_scale": 1.0,
+        "scale_factor": 1.0,
+        "monitor_id": "unknown",
+        "overlay_rect_screen_physical": null,
+        "chart_rect_screen_physical": {
+          "x": 0,
+          "y": 90,
+          "width": 1920,
+          "height": 942
+        },
+        "axis_rect_screen_physical": null,
+        "overlay_rect_screen": null,
+        "chart_rect_screen": {
+          "left": 0,
+          "top": 90,
+          "width": 1920,
+          "height": 942
+        },
+        "geometry_signature": "c1206f434589cabb8725a8378e29ebbb6cdaaf2e"
+      }
+    },
+    "8553ee684f8290c58cea66fac4bba3a90da288d5": {
+      "cache_key": "8553ee684f8290c58cea66fac4bba3a90da288d5",
+      "symbol": "WINFUT",
+      "slope": -0.5,
+      "intercept": 100250.0,
+      "rmse": 0.0,
+      "r2": 1.0,
+      "labels_accepted": 2,
+      "created_at_ms": 1779667144924,
+      "coordinate_space": "screen_physical",
+      "source": "manual",
+      "geometry": {
+        "dpi_scale": 1.0,
+        "scale_factor": 1.0,
+        "monitor_id": "monitor-1",
+        "overlay_rect_screen_physical": null,
+        "chart_rect_screen_physical": {
+          "x": 0,
+          "y": 90,
+          "width": 1920,
+          "height": 942
+        },
+        "axis_rect_screen_physical": {
+          "x": 1652,
+          "y": 90,
+          "width": 268,
+          "height": 900
+        },
+        "overlay_rect_screen": null,
+        "chart_rect_screen": {
+          "left": 0,
+          "top": 90,
+          "width": 1920,
+          "height": 942
+        },
+        "geometry_signature": "9a2dd9e6b4e084525b5a4703bb035ab4bc8cd428"
+      }
+    }
+  }
+}

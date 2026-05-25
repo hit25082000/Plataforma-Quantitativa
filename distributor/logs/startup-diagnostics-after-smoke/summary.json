@@ -1,0 +1,74 @@
+{
+  "ok": false,
+  "root_symptom": "port 5556 ocupado por processo inesperado pid=10608 name=informações: nenhuma tarefa em execução correspondente aos critérios",
+  "likely_layer": "port_conflict",
+  "next_action": "Finalizar PID 10608 (informações: nenhuma tarefa em execução correspondente aos critérios) e reiniciar startup.",
+  "ports": {
+    "8000": {
+      "listening": false,
+      "listeners": []
+    },
+    "5555": {
+      "listening": true,
+      "listeners": [
+        {
+          "pid": 10608,
+          "process_name": "engine.exe",
+          "raw": "TCP    127.0.0.1:5555         0.0.0.0:0              LISTENING       10608"
+        }
+      ]
+    },
+    "5556": {
+      "listening": true,
+      "listeners": [
+        {
+          "pid": 10608,
+          "process_name": "INFORMAÇÕES: nenhuma tarefa em execução correspondente aos critérios",
+          "raw": "TCP    127.0.0.1:5556         0.0.0.0:0              LISTENING       10608"
+        }
+      ]
+    },
+    "5557": {
+      "listening": true,
+      "listeners": [
+        {
+          "pid": 36596,
+          "process_name": "python.exe",
+          "raw": "TCP    0.0.0.0:5557           0.0.0.0:0              LISTENING       36596"
+        }
+      ]
+    },
+    "5558": {
+      "listening": false,
+      "listeners": []
+    }
+  },
+  "processes": [],
+  "health": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/health",
+    "status_code": null,
+    "elapsed_ms": 2992.81,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "ready": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/ready",
+    "status_code": null,
+    "elapsed_ms": 2017.85,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "debug_status": {
+    "ok": false,
+    "url": "http://127.0.0.1:8000/debug/status",
+    "status_code": null,
+    "elapsed_ms": 2031.99,
+    "payload": null,
+    "error": "<urlopen error [WinError 10061] Nenhuma conexão pôde ser feita porque a máquina de destino as recusou ativamente>"
+  },
+  "errors": [
+    "port 5556 ocupado por processo inesperado pid=10608 name=informações: nenhuma tarefa em execução correspondente aos critérios"
+  ]
+}

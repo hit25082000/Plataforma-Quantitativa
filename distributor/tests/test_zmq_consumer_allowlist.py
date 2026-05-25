@@ -166,9 +166,9 @@ class TestZmqConsumerRunBlockedByAllowlist(unittest.TestCase):
 
         def _mock_context(*args, **kwargs):
             zmq_context_called["called"] = True
+            c._stop_event.set()  # Encerra o loop imediatamente após conectar/criar o contexto
             return ctx_mock
 
-        c._stop_event.set()  # Encerra o loop imediatamente após conectar
         with patch("zmq.Context", side_effect=_mock_context):
             c._run()
 

@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator, List, Optional, Protocol,
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from agent_007 import Agent007Engine
@@ -26,6 +26,8 @@ from message_router import MessageRouter
 from message_router import canonical_symbol
 from vp_ocr_enrich import enrich_vp_overlay_payload
 from security_audit import security_audit_metrics
+from sessionops import SessionOpsService
+from startup_state import startup_state
 from voice_realtime import create_realtime_session, execute_function_call, voice_metrics
 
 if TYPE_CHECKING:
@@ -328,6 +330,7 @@ market_queue: Optional[Any] = None  # asyncio.Queue[str]; evita import circular
 ipc_mode: str = "zmq"
 ipc_fallback_event: Optional[dict[str, Any]] = None
 rag_engine: Optional["RealtimeRagEngine"] = None
+sessionops: Optional[SessionOpsService] = None
 voice_session_store: dict[str, dict[str, Any]] = {}
 
 
@@ -468,7 +471,7 @@ def init_app(
     fallback_event: Optional[dict[str, Any]] = None,
 ) -> None:
     """Initialize app with shared components (called from main.py)."""
-    global manager, vp_tape_manager, vp_overlay_manager, zmq_consumer, zmq_consumer_sync, zmq_consumer_market_aux, agent007_engine, message_router, market_queue, ipc_mode, ipc_fallback_event, rag_engine
+    global manager, vp_tape_manager, vp_overlay_manager, zmq_consumer, zmq_consumer_sync, zmq_consumer_market_aux, agent007_engine, message_router, market_queue, ipc_mode, ipc_fallback_event, rag_engine, sessionops
     manager = connection_manager
     vp_tape_manager = volume_profile_connection_manager
     vp_overlay_manager = vp_overlay_connection_manager
@@ -481,6 +484,21 @@ def init_app(
     market_queue = market_queue_ref
     ipc_mode = market_ipc_mode
     ipc_fallback_event = fallback_event
+    if sessionops is None:
+        logs_root = os.path.join(os.path.dirname(__file__), "logs")
+        sessionops = SessionOpsService(
+            logs_root=logs_root,
+            component="distributor",
+            build=BUILD_TAG,
+            default_asset="WINFUT",
+        )
+        sessionops.record_preflight(
+            {
+                "ws_port": WS_PORT,
+                "ocr_overlay_port": OCR_OVERLAY_PORT,
+                "ipc_mode": ipc_mode,
+            }
+        )
 
 
 def create_app(
@@ -499,6 +517,78 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.get("/sessionops")
+    async def sessionops_html() -> HTMLResponse:
+        html = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SessionOps Mirror</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; margin: 0; background: #111827; color: #e5e7eb; }
+    .wrap { padding: 16px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card { background: #1f2937; border: 1px solid #374151; border-radius: 10px; padding: 12px; }
+    h1, h2 { margin: 0 0 8px; font-size: 16px; }
+    pre { white-space: pre-wrap; word-break: break-word; font-size: 12px; margin: 0; max-height: 280px; overflow: auto; }
+    button { margin: 4px 6px 0 0; padding: 6px 10px; border-radius: 6px; border: 1px solid #6b7280; background: #111827; color: #e5e7eb; cursor: pointer; }
+    .ok { color: #34d399; } .bad { color: #f87171; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card"><h1>SessionOps Agent Mirror</h1><div id="gateStatus"></div></div>
+    <div class="card"><h2>Runtime</h2><pre id="runtime"></pre></div>
+    <div class="card"><h2>OCR Status</h2><pre id="ocrStatus"></pre></div>
+    <div class="card"><h2>OCR Debug</h2><pre id="ocrDebug"></pre></div>
+    <div class="card"><h2>Agent Snapshot</h2><pre id="agentSnapshot"></pre></div>
+    <div class="card"><h2>Controls</h2>
+      <button onclick="act('/api/ocr-overlay/freeze')">freeze</button>
+      <button onclick="act('/api/ocr-overlay/unfreeze')">unfreeze</button>
+      <button onclick="act('/api/ocr-overlay/recalibrate')">recalibrate</button>
+      <button onclick="act('/api/ocr-overlay/manual-unlock')">manual-unlock</button>
+      <button onclick="runGate()">run strict gate</button>
+      <pre id="actions"></pre>
+    </div>
+  </div>
+  <script>
+    async function j(url, opts) {
+      const r = await fetch(url, opts || {});
+      let data = {};
+      try { data = await r.json(); } catch {}
+      return { ok: r.ok, status: r.status, data };
+    }
+    function pretty(v) { return JSON.stringify(v, null, 2); }
+    async function refresh() {
+      const [runtime, ocrStatus, ocrDebug, agent] = await Promise.all([
+        j('/health'), j('/api/ocr-overlay/status'), j('/api/ocr-overlay/debug'), j('/api/sessionops/agent-snapshot')
+      ]);
+      document.getElementById('runtime').textContent = pretty(runtime.data);
+      document.getElementById('ocrStatus').textContent = pretty(ocrStatus.data);
+      document.getElementById('ocrDebug').textContent = pretty(ocrDebug.data);
+      document.getElementById('agentSnapshot').textContent = pretty(agent.data);
+      const gateOk = !!(agent.data && agent.data.current && agent.data.current.status === 'ready');
+      document.getElementById('gateStatus').innerHTML = gateOk ? '<span class="ok">READY</span>' : '<span class="bad">NOT READY</span>';
+    }
+    async function act(path) {
+      const res = await j(path, { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+      document.getElementById('actions').textContent = pretty({ path, ...res });
+      await refresh();
+    }
+    async function runGate() {
+      const res = await j('/api/sessionops/run-gate', { method: 'POST' });
+      document.getElementById('actions').textContent = pretty(res.data);
+      await refresh();
+    }
+    refresh();
+    setInterval(refresh, 2000);
+  </script>
+</body>
+</html>
+        """
+        return HTMLResponse(html)
 
     @app.websocket("/api/voice/ws/{session_id}")
     async def voice_ws_proxy(websocket: WebSocket, session_id: str) -> None:
@@ -555,13 +645,25 @@ def create_app(
             return
 
         await manager.connect(websocket)
+        startup_state.ws_client_connected()
+        disconnected = False
         if ipc_fallback_event is not None:
-            await websocket.send_text(json.dumps(ipc_fallback_event))
+            try:
+                await websocket.send_text(json.dumps(ipc_fallback_event))
+                startup_state.record_message_sent()
+            except Exception as exc:  # noqa: BLE001
+                startup_state.record_error(f"ws_fallback_send_error: {exc}")
+                logger.warning("Failed to send ipc_fallback_event: %s", exc)
         try:
             while True:
                 await websocket.receive_text()  # mantém conexão viva (ignora input do cliente)
         except WebSocketDisconnect:
             manager.disconnect(websocket)
+            disconnected = True
+        finally:
+            if not disconnected:
+                manager.disconnect(websocket)
+            startup_state.ws_client_disconnected()
 
     @app.websocket("/ws/volume-profile")
     async def ws_volume_profile(websocket: WebSocket) -> None:
@@ -571,22 +673,28 @@ def create_app(
             return
         symbol = (websocket.query_params.get("symbol") or "WINFUT").strip().upper()
         await vp_tape_manager.connect(websocket)
+        if sessionops is not None:
+            sessionops.record_ws_health("/ws/volume-profile", details={"event": "connect", "symbol": symbol})
         if message_router is not None:
             snap = message_router.latest_volume_profile_snapshot(symbol)
             if snap is not None:
                 try:
                     await websocket.send_text(json.dumps(snap, ensure_ascii=False, separators=(",", ":")))
+                    startup_state.record_message_sent()
                     logger.info(
                         "[VP_WS] client_connected symbol=%s snapshot_total=%s poc=%s",
                         symbol,
                         snap.get("total_vol"),
                         snap.get("poc"),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001
+                    startup_state.record_error(f"ws_vp_snapshot_send_error: {exc}")
+                    logger.warning("Failed to send VP snapshot: %s", exc)
         try:
             while True:
-                await websocket.receive_text()
+                _ = await websocket.receive_text()
+                if sessionops is not None:
+                    sessionops.record_ws_health("/ws/volume-profile", details={"event": "message", "symbol": symbol})
         except WebSocketDisconnect:
             vp_tape_manager.disconnect(websocket)
 
@@ -673,7 +781,12 @@ def create_app(
 
     @app.get("/api/ocr-overlay/debug")
     async def ocr_overlay_debug() -> dict[str, Any]:
-        return await _ocr_overlay_proxy("GET", "/api/ocr-overlay/debug")
+        out = await _ocr_overlay_proxy("GET", "/api/ocr-overlay/debug")
+        if sessionops is not None and isinstance(out, dict):
+            axis = out.get("axis")
+            axis_status = str((axis or {}).get("status") if isinstance(axis, dict) else "")
+            sessionops.record_axis_update({"axis_status": axis_status, "debug": out}, status=axis_status.lower() or "ok")
+        return out
 
     @app.post("/api/ocr-overlay/recalibrate")
     async def ocr_overlay_recalibrate() -> dict[str, Any]:
@@ -733,6 +846,8 @@ def create_app(
             return
         symbol = (websocket.query_params.get("symbol") or "WINFUT").strip().upper()
         await vp_overlay_manager.connect(websocket)
+        if sessionops is not None:
+            sessionops.record_ws_health("/ws/vp-overlay", details={"event": "connect", "symbol": symbol})
         if message_router is not None:
             snap = message_router.vp_overlay_last_snapshot(symbol)
             if snap is not None:
@@ -741,11 +856,23 @@ def create_app(
                     await websocket.send_text(
                         json.dumps(snap_e, ensure_ascii=False, separators=(",", ":"))
                     )
-                except Exception:
-                    pass
+                    startup_state.record_message_sent()
+                    if sessionops is not None:
+                        sessionops.record_overlay_update({"symbol": symbol, "source": "initial_snapshot"})
+                except Exception as exc:  # noqa: BLE001
+                    startup_state.record_error(f"ws_vp_overlay_snapshot_send_error: {exc}")
+                    logger.warning("Failed to send VP overlay snapshot: %s", exc)
+                    if sessionops is not None:
+                        sessionops.record_incident(
+                            error_code="overlay_ws_stale",
+                            stage="ws",
+                            payload={"reason": "snapshot_send_error", "error": str(exc)},
+                        )
         try:
             while True:
-                await websocket.receive_text()
+                _ = await websocket.receive_text()
+                if sessionops is not None:
+                    sessionops.record_ws_health("/ws/vp-overlay", details={"event": "message", "symbol": symbol})
         except WebSocketDisconnect:
             vp_overlay_manager.disconnect(websocket)
 
@@ -786,6 +913,8 @@ def create_app(
         path = root / "docs" / "contracts" / "fixtures" / "vp-overlay-demo.json"
         payload = json.loads(path.read_text(encoding="utf-8"))
         snap = await message_router.vp_overlay_publish_demo_payload(payload)
+        if sessionops is not None:
+            sessionops.record_overlay_update({"symbol": "WINFUT", "source": "demo_publish"})
         return {"ok": True, "injected": snap.get("symbol") if isinstance(snap, dict) else None, "snapshot": snap}
 
     @app.post("/api/vp-sato/demo")
@@ -806,17 +935,90 @@ def create_app(
             "total_vol": vp["total_vol"],
         }
 
+    @app.post("/api/sessionops/run-gate")
+    async def sessionops_run_gate() -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        try:
+            return await sessionops.run_gate(
+                distributor_base_url=f"http://127.0.0.1:{WS_PORT}",
+                ocr_status_fetcher=ocr_overlay_status,
+                ocr_debug_fetcher=ocr_overlay_debug,
+                continuity_seconds=2.0,
+                max_ws_stale_seconds=8.0,
+            )
+        except Exception as exc:  # noqa: BLE001
+            incident = sessionops.record_incident(
+                error_code="health_unavailable",
+                stage="gate",
+                payload={"reason": "run_gate_exception", "error": str(exc)},
+            )
+            return {"ok": False, "error": str(exc), "incident_event_id": incident.get("event_id")}
+
+    @app.get("/api/sessionops/sessions")
+    async def sessionops_sessions(limit: int = 50) -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        return {"ok": True, "sessions": sessionops.store.list_sessions(limit=limit)}
+
+    @app.get("/api/sessionops/sessions/{session_id}")
+    async def sessionops_session_by_id(session_id: str, limit_events: int = 200) -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        item = sessionops.store.get_session(session_id, limit_events=limit_events)
+        if item is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"ok": True, "session": item}
+
+    @app.get("/api/sessionops/incidents")
+    async def sessionops_incidents(limit: int = 200) -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        return {"ok": True, "incidents": sessionops.store.list_incidents(limit=limit)}
+
+    @app.get("/api/sessionops/timeline")
+    async def sessionops_timeline(limit: int = 300) -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        return {"ok": True, "timeline": sessionops.store.timeline(limit=limit)}
+
+    @app.get("/api/sessionops/agent-snapshot")
+    async def sessionops_agent_snapshot() -> dict[str, Any]:
+        if sessionops is None:
+            raise HTTPException(status_code=503, detail="sessionops not initialized")
+        return sessionops.agent_snapshot(include_timeline=60)
+
     @app.get("/health")
     async def health() -> dict:
         """Health check: liveness + métricas do pipeline quando inicializado via main."""
+        snap = startup_state.snapshot()
         out: dict[str, Any] = {
+            "ok": True,
+            "service": "distributor",
+            "ready": bool(snap.get("ready", False)),
+            "feed_live": bool(snap.get("feed_live", False)),
+            "ipc_mode": snap.get("ipc_mode") or ipc_mode or "unknown",
+            "ipc_status": snap.get("ipc_status") or "starting",
+            "uptime_seconds": snap.get("uptime_seconds", 0.0),
+            "error": snap.get("error"),
             "status": "ok",
             "clients": len(manager.active) if manager else 0,
             "clients_volume_profile": len(vp_tape_manager.active) if vp_tape_manager else 0,
             "clients_vp_overlay": len(vp_overlay_manager.active) if vp_overlay_manager else 0,
             "zmq": zmq_consumer.is_alive() if zmq_consumer else False,
-            "ipc_mode": ipc_mode,
+            "last_error": snap.get("last_error"),
+            "last_error_at": snap.get("last_error_at"),
+            "ws_clients": snap.get("ws_clients", 0),
+            "messages_received_total": snap.get("messages_received_total", 0),
+            "messages_sent_total": snap.get("messages_sent_total", 0),
+            "messages_received_per_sec": snap.get("messages_received_per_sec", 0.0),
+            "messages_sent_per_sec": snap.get("messages_sent_per_sec", 0.0),
+            "last_market_event_at": snap.get("last_market_event_at"),
+            "last_ws_send_at": snap.get("last_ws_send_at"),
+            "started_at": snap.get("started_at"),
         }
+        if out.get("ipc_mode") in ("", None, "unknown"):
+            out["ipc_mode"] = ipc_mode
         if zmq_consumer_sync is not None:
             out["zmq_sync"] = zmq_consumer_sync.is_alive()
         if market_queue is not None:
@@ -857,6 +1059,9 @@ def create_app(
             cm = manager.metrics()
             out["connected_ws_clients"] = int(cm.get("connected_ws_clients", 0))
             out["ui_client_queue_dropped"] = int(cm.get("ui_client_queue_dropped", 0))
+            out["broadcast_queue_depth"] = int(cm.get("queue_depth_total", 0))
+            out["broadcast_queue_depth_max"] = int(cm.get("queue_depth_max", 0))
+            out["avg_broadcast_ms"] = float(cm.get("avg_broadcast_ms", 0.0))
         if vp_overlay_manager is not None:
             vom = vp_overlay_manager.metrics()
             dk = next((k for k in vom if k.endswith("_queue_dropped")), None)
@@ -910,11 +1115,91 @@ def create_app(
             out["rag_metrics"] = rag_engine.metrics()
         return out
 
+    @app.get("/ready")
+    async def ready() -> JSONResponse:
+        snap = startup_state.snapshot()
+        ready_now = snap.get("ready") is True
+        payload = {
+            "ok": ready_now,
+            "ready": ready_now,
+            "feed_live": snap.get("feed_live", False),
+            "ipc_mode": snap.get("ipc_mode"),
+            "ipc_status": snap.get("ipc_status"),
+            "messages_received_total": snap.get("messages_received_total", 0),
+            "messages_sent_total": snap.get("messages_sent_total", 0),
+            "last_market_event_at": snap.get("last_market_event_at"),
+            "last_ws_send_at": snap.get("last_ws_send_at"),
+            "error": snap.get("error"),
+        }
+        if ready_now:
+            return JSONResponse(payload, status_code=200)
+        return JSONResponse(payload, status_code=503)
+
+    @app.get("/debug/status")
+    async def debug_status() -> dict[str, Any]:
+        snap = startup_state.debug_status_snapshot()
+        manager_metrics = manager.metrics() if manager is not None else {}
+        dropped_total = int(manager_metrics.get("ui_client_queue_dropped", 0))
+        queue_depth_total = int(manager_metrics.get("queue_depth_total", 0))
+        avg_broadcast_ms = float(manager_metrics.get("avg_broadcast_ms", 0.0))
+
+        payload: dict[str, Any] = {
+            "ok": True,
+            "ready": bool(snap.get("ready", False)),
+            "feed_live": bool(snap.get("feed_live", False)),
+            "ipc_mode": snap.get("ipc_mode") or ipc_mode or "unknown",
+            "ipc_status": snap.get("ipc_status") or "starting",
+            "ws_clients": max(
+                int(manager_metrics.get("connected_ws_clients", 0)),
+                int(snap.get("ws_clients", 0) or 0),
+            ),
+            "messages_received_total": int(snap.get("messages_received_total", 0)),
+            "messages_sent_total": int(snap.get("messages_sent_total", 0)),
+            "messages_received_per_sec": float(snap.get("messages_received_per_sec", 0.0)),
+            "messages_sent_per_sec": float(snap.get("messages_sent_per_sec", 0.0)),
+            "last_market_event_at": snap.get("last_market_event_at"),
+            "last_ws_send_at": snap.get("last_ws_send_at"),
+            "broadcast_queue_depth": queue_depth_total,
+            "avg_broadcast_ms": avg_broadcast_ms,
+            "dropped_messages_total": dropped_total,
+            "error": snap.get("error"),
+            "last_error": snap.get("last_error"),
+            "last_error_at": snap.get("last_error_at"),
+        }
+        return payload
+
+    @app.post("/debug/inject-market-event")
+    async def debug_inject_market_event() -> dict[str, Any]:
+        if manager is None:
+            raise HTTPException(status_code=503, detail="manager not initialized")
+        now_ms = int(time.time() * 1000)
+        payload = {
+            "topic": "market",
+            "type": "debug_market_event",
+            "symbol": "TEST",
+            "ticker": "TEST",
+            "price": 123456,
+            "timestamp": now_ms,
+        }
+        await manager.broadcast(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+        snap = startup_state.snapshot()
+        return {
+            "ok": True,
+            "injected": payload,
+            "ws_clients": snap.get("ws_clients", 0),
+            "messages_sent_total": snap.get("messages_sent_total", 0),
+            "last_ws_send_at": snap.get("last_ws_send_at"),
+            "feed_live": snap.get("feed_live", False),
+        }
+
     @app.get("/ipc-state")
     async def ipc_state() -> dict[str, Any]:
+        snap = startup_state.snapshot()
         return {
-            "ipc_mode": ipc_mode,
+            "ipc_mode": snap.get("ipc_mode", ipc_mode),
             "ipc_fallback": ipc_fallback_event,
+            "ready": snap.get("ready", False),
+            "ipc_status": snap.get("ipc_status", "starting"),
         }
 
     @app.get("/api/warm-macd")

@@ -5,9 +5,12 @@
 # Parâmetros:
 #   -StartOcr  Inicia profit_ocr_service.py em background (porta PQ_OCR_PORT ou 5558).
 #              Por defeito NÃO inicia o OCR: o Tauri faz spawn ao abrir o overlay.
+#   -StartDistributor  Inicia distributor em background pelo script (legado).
+#                      Por defeito NÃO inicia o distributor: o Tauri faz spawn/controla.
 
 param(
-    [switch]$StartOcr
+    [switch]$StartOcr,
+    [switch]$StartDistributor
 )
 
 $ErrorActionPreference = "Stop"
@@ -235,15 +238,21 @@ try {
     }
     Pop-Location
 
-    # Start distributor (Python) so WS :8000 is up when Vite/Tauri load (evita ECONNREFUSED no proxy)
-    Write-Host "=== Iniciando distributor (em background) ===" -ForegroundColor Cyan
-    if ([string]::IsNullOrWhiteSpace($env:SHM_ENABLED)) { $env:SHM_ENABLED = "1" }
-    if ([string]::IsNullOrWhiteSpace($env:IPC_MODE)) { $env:IPC_MODE = "shm" }
-    if ([string]::IsNullOrWhiteSpace($env:SHM_FALLBACK_PROBE_TIMEOUT_MS)) {
-        $env:SHM_FALLBACK_PROBE_TIMEOUT_MS = "120000"
+    if ($StartDistributor) {
+        # Legado/diagnóstico: sobe distributor diretamente pelo script.
+        Write-Host "=== Iniciando distributor (em background) ===" -ForegroundColor Cyan
+        if ([string]::IsNullOrWhiteSpace($env:IPC_MODE)) { $env:IPC_MODE = "zmq" }
+        if ([string]::IsNullOrWhiteSpace($env:SHM_FALLBACK_PROBE_TIMEOUT_MS)) {
+            $env:SHM_FALLBACK_PROBE_TIMEOUT_MS = "3000"
+        }
+        if ($env:IPC_MODE -eq "shm" -and [string]::IsNullOrWhiteSpace($env:SHM_ENABLED)) {
+            $env:SHM_ENABLED = "1"
+        }
+        $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
+        Start-Sleep -Milliseconds 1200
+    } else {
+        Write-Host "Distributor nao iniciado pelo script (default). O Tauri controla o lifecycle do distributor." -ForegroundColor Gray
     }
-    $distributorProcess = Start-Process -FilePath "python" -ArgumentList "main.py" -WorkingDirectory $distDir -WindowStyle Hidden -PassThru
-    Start-Sleep -Milliseconds 1200
 
     if ($StartOcr) {
         $ocrScript = Join-Path $distDir "profit_ocr_service.py"
@@ -275,9 +284,9 @@ try {
         Start-Sleep -Milliseconds 800
     }
 
-    # Start Tauri app (Tauri manages engine; distributor e sync_monitor ja rodando em background)
+    # Start Tauri app (Tauri manages engine/distributor lifecycle)
     Write-Host "=== Iniciando app Tauri ===" -ForegroundColor Cyan
-    Write-Host "Distributor e sync_monitor ja em background. Inicie o engine pelas Configuracoes." -ForegroundColor Gray
+    Write-Host "Tauri vai verificar /health e subir distributor se necessario. Inicie o engine pelas Configuracoes." -ForegroundColor Gray
     Push-Location (Join-Path $root "app")
     npm run dev:tauri
     $exitCode = $LASTEXITCODE

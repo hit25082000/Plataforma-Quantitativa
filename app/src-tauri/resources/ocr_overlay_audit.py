@@ -25,6 +25,7 @@ def resolve_trace_path(explicit_path: str = "") -> str:
 def build_session_metadata(*, session_id: str, symbol: str, refresh_ms: int) -> Dict[str, Any]:
     return {
         "event": "session_start",
+        "event_id": "session_start",
         "session_id": session_id,
         "symbol": symbol,
         "refresh_ms": int(refresh_ms),
@@ -44,6 +45,7 @@ def build_frame_record(
     axis: Optional[Dict[str, Any]] = None,
     lines: Optional[Iterable[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
+    event_ts = _iso_utc_now()
     axis_fit_obj = axis_fit if isinstance(axis_fit, dict) else {}
     axis_obj = axis if isinstance(axis, dict) else {}
     label_rows: List[Dict[str, Any]] = []
@@ -66,13 +68,19 @@ def build_frame_record(
                 "value": ln.get("value"),
                 "y_screen": ln.get("y_screen"),
                 "status": ln.get("status"),
+                "out_of_bounds": bool(ln.get("out_of_bounds")),
             }
         )
+    visible_lines = [ln for ln in rendered_lines if str(ln.get("status") or "").lower() == "visible"]
+    out_of_bounds_count = sum(1 for ln in rendered_lines if bool(ln.get("out_of_bounds")))
     return {
         "event": "frame",
+        "event_id": "frame",
         "session_id": session_id,
         "seq": int(seq),
-        "ts": _iso_utc_now(),
+        "frame_seq": int(seq),
+        "ts": event_ts,
+        "timestamp_utc": event_ts,
         "status": status,
         "labels": label_rows,
         "axis_fit": {
@@ -86,6 +94,16 @@ def build_frame_record(
             "intercept": axis_obj.get("intercept"),
         },
         "rendered_lines": rendered_lines,
+        "render_indicators": {
+            "line_count_total": len(rendered_lines),
+            "line_count_visible": len(visible_lines),
+            "line_count_out_of_bounds": out_of_bounds_count,
+        },
+        "status_transition": {
+            "from": None,
+            "to": status,
+            "changed": False,
+        },
     }
 
 
@@ -93,17 +111,63 @@ class OcrOverlayAuditTrail:
     def __init__(self, trace_path: str, session_metadata: Dict[str, Any]) -> None:
         self.trace_path = str(Path(trace_path).resolve())
         self.session_metadata = dict(session_metadata)
+        if not self.session_metadata.get("event_id") and self.session_metadata.get("event"):
+            self.session_metadata["event_id"] = str(self.session_metadata.get("event"))
+        if not self.session_metadata.get("started_at"):
+            self.session_metadata["started_at"] = _iso_utc_now()
         self._session_header_written = False
+        self._last_frame_status: Optional[str] = None
+
+    def _normalize_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+        normalized = dict(record)
+        if not normalized.get("event_id") and normalized.get("event"):
+            normalized["event_id"] = str(normalized.get("event"))
+        if not normalized.get("session_id"):
+            normalized["session_id"] = self.session_metadata.get("session_id")
+        if not normalized.get("ts"):
+            normalized["ts"] = _iso_utc_now()
+        if not normalized.get("timestamp_utc"):
+            normalized["timestamp_utc"] = normalized["ts"]
+        if normalized.get("event") == "frame" and "seq" in normalized and not normalized.get("frame_seq"):
+            normalized["frame_seq"] = normalized.get("seq")
+        render = normalized.get("render_indicators")
+        if not isinstance(render, dict):
+            normalized["render_indicators"] = {
+                "line_count_total": 0,
+                "line_count_visible": 0,
+                "line_count_out_of_bounds": 0,
+            }
+        if normalized.get("event") == "frame":
+            current_status = str(normalized.get("status") or "")
+            transition = normalized.get("status_transition")
+            computed_from = self._last_frame_status
+            computed_to = current_status
+            computed_changed = bool(computed_from and computed_from != computed_to)
+            if isinstance(transition, dict):
+                normalized["status_transition"] = {
+                    "from": transition.get("from", computed_from),
+                    "to": transition.get("to", computed_to),
+                    "changed": bool(transition.get("changed", computed_changed)),
+                }
+            else:
+                normalized["status_transition"] = {
+                    "from": computed_from,
+                    "to": computed_to,
+                    "changed": computed_changed,
+                }
+            self._last_frame_status = current_status or self._last_frame_status
+        return normalized
 
     def append(self, record: Dict[str, Any]) -> None:
         trace_file = Path(self.trace_path)
         trace_file.parent.mkdir(parents=True, exist_ok=True)
+        normalized = self._normalize_record(record)
         with trace_file.open("a", encoding="utf-8") as fh:
             if not self._session_header_written:
                 fh.write(json.dumps(self.session_metadata, ensure_ascii=False, separators=(",", ":")))
                 fh.write("\n")
                 self._session_header_written = True
-            fh.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            fh.write(json.dumps(normalized, ensure_ascii=False, separators=(",", ":")))
             fh.write("\n")
 
 

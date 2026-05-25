@@ -7,12 +7,35 @@ from aws_kms_bootstrap import bootstrap_aws_kms_env
 
 bootstrap_aws_kms_env()
 
-ZMQ_ADDRESS = "tcp://localhost:5555"
-ZMQ_SYNC_ADDRESS = "tcp://localhost:5557"
+ZMQ_ADDRESS = "tcp://127.0.0.1:5555"
+ZMQ_SYNC_ADDRESS = "tcp://127.0.0.1:5557"
+
+
+def _is_truthy(value: str | None) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on", "sim"}
+
+
+def _detect_dev_runtime() -> bool:
+    env_name = (os.environ.get("ENV") or os.environ.get("PYTHON_ENV") or "").strip().lower()
+    node_env = (os.environ.get("NODE_ENV") or "").strip().lower()
+    return (
+        env_name in {"dev", "development"}
+        or node_env in {"dev", "development"}
+        or _is_truthy(os.environ.get("TAURI_DEV"))
+    )
+
+
+DEV_RUNTIME = _detect_dev_runtime()
+
 IPC_MODE = (os.environ.get("IPC_MODE") or "zmq").strip().lower()
 SHM_MAPPING_NAME = (os.environ.get("SHM_MAPPING_NAME") or "Local\\PQMarketDataV1").strip()
 SHM_SIZE_MB = int(os.environ.get("SHM_SIZE_MB", "64"))
-SHM_FALLBACK_PROBE_TIMEOUT_MS = int(os.environ.get("SHM_FALLBACK_PROBE_TIMEOUT_MS", "90000"))
+_SHM_TIMEOUT_DEFAULT_MS = 3000 if DEV_RUNTIME else 90000
+SHM_FALLBACK_PROBE_TIMEOUT_MS = int(
+    os.environ.get("SHM_FALLBACK_PROBE_TIMEOUT_MS", str(_SHM_TIMEOUT_DEFAULT_MS))
+)
 SHM_FALLBACK_PROBE_INTERVAL_MS = int(os.environ.get("SHM_FALLBACK_PROBE_INTERVAL_MS", "200"))
 WS_PORT = int(os.environ.get("WS_PORT", "8000"))
 WS_HOST = "127.0.0.1"  # apenas localhost (single machine)
@@ -25,7 +48,10 @@ MARKET_QUEUE_DOM_SOFT_LIMIT_PCT = int(
 )
 ROUTER_METRICS_LOG_EVERY_MS = int(os.environ.get("ROUTER_METRICS_LOG_EVERY_MS", "5000"))
 BROKER_SNAPSHOT_EVERY_MS = int(os.environ.get("BROKER_SNAPSHOT_EVERY_MS", "1000"))
-UI_SNAPSHOT_INTERVAL_MS = int(os.environ.get("UI_SNAPSHOT_INTERVAL_MS", "50"))
+UI_BROADCAST_INTERVAL_MS = int(
+    os.environ.get("UI_BROADCAST_INTERVAL_MS", os.environ.get("UI_SNAPSHOT_INTERVAL_MS", "50"))
+)
+UI_SNAPSHOT_INTERVAL_MS = UI_BROADCAST_INTERVAL_MS
 UI_TRADE_BATCH_MAX_ITEMS = int(os.environ.get("UI_TRADE_BATCH_MAX_ITEMS", "200"))
 UI_CLIENT_QUEUE_MAXSIZE = int(os.environ.get("UI_CLIENT_QUEUE_MAXSIZE", "1"))
 

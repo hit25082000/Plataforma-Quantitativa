@@ -38,6 +38,28 @@ export function overlayPhysXToCss(
   return xPhys * renderScale;
 }
 
+/** Y em px físicos de ecrã → CSS no WebView do overlay. */
+export function overlayPhysYToCss(
+  yPhys: number,
+  geometry: OverlayGeometryPayload | null | undefined,
+  renderScale: number,
+): number {
+  const overlayPhysical =
+    geometry?.overlay_rect_screen_physical ??
+    geometry?.overlay_rect_screen ??
+    null;
+  const dpiScale =
+    typeof geometry?.dpi_scale === "number" && Number.isFinite(geometry.dpi_scale) && geometry.dpi_scale > 0
+      ? geometry.dpi_scale
+      : geometry?.scale_factor && Number.isFinite(geometry.scale_factor) && geometry.scale_factor > 0
+        ? geometry.scale_factor
+        : null;
+  if (overlayPhysical && dpiScale != null) {
+    return (yPhys - overlayPhysical.y) / dpiScale;
+  }
+  return yPhys * renderScale;
+}
+
 /** physical px Y → CSS px no espaço do overlay (contrato canónico com y_chart). */
 export function overlayLineYCss(
   line: OverlayLine,
@@ -45,6 +67,9 @@ export function overlayLineYCss(
   renderScale: number,
   allowCanonicalProjection = true,
 ): number {
+  if (typeof line.y_overlay_css === "number" && Number.isFinite(line.y_overlay_css)) {
+    return line.y_overlay_css;
+  }
   if (
     allowCanonicalProjection &&
     geometry?.overlay_rect_screen &&
@@ -67,26 +92,30 @@ export function overlayPriceToSvgY(
   renderScale: number,
   allowCanonicalProjection: boolean,
 ): number | null {
-  if (!allowCanonicalProjection || !axisFit || !geometry?.overlay_rect_screen || !geometry.chart_rect_screen) {
+  if (!allowCanonicalProjection || !axisFit) {
     return null;
   }
   const slope = axisFit.slope;
   const intercept = axisFit.intercept;
-  const price_ref = axisFit.price_ref;
-  if (!Number.isFinite(price) || !Number.isFinite(slope) || !Number.isFinite(intercept) || !Number.isFinite(price_ref)) {
+  if (!Number.isFinite(price) || !Number.isFinite(slope) || !Number.isFinite(intercept) || Math.abs(slope) < 1e-9) {
     return null;
   }
-  const y_chart = slope * (price - price_ref) + intercept;
-  if (!Number.isFinite(y_chart)) return null;
-  const line: OverlayLine = {
-    value: price,
-    y_screen: 0,
-    y_chart,
-    color: "#000",
-    chart_left: 0,
-    chart_right: 0,
-  };
-  return overlayLineYCss(line, geometry, renderScale, true);
+  const yScreenPhysical = (price - intercept) / slope;
+  if (!Number.isFinite(yScreenPhysical)) return null;
+  const overlayPhysical =
+    geometry?.overlay_rect_screen_physical ??
+    geometry?.overlay_rect_screen ??
+    null;
+  const dpiScale =
+    typeof geometry?.dpi_scale === "number" && Number.isFinite(geometry.dpi_scale) && geometry.dpi_scale > 0
+      ? geometry.dpi_scale
+      : geometry?.scale_factor && Number.isFinite(geometry.scale_factor) && geometry.scale_factor > 0
+        ? geometry.scale_factor
+        : null;
+  if (overlayPhysical && dpiScale != null) {
+    return (yScreenPhysical - overlayPhysical.y) / dpiScale;
+  }
+  return yScreenPhysical * renderScale;
 }
 
 export function scaleChartRect(rect: ChartRect | null | undefined, scale: number): ScaledChartRect | null {
@@ -136,8 +165,11 @@ export function scaledPriceY(
   renderScale: number,
   yMin: number | null,
   yMax: number | null,
+  geometry?: OverlayGeometryPayload | null,
 ): number | null {
-  if (isFiniteNumber(explicitY)) return explicitY * renderScale;
+  if (isFiniteNumber(explicitY)) {
+    return overlayPhysYToCss(explicitY, geometry ?? null, renderScale);
+  }
   return priceToChartY(price, chart, yMin, yMax);
 }
 
@@ -279,6 +311,16 @@ export function computeVolumeProfileOverlayModel(params: {
   const chartForVp = effectiveChartRect;
   const preferExplicitY = usingOcrChart;
   const useCanonVp = Boolean(allowCanonicalProjection && axisFit && geometry);
+  const resolveAnchorY = (price: number, explicitPhysY?: number): number | null => {
+    if (useCanonVp) {
+      const cy = overlayPriceToSvgY(price, axisFit ?? null, geometry ?? null, renderScale, true);
+      if (cy != null) return cy;
+    }
+    if (preferExplicitY && isFiniteNumber(explicitPhysY)) {
+      return overlayPhysYToCss(explicitPhysY, geometry ?? null, renderScale);
+    }
+    return scaledPriceY(undefined, price, chartForVp, renderScale, minForVp, maxForVp, geometry);
+  };
   const rawLevels = Array.isArray(volumeProfile.levels)
     ? volumeProfile.levels.slice(0, VP_MAX_RENDER_LEVELS)
     : [];
@@ -287,16 +329,7 @@ export function computeVolumeProfileOverlayModel(params: {
     .map((level) => {
       const priceN = Number(level.price);
       const explicit = preferExplicitY && isFiniteNumber(level.y) ? level.y : undefined;
-      let y =
-        explicit !== undefined
-          ? scaledPriceY(explicit, priceN, chartForVp, renderScale, minForVp, maxForVp)
-          : null;
-      if (y == null && useCanonVp) {
-        y = overlayPriceToSvgY(priceN, axisFit ?? null, geometry ?? null, renderScale, true);
-      }
-      if (y == null) {
-        y = scaledPriceY(undefined, priceN, chartForVp, renderScale, minForVp, maxForVp);
-      }
+      let y = resolveAnchorY(priceN, explicit);
       const totalVol = levelTotalVol(level);
       if (y == null || totalVol <= 0 || !Number.isFinite(level.price)) return null;
       return { level, y, totalVol };
@@ -380,16 +413,8 @@ export function computeVolumeProfileOverlayModel(params: {
   });
   const histogramCandidates = renderLevels.length;
   const rawMaxHist = maxVisibleHistogramLevels;
-  const anchorY = (price: number, explicitY: number | undefined) => {
-    if (preferExplicitY && isFiniteNumber(explicitY)) {
-      return scaledPriceY(explicitY, price, chartForVp, renderScale, minForVp, maxForVp);
-    }
-    if (useCanonVp) {
-      const cy = overlayPriceToSvgY(price, axisFit ?? null, geometry ?? null, renderScale, true);
-      if (cy != null) return cy;
-    }
-    return scaledPriceY(undefined, price, chartForVp, renderScale, minForVp, maxForVp);
-  };
+  const anchorY = (price: number, explicitY: number | undefined) =>
+    resolveAnchorY(price, preferExplicitY && isFiniteNumber(explicitY) ? explicitY : undefined);
   const maxHist =
     typeof rawMaxHist === "number" && Number.isFinite(rawMaxHist)
       ? Math.min(VP_MAX_RENDER_LEVELS, Math.min(2000, Math.max(8, rawMaxHist)))

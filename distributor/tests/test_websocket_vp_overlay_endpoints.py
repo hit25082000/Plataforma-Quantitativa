@@ -14,6 +14,7 @@ if str(_DIST_DIR) not in sys.path:
 
 from connection_manager import ConnectionManager
 from message_router import MessageRouter
+from startup_state import startup_state
 from vp_overlay_consolidator import VpOverlayConsolidator
 import websocket_server
 
@@ -38,6 +39,7 @@ class _FakeConsumer:
 
 class TestVpOverlayEndpoints(unittest.TestCase):
     def setUp(self) -> None:
+        startup_state.reset(ipc_mode="zmq")
         self.main_manager = ConnectionManager()
         self.vp_tape_manager = ConnectionManager()
         self.vp_overlay_manager = ConnectionManager()
@@ -55,6 +57,75 @@ class TestVpOverlayEndpoints(unittest.TestCase):
             vp_overlay_connection_manager=self.vp_overlay_manager,
         )
         self.client = TestClient(websocket_server.create_app())
+
+    def test_debug_status_endpoint_shape(self) -> None:
+        startup_state.ws_client_connected()
+        startup_state.record_message_received(is_market_event=True)
+        startup_state.record_message_sent()
+        startup_state.record_error("debug_error")
+
+        response = self.client.get("/debug/status")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertIn("ready", body)
+        self.assertIn("feed_live", body)
+        self.assertIn("ipc_mode", body)
+        self.assertIn("ipc_status", body)
+        self.assertIn("ws_clients", body)
+        self.assertIn("messages_received_total", body)
+        self.assertIn("messages_sent_total", body)
+        self.assertIn("last_market_event_at", body)
+        self.assertIn("last_ws_send_at", body)
+        self.assertIn("error", body)
+        self.assertIn("last_error", body)
+        self.assertTrue(body["feed_live"])
+        self.assertGreaterEqual(body["messages_received_total"], 1)
+        self.assertGreaterEqual(body["messages_sent_total"], 1)
+        self.assertEqual(body["ws_clients"], 1)
+        self.assertIsNone(body["error"])
+        self.assertEqual(body["last_error"], "debug_error")
+
+    def test_ready_endpoint_reports_ready_without_feed(self) -> None:
+        startup_state.set_status("ready")
+        startup_state.set_ready(True)
+
+        response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["ready"])
+        self.assertFalse(body["feed_live"])
+        self.assertEqual(body["ipc_status"], "ready")
+        self.assertEqual(body["messages_received_total"], 0)
+
+    def test_ready_endpoint_not_ready_returns_503(self) -> None:
+        startup_state.set_status("initializing")
+        startup_state.set_ready(False)
+
+        response = self.client.get("/ready")
+        self.assertEqual(response.status_code, 503)
+        body = response.json()
+        self.assertFalse(body["ok"])
+        self.assertFalse(body["ready"])
+        self.assertFalse(body["feed_live"])
+        self.assertEqual(body["ipc_status"], "initializing")
+
+    def test_debug_inject_market_event_broadcasts_over_ws(self) -> None:
+        with self.client.websocket_connect("/ws") as ws:
+            response = self.client.post("/debug/inject-market-event")
+            self.assertEqual(response.status_code, 200)
+            body = response.json()
+            self.assertTrue(body["ok"])
+            self.assertEqual(body["injected"]["type"], "debug_market_event")
+            self.assertEqual(body["injected"]["symbol"], "TEST")
+            self.assertEqual(body["injected"]["price"], 123456)
+            self.assertGreaterEqual(int(body["ws_clients"]), 1)
+            message = ws.receive_json()
+            self.assertEqual(message["topic"], "market")
+            self.assertEqual(message["type"], "debug_market_event")
+            self.assertEqual(message["symbol"], "TEST")
+            self.assertEqual(message["price"], 123456)
 
     def _demo_payload(self) -> dict[str, object]:
         return {

@@ -1,0 +1,21 @@
+{
+  "sessionops_contract_version": "v1",
+  "event_type": "gate_result",
+  "session_id": "sess-000",
+  "run_id": "run-000",
+  "component": "distributor",
+  "stage": "gate",
+  "status": "failed",
+  "error_code": "overlay_ws_stale",
+  "metrics": {
+    "steps": 8,
+    "failures": 1,
+    "elapsed_ms": 2204
+  },
+  "artifacts": {
+    "gate_report": "distributor/logs/sessionops/sess-000/gate_report.json"
+  },
+  "payload": {
+    "primary_error": "overlay_ws_stale"
+  }
+}

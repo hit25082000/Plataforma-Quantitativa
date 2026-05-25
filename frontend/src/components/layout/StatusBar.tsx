@@ -6,9 +6,27 @@ import { formatPrice, formatTs } from "../../utils/formatters";
 import { AssetSelector } from "./AssetSelector";
 import { RenkoBrickSelector } from "./RenkoBrickSelector";
 import OverlayControl from "../OverlayControl";
+import { distributorApiBase } from "../../config/distributorApi";
 
 const STALE_ASSET_MS = 15_000;
 const OUT_OF_SESSION_MIN_STALE_MS = 5 * 60_000;
+const DISTRIBUTOR_POLL_MS = 2_000;
+
+interface DistributorProbeState {
+  healthOk: boolean;
+  ready: boolean;
+  feedLive: boolean | null;
+  ipcStatus: string | null;
+  wsClients: number | null;
+  lastMarketEventAt: string | null;
+  lastError: string | null;
+}
+
+type TransportUiState =
+  | "disconnected"
+  | "initializing"
+  | "awaiting_feed"
+  | "connected";
 
 function parseSelectedAsset(label: string): { symbol: string; exchange: string } {
   const parts = label.split("·").map((p) => p.trim());
@@ -26,6 +44,12 @@ function normalizeTickerSymbol(value: string): string {
     .replace(/\s+/g, "") ?? "";
 }
 
+function parseIsoMs(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : Number.NaN;
+}
+
 function isLikelyOutOfSession(exchange: string, now: Date): boolean {
   if (exchange === "SIM") return false;
   const day = now.getDay();
@@ -41,10 +65,10 @@ interface StatusBarProps {
 }
 
 export function StatusBar({ onOpenSettings }: StatusBarProps) {
-  const wsStatus = useMarketStore((s) => s.wsStatus);
   const selectedTicker = useMarketStore((s) => s.selectedTicker);
   const streamingTicker = useMarketStore((s) => s.streamingTicker);
   const lastMarketEventTs = useMarketStore((s) => s.lastMarketEventTs);
+  const wsStatus = useMarketStore((s) => s.wsStatus);
   const vpOverlay = useMarketStore((s) => s.vpOverlay);
   const overlayLastUpdateTs = useMarketStore((s) => s.overlayLastUpdateTs);
   const vwap = useMarketStore((s) => s.vwap);
@@ -58,6 +82,15 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [agent007Open, setAgent007Open] = useState(false);
   const [copilotoOpen, setCopilotoOpen] = useState(false);
+  const [probe, setProbe] = useState<DistributorProbeState>({
+    healthOk: false,
+    ready: false,
+    feedLive: null,
+    ipcStatus: null,
+    wsClients: null,
+    lastMarketEventAt: null,
+    lastError: null,
+  });
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -68,13 +101,154 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
     return () => clearInterval(id);
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    let timerId: ReturnType<typeof setTimeout> | null = null;
+    const base = distributorApiBase();
+
+    const safeFetchJson = async (path: string): Promise<unknown> => {
+      const response = await fetch(`${base}${path}`, { cache: "no-store" });
+      if (!response.ok) {
+        throw new Error(`${path} -> HTTP ${response.status}`);
+      }
+      return response.json();
+    };
+
+    const poll = async () => {
+      try {
+        const health = (await safeFetchJson("/health")) as Record<string, unknown>;
+        let ready = false;
+        let feedLive: boolean | null = null;
+        let ipcStatus: string | null = null;
+        let wsClients: number | null = null;
+        let lastMarketEventAt: string | null = null;
+        let lastError: string | null = null;
+
+        try {
+          const readyResponse = await fetch(`${base}/ready`, {
+            cache: "no-store",
+          });
+          const readyBody = (await readyResponse.json()) as Record<string, unknown>;
+          ready = readyBody.ready === true;
+          feedLive =
+            typeof readyBody.feed_live === "boolean"
+              ? readyBody.feed_live
+              : null;
+          ipcStatus =
+            typeof readyBody.ipc_status === "string"
+              ? readyBody.ipc_status
+              : null;
+        } catch {
+          ready = false;
+          feedLive = null;
+        }
+
+        try {
+          const debug = (await safeFetchJson("/debug/status")) as Record<
+            string,
+            unknown
+          >;
+          wsClients =
+            typeof debug.ws_clients === "number" &&
+            Number.isFinite(debug.ws_clients)
+              ? Math.max(0, Math.round(debug.ws_clients))
+              : null;
+          lastMarketEventAt =
+            typeof debug.last_market_event_at === "string"
+              ? debug.last_market_event_at
+              : null;
+          if (feedLive == null && typeof debug.feed_live === "boolean") {
+            feedLive = debug.feed_live;
+          }
+          lastError =
+            typeof debug.error === "string"
+              ? debug.error
+              : typeof debug.last_error === "string"
+                ? debug.last_error
+                : null;
+        } catch {
+          wsClients =
+            typeof health.ws_clients === "number" &&
+            Number.isFinite(health.ws_clients)
+              ? Math.max(0, Math.round(health.ws_clients))
+              : null;
+          lastMarketEventAt =
+            typeof health.last_market_event_at === "string"
+              ? health.last_market_event_at
+              : null;
+          if (feedLive == null && typeof health.feed_live === "boolean") {
+            feedLive = health.feed_live;
+          }
+          lastError =
+            typeof health.last_error === "string" ? health.last_error : null;
+        }
+
+        if (!cancelled) {
+          setProbe({
+            healthOk: true,
+            ready,
+            feedLive,
+            ipcStatus,
+            wsClients,
+            lastMarketEventAt,
+            lastError,
+          });
+        }
+      } catch {
+        if (!cancelled) {
+          setProbe((prev) => ({
+            ...prev,
+            healthOk: false,
+            ready: false,
+            feedLive: null,
+          }));
+        }
+      } finally {
+        if (!cancelled) {
+          timerId = setTimeout(poll, DISTRIBUTOR_POLL_MS);
+        }
+      }
+    };
+
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timerId != null) {
+        clearTimeout(timerId);
+      }
+    };
+  }, []);
+
+  const latestMarketEventMs = useMemo(() => {
+    const fromStore = parseIsoMs(lastMarketEventTs);
+    if (Number.isFinite(fromStore)) return fromStore;
+    return parseIsoMs(probe.lastMarketEventAt);
+  }, [lastMarketEventTs, probe.lastMarketEventAt]);
+
+  const transportState = useMemo<TransportUiState>(() => {
+    if (!probe.healthOk) return "disconnected";
+    if (!probe.ready) return "initializing";
+    if (wsStatus !== "connected") return "awaiting_feed";
+    if (!Number.isFinite(latestMarketEventMs)) return "awaiting_feed";
+    const ageMs = Math.max(0, nowMs - latestMarketEventMs);
+    if (ageMs > STALE_ASSET_MS) {
+      return "awaiting_feed";
+    }
+    if (probe.feedLive === false) return "awaiting_feed";
+    return "connected";
+  }, [latestMarketEventMs, nowMs, probe.feedLive, probe.healthOk, probe.ready, wsStatus]);
+
   const statusConfig = {
-    connecting: { label: "CONECTANDO", color: "text-amber-400 animate-pulse" },
+    initializing: {
+      label: "INICIALIZANDO DISTRIBUTOR",
+      color: "text-amber-400 animate-pulse",
+    },
+    awaiting_feed: { label: "AGUARDANDO FEED", color: "text-amber-300" },
     connected: { label: "CONECTADO", color: "text-green-500" },
     disconnected: { label: "DESCONECTADO", color: "text-red-500" },
   };
 
-  const cfg = statusConfig[wsStatus];
+  const cfg = statusConfig[transportState];
   const overlayHealth = useMemo(() => {
     if (!vpOverlay) return null;
     const health =
@@ -126,11 +300,36 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         detail: "Troca de ativo em andamento.",
       };
     }
-    if (wsStatus !== "connected") {
+    if (transportState === "disconnected") {
       return {
         label: "SEM ATUALIZAÇÃO: CONEXÃO",
         color: "text-red-400",
-        detail: "Sem conexão com o distributor.",
+        detail:
+          probe.lastError != null
+            ? `Distributor inacessível. Último erro: ${probe.lastError}`
+            : "Sem conexão com o distributor.",
+      };
+    }
+    if (transportState === "initializing") {
+      return {
+        label: "INICIALIZANDO DISTRIBUTOR",
+        color: "text-amber-300",
+        detail: probe.ipcStatus
+          ? `Pipeline em inicialização (${probe.ipcStatus}).`
+          : "Distributor online, aguardando prontidão do feed.",
+      };
+    }
+    if (transportState === "awaiting_feed") {
+      const wsHint =
+        probe.wsClients != null
+          ? `WS clientes: ${probe.wsClients}.`
+          : wsStatus === "connected"
+            ? "WS conectado."
+            : "WS reconectando.";
+      return {
+        label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
+        color: "text-amber-300",
+        detail: `${wsHint} Aguardando novo evento de mercado.`,
       };
     }
     if (timesTradesLoading) {
@@ -140,15 +339,14 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
         detail: timesTradesLoadingMessage || "Aguardando primeiro trade do ativo.",
       };
     }
-    const lastTsMs = lastMarketEventTs ? Date.parse(lastMarketEventTs) : Number.NaN;
-    if (!Number.isFinite(lastTsMs)) {
+    if (!Number.isFinite(latestMarketEventMs)) {
       return {
-        label: "SEM ATUALIZAÇÃO: AGUARDANDO DADOS",
+        label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
         color: "text-amber-300",
-        detail: "Nenhum dado de mercado recebido ainda para o ativo atual.",
+        detail: "Feed pronto, mas sem evento recente para o ativo atual.",
       };
     }
-    const ageMs = Math.max(0, nowMs - lastTsMs);
+    const ageMs = Math.max(0, nowMs - latestMarketEventMs);
     const ageSec = Math.floor(ageMs / 1000);
     if (ageMs <= STALE_ASSET_MS) {
       return {
@@ -163,8 +361,8 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
       normalizedStreamingTicker !== normalizedSelectedSymbol
     ) {
       return {
-        label: "SEM ATUALIZAÇÃO: POSSÍVEL BUG",
-        color: "text-red-400",
+        label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
+        color: "text-amber-300",
         detail: `Stream em ${streamingTicker}, mas ativo selecionado é ${selectedSymbol}.`,
       };
     }
@@ -175,7 +373,7 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
     );
     if (hasMatchingStream) {
       return {
-        label: "SEM ATUALIZAÇÃO: SEM NEGÓCIOS RECENTES",
+        label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
         color: "text-amber-300",
         detail: `${selectedSymbol} sem novos negócios há ${ageSec}s, mas o stream segue ativo para o ativo selecionado.`,
       };
@@ -185,34 +383,44 @@ export function StatusBar({ onOpenSettings }: StatusBarProps) {
       isLikelyOutOfSession(selectedExchange, new Date(nowMs))
     ) {
       return {
-        label: "SEM ATUALIZAÇÃO: FORA DO PREGÃO",
+        label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
         color: "text-amber-300",
         detail: `${selectedExchange || "Mercado"} fora do pregão. Último dado há ${ageSec}s.`,
       };
     }
     return {
-      label: "SEM ATUALIZAÇÃO: POSSÍVEL BUG",
-      color: "text-red-400",
-      detail: `${selectedSymbol || "Ativo"} sem atualização há ${ageSec}s durante pregão.`,
+      label: "SEM ATUALIZAÇÃO: AGUARDANDO FEED",
+      color: "text-amber-300",
+      detail: `${selectedSymbol || "Ativo"} sem atualização há ${ageSec}s.`,
     };
   }, [
     assetSwitchStatus,
-    wsStatus,
+    transportState,
     timesTradesLoading,
     timesTradesLoadingMessage,
-    lastMarketEventTs,
+    latestMarketEventMs,
     nowMs,
     streamingTicker,
     selectedSymbol,
     selectedExchange,
     normalizedSelectedSymbol,
     normalizedStreamingTicker,
+    probe.ipcStatus,
+    probe.lastError,
+    probe.wsClients,
+    wsStatus,
   ]);
 
   return (
     <div className="flex items-center gap-6 px-4 py-2 bg-grid border-b border-border font-mono text-sm">
       <span className="flex items-center gap-2">
-        <span className={`w-2 h-2 rounded-full ${wsStatus === "connected" ? "bg-green-500" : wsStatus === "connecting" ? "bg-amber-400" : "bg-red-500"}`} />
+        <span className={`w-2 h-2 rounded-full ${
+          transportState === "connected"
+            ? "bg-green-500"
+            : transportState === "disconnected"
+              ? "bg-red-500"
+              : "bg-amber-400"
+        }`} />
         <span className={cfg.color}>{cfg.label}</span>
       </span>
       <div className="flex items-center gap-2 shrink-0">

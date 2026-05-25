@@ -8,6 +8,7 @@ Réplica para o bundle Tauri: scripts/sync-profit-ocr-to-tauri-resources.ps1
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import math
 import os
@@ -103,6 +104,14 @@ def configure_tesseract_cmd() -> None:
             return
 
 
+def _prewarm_tesseract() -> None:
+    try:
+        tiny = Image.new("L", (16, 16), color=255)
+        _ = pytesseract.image_to_string(tiny, config="--psm 10 --oem 3")
+    except Exception:
+        pass
+
+
 # Porta dedicada: 5557 é usada pelo sync_monitor (ZMQ PUB); evitar conflito TCP.
 # Sobrescrever com PQ_OCR_PORT (alinhar Tauri + frontend: docs/PORTS.md).
 OCR_PORT = int(os.environ.get("PQ_OCR_PORT", "5558"))
@@ -147,14 +156,21 @@ AXIS_FROZEN_HOLD_SECS = float(os.environ.get("PQ_OCR_AXIS_FROZEN_HOLD_SECS", "30
 OCR_TRACE_PATH = resolve_trace_path((os.environ.get("PQ_OCR_TRACE_PATH") or "").strip())
 OCR_SYMBOL = (os.environ.get("PQ_OCR_SYMBOL") or "WINFUT").strip().upper()
 TRACE_SESSION_ID = (os.environ.get("PQ_OCR_TRACE_SESSION_ID") or "").strip() or f"ocr-{int(time.time() * 1000)}"
+AXIS_CACHE_PATH = Path(
+    (os.environ.get("PQ_OCR_AXIS_CACHE_PATH") or "").strip()
+    or (Path(__file__).resolve().parent / "logs" / "ocr_axis_fit_cache.json")
+)
+AXIS_COORDINATE_SPACE = "screen_physical"
+AXIS_MIN_LABELS = max(2, int(os.environ.get("PQ_OCR_AXIS_MIN_LABELS", "3")))
 AXIS_DELTA_SMALL_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_SMALL_PX", "2.0"))
 AXIS_DELTA_MEDIUM_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_MEDIUM_PX", "8.0"))
 AXIS_DELTA_LARGE_PX = float(os.environ.get("PQ_OCR_AXIS_DELTA_LARGE_PX", "20.0"))
 AXIS_CONFIRM_FRAMES = max(1, int(os.environ.get("PQ_OCR_AXIS_CONFIRM_FRAMES", "3")))
+AXIS_INITIAL_CONFIRM_FRAMES = max(1, int(os.environ.get("PQ_OCR_AXIS_INITIAL_CONFIRM_FRAMES", "1")))
 AXIS_CONFIRM_SMALL_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_SMALL_FRAMES", str(AXIS_CONFIRM_FRAMES)))
 AXIS_CONFIRM_MEDIUM_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_MEDIUM_FRAMES", str(AXIS_CONFIRM_FRAMES)))
 AXIS_CONFIRM_LARGE_FRAMES = int(os.environ.get("PQ_OCR_AXIS_CONFIRM_LARGE_FRAMES", str(max(AXIS_CONFIRM_FRAMES, 3))))
-AXIS_MIN_CONFIDENCE = float(os.environ.get("PQ_OCR_AXIS_MIN_CONFIDENCE", "0.85"))
+AXIS_MIN_CONFIDENCE = float(os.environ.get("PQ_OCR_AXIS_MIN_CONFIDENCE", "0.48"))
 AXIS_MAX_PIXEL_DRIFT = float(os.environ.get("PQ_OCR_AXIS_MAX_PIXEL_DRIFT", "25"))
 AXIS_MAX_PRICE_DRIFT_TICKS = float(os.environ.get("PQ_OCR_AXIS_MAX_PRICE_DRIFT_TICKS", "20"))
 AXIS_MAX_RESIDUAL_PX = float(os.environ.get("PQ_OCR_AXIS_MAX_RESIDUAL_PX", "2.6"))
@@ -229,6 +245,11 @@ state: Dict[str, Any] = {
     "monitor_id": None,
     "monitor_bounds": None,
     "profit_bounds": None,
+    "overlay_rect_screen_physical": None,
+    "axis_rect_screen_physical": None,
+    "axis_cache": None,
+    "axis_cache_key": "",
+    "axis_cache_loaded_at_ms": None,
     "last_axis_crop": None,
     "last_axis_ocr_text": "",
     "last_axis_labels_parsed": [],
@@ -251,6 +272,7 @@ state: Dict[str, Any] = {
     "render_status": "OK",
     "overlay_safe_mode": OVERLAY_SAFE_MODE,
     "last_layout_calc_ts": 0.0,
+    "session_axis_telemetry": [],
 }
 clients: List[WebSocket] = []
 service_started_at = time.monotonic()
@@ -265,6 +287,180 @@ AUDIT_TRAIL = OcrOverlayAuditTrail(
         refresh_ms=REFRESH_MS,
     ),
 )
+
+
+def _safe_rect_payload(rect: Any) -> Optional[dict[str, int]]:
+    if not isinstance(rect, dict):
+        return None
+    try:
+        x = int(round(float(rect.get("x"))))
+        y = int(round(float(rect.get("y"))))
+        width = max(1, int(round(float(rect.get("width")))))
+        height = max(1, int(round(float(rect.get("height")))))
+    except (TypeError, ValueError):
+        return None
+    return {"x": x, "y": y, "width": width, "height": height}
+
+
+def _current_geometry_payload() -> dict[str, Any]:
+    chart = state.get("chart_rect") if isinstance(state.get("chart_rect"), dict) else {}
+    chart_rect_screen_physical = _safe_rect_payload(
+        {
+            "x": chart.get("left"),
+            "y": chart.get("top"),
+            "width": chart.get("width"),
+            "height": chart.get("height"),
+        }
+    )
+    axis_rect_screen_physical = _safe_rect_payload(state.get("axis_rect_screen_physical"))
+    if axis_rect_screen_physical is None:
+        crop = state.get("last_axis_crop") if isinstance(state.get("last_axis_crop"), dict) else {}
+        axis_rect_screen_physical = _safe_rect_payload(
+            {
+                "x": crop.get("x"),
+                "y": crop.get("y"),
+                "width": crop.get("width"),
+                "height": crop.get("height"),
+            }
+        )
+    overlay_rect_screen_physical = _safe_rect_payload(state.get("overlay_rect_screen_physical"))
+    dpi_scale = float(state.get("dpi_scale") or 1.0)
+    if not math.isfinite(dpi_scale) or dpi_scale <= 0:
+        dpi_scale = 1.0
+    monitor_id = str(state.get("monitor_id") or "").strip() or "unknown"
+    geometry_sig_data = {
+        "monitor_id": monitor_id,
+        "dpi_scale": round(dpi_scale, 6),
+        "overlay_rect_screen_physical": overlay_rect_screen_physical,
+        "chart_rect_screen_physical": chart_rect_screen_physical,
+        "axis_rect_screen_physical": axis_rect_screen_physical,
+        "profit_bounds": state.get("profit_bounds"),
+    }
+    geometry_signature = hashlib.sha1(
+        json.dumps(geometry_sig_data, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+    return {
+        "dpi_scale": dpi_scale,
+        "scale_factor": dpi_scale,
+        "monitor_id": monitor_id,
+        "overlay_rect_screen_physical": overlay_rect_screen_physical,
+        "chart_rect_screen_physical": chart_rect_screen_physical,
+        "axis_rect_screen_physical": axis_rect_screen_physical,
+        # Compat legado
+        "overlay_rect_screen": overlay_rect_screen_physical,
+        "chart_rect_screen": (
+            {
+                "left": chart_rect_screen_physical["x"],
+                "top": chart_rect_screen_physical["y"],
+                "width": chart_rect_screen_physical["width"],
+                "height": chart_rect_screen_physical["height"],
+            }
+            if isinstance(chart_rect_screen_physical, dict)
+            else None
+        ),
+        "geometry_signature": geometry_signature,
+    }
+
+
+def _compute_axis_cache_key(symbol: str, geometry: dict[str, Any]) -> str:
+    key_payload = {
+        "symbol": (symbol or OCR_SYMBOL).strip().upper(),
+        "monitor_id": geometry.get("monitor_id"),
+        "dpi_scale": geometry.get("dpi_scale"),
+        "profit_bounds": state.get("profit_bounds"),
+        "overlay_rect_screen_physical": geometry.get("overlay_rect_screen_physical"),
+        "chart_rect_screen_physical": geometry.get("chart_rect_screen_physical"),
+        "axis_rect_screen_physical": geometry.get("axis_rect_screen_physical"),
+    }
+    return hashlib.sha1(
+        json.dumps(key_payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _load_axis_cache_store() -> dict[str, Any]:
+    try:
+        if AXIS_CACHE_PATH.is_file():
+            payload = json.loads(AXIS_CACHE_PATH.read_text(encoding="utf-8"))
+            if isinstance(payload, dict):
+                return payload
+    except Exception:
+        pass
+    return {"version": 1, "entries": {}}
+
+
+def _save_axis_cache_store(store: dict[str, Any]) -> None:
+    AXIS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    AXIS_CACHE_PATH.write_text(json.dumps(store, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _persist_axis_cache_entry(axis: dict[str, Any], *, source: str) -> None:
+    if not isinstance(axis, dict):
+        return
+    geometry = _current_geometry_payload()
+    cache_key = _compute_axis_cache_key(OCR_SYMBOL, geometry)
+    slope = float(axis.get("slope") or 0.0)
+    intercept = float(axis.get("intercept") or 0.0)
+    if not (math.isfinite(slope) and math.isfinite(intercept)) or abs(slope) < 1e-9:
+        return
+    labels = state.get("axis_labels") if isinstance(state.get("axis_labels"), list) else []
+    entry = {
+        "cache_key": cache_key,
+        "symbol": OCR_SYMBOL,
+        "slope": slope,
+        "intercept": intercept,
+        "rmse": float(state.get("axis_residual_px") or 0.0),
+        "r2": float(state.get("axis_confidence") or 0.0),
+        "labels_accepted": int(len(labels)),
+        "created_at_ms": int(time.time() * 1000),
+        "coordinate_space": AXIS_COORDINATE_SPACE,
+        "source": str(source or "ocr"),
+        "geometry": geometry,
+    }
+    store = _load_axis_cache_store()
+    entries = store.setdefault("entries", {})
+    if isinstance(entries, dict):
+        entries[cache_key] = entry
+    _save_axis_cache_store(store)
+    state["axis_cache"] = entry
+    state["axis_cache_key"] = cache_key
+    state["axis_cache_loaded_at_ms"] = int(time.time() * 1000)
+
+
+def _try_boot_axis_from_cache() -> Optional[dict[str, Any]]:
+    geometry = _current_geometry_payload()
+    cache_key = _compute_axis_cache_key(OCR_SYMBOL, geometry)
+    store = _load_axis_cache_store()
+    entries = store.get("entries") if isinstance(store, dict) else None
+    if not isinstance(entries, dict):
+        return None
+    raw = entries.get(cache_key)
+    if not isinstance(raw, dict):
+        return None
+    try:
+        slope = float(raw.get("slope") or 0.0)
+        intercept = float(raw.get("intercept") or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(slope) and math.isfinite(intercept)) or abs(slope) < 1e-9:
+        return None
+    axis = {"slope": slope, "intercept": intercept, "value_per_px": abs(slope)}
+    axis_manager.last_stable_axis = axis
+    axis_manager.last_stable_ts_monotonic = time.monotonic()
+    state["axis"] = axis
+    state["axis_cache"] = raw
+    state["axis_cache_key"] = cache_key
+    state["axis_cache_loaded_at_ms"] = int(time.time() * 1000)
+    source = str(raw.get("source") or "cache").strip().lower()
+    if source == "manual":
+        axis_manager.status = "MANUAL_LOCKED"
+        axis_manager.manual_locked = True
+        state["axis_source"] = "manual"
+        state["axis_status"] = "MANUAL_STABLE"
+    else:
+        axis_manager.status = "STABLE"
+        state["axis_source"] = "last_stable"
+        state["axis_status"] = "BOOT_FROM_CACHE"
+    return raw
 
 
 def _drop_put_latest(queue: asyncio.Queue, item: Any) -> None:
@@ -313,6 +509,77 @@ def _set_axis_quality_metrics(candidate: Optional[dict[str, Any]]) -> None:
     state["axis_max_error_px"] = float(candidate.get("max_error_px") or 0.0)
 
 
+def _degraded_axis_candidate_usable(candidate: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(candidate, dict):
+        return False
+    if int(candidate.get("labels_count") or 0) < AXIS_MIN_LABELS:
+        return False
+    try:
+        slope = float(candidate.get("slope") or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if abs(slope) < 1e-12:
+        return False
+    residual = float(candidate.get("residual_px") or 0.0)
+    max_error = float(candidate.get("max_error_px") or 0.0)
+    if residual > AXIS_MAX_RESIDUAL_PX * 3.0 and max_error > AXIS_MAX_ERROR_PX * 2.0:
+        return False
+    return True
+
+
+def _apply_provisional_runtime_axis(
+    axis_candidate: Dict[str, Any],
+    labels: List[Dict[str, float]],
+    chart: Dict[str, Any],
+    *,
+    axis_source: str,
+    skip_degraded_gate: bool = False,
+) -> bool:
+    if not skip_degraded_gate and not _degraded_axis_candidate_usable(axis_candidate):
+        return False
+    try:
+        slope = float(axis_candidate["slope"])
+        intercept = float(axis_candidate["intercept"])
+    except (TypeError, ValueError, KeyError):
+        return False
+    state["axis"] = {
+        "slope": slope,
+        "intercept": intercept,
+        "value_per_px": float(axis_candidate.get("value_per_px") or abs(slope)),
+    }
+    state["axis_labels"] = [
+        {
+            "value": float(lb["value"]),
+            "y_screen": float(lb["y_screen"]),
+            "y_screen_physical": float(lb["y_screen"]),
+            "y_capture": float(lb["y_screen"]),
+        }
+        for lb in labels
+    ]
+    _set_axis_quality_metrics(axis_candidate)
+    state["axis_status"] = "OCR_VALIDATED"
+    state["axis_source"] = axis_source
+    chart_top = float(chart.get("top") or 0.0)
+    chart_bottom = chart_top + float(chart.get("height") or 0.0)
+    p_top = slope * chart_top + intercept
+    p_bottom = slope * chart_bottom + intercept
+    state["y_min"] = min(p_top, p_bottom)
+    state["y_max"] = max(p_top, p_bottom)
+    state["last_ocr_axis_ok_mono"] = time.monotonic()
+    state["render_status"] = "OK"
+    return True
+
+
+def _apply_degraded_runtime_axis(
+    axis_candidate: Dict[str, Any],
+    labels: List[Dict[str, float]],
+    chart: Dict[str, Any],
+) -> bool:
+    return _apply_provisional_runtime_axis(
+        axis_candidate, labels, chart, axis_source="degraded_candidate"
+    )
+
+
 def _append_trace_line(record: dict[str, Any]) -> None:
     if not OCR_TRACE_PATH:
         return
@@ -330,6 +597,35 @@ def _append_trace_line(record: dict[str, Any]) -> None:
                 "line_count_out_of_bounds": out_of_bounds_count,
             }
         AUDIT_TRAIL.append(enriched)
+    except Exception:
+        pass
+
+
+def _record_session_axis_telemetry(frame: dict[str, Any]) -> None:
+    """Mantém ring-buffer em memória com telemetria mínima de eixo/geometria para baseline de sessão."""
+    try:
+        entries = state.setdefault("session_axis_telemetry", [])
+        if not isinstance(entries, list):
+            entries = []
+            state["session_axis_telemetry"] = entries
+        chart_rect = frame.get("chart_rect")
+        entries.append(
+            {
+                "seq": int(frame.get("seq") or state.get("frame_seq") or 0),
+                "ts": frame.get("ts") or _iso_utc_now(),
+                "axis_status": _axis_status_value(),
+                "axis_source": _axis_source_value(),
+                "confidence": float(state.get("axis_confidence") or 0.0),
+                "residual_px": float(state.get("axis_residual_px") or 0.0),
+                "max_error_px": float(state.get("axis_max_error_px") or 0.0),
+                "bad_frames": int(state.get("axis_bad_frames") or 0),
+                "parsed_labels_count": len(state.get("axis_labels") or []),
+                "overlay_rect_screen_physical": _safe_rect_payload(state.get("overlay_rect_screen_physical")),
+                "chart_rect": chart_rect if isinstance(chart_rect, dict) else state.get("chart_rect"),
+            }
+        )
+        if len(entries) > 240:
+            del entries[: len(entries) - 240]
     except Exception:
         pass
 
@@ -495,9 +791,25 @@ def _build_overlay_update_data() -> dict[str, Any]:
     axis_labels = state.get("axis_labels") if isinstance(state.get("axis_labels"), list) else []
     pending_count = int(state.get("axis_pending_count") or 0)
     axis_source = _axis_source_value()
+    geometry_payload = _current_geometry_payload()
+    axis_fit_payload = None
+    if isinstance(state.get("axis"), dict):
+        axis_fit_payload = {
+            "axis_id": int(state.get("frame_seq") or 0),
+            "model": "price = slope * y_screen_physical + intercept",
+            "coordinate_space": AXIS_COORDINATE_SPACE,
+            "slope": float(state["axis"].get("slope") or 0.0),
+            "intercept": float(state["axis"].get("intercept") or 0.0),
+            "labels_count": len(axis_labels),
+            "rmse": float(state.get("axis_residual_px") or 0.0),
+            "r2": float(state.get("axis_confidence") or 0.0),
+            "created_at_ms": int(time.time() * 1000),
+            "geometry_signature": geometry_payload.get("geometry_signature"),
+        }
     axis_block = {
         "axis": state.get("axis"),
         "regression": state.get("axis"),
+        "axis_fit": axis_fit_payload,
         "axis_labels": axis_labels,
         "ocr_labels": axis_labels,
         "labels_count": len(axis_labels),
@@ -549,6 +861,8 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "histogram": histogram_block,
         "debug_visual": debug_visual,
         "overlay_target": targets,
+        "geometry": geometry_payload,
+        "axis_fit": axis_fit_payload,
     }
     return {
         # Contrato legado top-level (consumidores antigos)
@@ -557,6 +871,7 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "lines": line_block["items"],
         "y_min": line_block["visual_limits"]["y_min"],
         "y_max": line_block["visual_limits"]["y_max"],
+        "parsed_labels_count": len(axis_labels),
         "target_count": line_block["target_count"],
         "line_count": line_block["count"],
         "chart_rect": state.get("chart_rect"),
@@ -572,6 +887,8 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "blocks": structured_block,
         # Contrato estruturado (novo)
         "structured": structured_block,
+        "geometry": geometry_payload,
+        "axis_fit": axis_fit_payload,
         # Compatibilidade com contratos anteriores
         "overlay_target": targets,
         "axis_status": axis_block["axis_status"],
@@ -595,6 +912,64 @@ def _build_overlay_update_data() -> dict[str, Any]:
         "frozen_reason": axis_block["frozen_reason"],
         "render_status": status_block["render_status"],
         "overlay_safe_mode": status_block["overlay_safe_mode"],
+    }
+
+
+def _axis_status_when_last_good_retained() -> str:
+    """Status publicado quando o runtime reutiliza last_stable/cache com eixo ainda válido."""
+    if bool(axis_manager.manual_locked):
+        return "MANUAL_LOCKED"
+    if isinstance(state.get("axis"), dict):
+        return "OCR_VALIDATED"
+    mgr = str(axis_manager.status or "").strip().upper()
+    if mgr in {"STABLE", "FROZEN", "MANUAL_LOCKED", "OCR_VALIDATED"}:
+        return "OCR_VALIDATED"
+    if state.get("axis_cache"):
+        return "BOOT_FROM_CACHE"
+    return mgr or "DEGRADED"
+
+
+def _apply_last_good_axis_runtime(
+    chart: dict[str, Any],
+    *,
+    decision_source: str,
+    transient_reason_code: str = "",
+    transient_reason: str = "",
+) -> None:
+    axis_block = axis_manager.last_stable_axis
+    if not isinstance(axis_block, dict):
+        _sync_axis_runtime_state(source="last_stable")
+        state["axis_status"] = "BOOT_FROM_CACHE_DEGRADED" if state.get("axis_cache") else "DEGRADED"
+        state["render_status"] = "FROZEN"
+        state["axis_final_decision"] = {
+            "axis_status": state.get("axis_status"),
+            "decision_source": decision_source,
+        }
+        return
+    state["axis"] = {
+        "slope": float(axis_block["slope"]),
+        "intercept": float(axis_block["intercept"]),
+        "value_per_px": float(axis_block.get("value_per_px") or abs(float(axis_block["slope"]))),
+    }
+    _sync_axis_runtime_state(source="last_stable")
+    state["axis_status"] = _axis_status_when_last_good_retained()
+    chart_top = float(chart.get("top") or 0.0)
+    chart_bottom = chart_top + float(chart.get("height") or 0.0)
+    slope_now = float(state["axis"]["slope"])
+    intercept_now = float(state["axis"]["intercept"])
+    p_top = slope_now * chart_top + intercept_now
+    p_bottom = slope_now * chart_bottom + intercept_now
+    state["y_min"] = min(p_top, p_bottom)
+    state["y_max"] = max(p_top, p_bottom)
+    state["status"] = "ok"
+    state["render_status"] = "OK"
+    _clear_axis_error()
+    state["axis_final_decision"] = {
+        "axis_status": state.get("axis_status"),
+        "decision_source": decision_source,
+        "ocr_frame_degraded": bool(transient_reason_code),
+        "transient_reason_code": transient_reason_code or None,
+        "transient_reason": transient_reason or None,
     }
 
 
@@ -641,10 +1016,15 @@ def _clear_lines_for_hard_reset() -> None:
 
 
 def _last_good_axis_age_ms() -> Optional[int]:
-    ts = axis_manager.last_stable_ts_monotonic
-    if ts is None:
+    stamps: List[float] = []
+    if axis_manager.last_stable_ts_monotonic is not None:
+        stamps.append(float(axis_manager.last_stable_ts_monotonic))
+    ocr_ok = float(state.get("last_ocr_axis_ok_mono") or 0.0)
+    if ocr_ok > 0:
+        stamps.append(ocr_ok)
+    if not stamps:
         return None
-    return max(0, int((time.monotonic() - ts) * 1000))
+    return max(0, int((time.monotonic() - max(stamps)) * 1000))
 
 
 def _axis_snapshot_from_state() -> Optional[dict[str, Any]]:
@@ -673,18 +1053,26 @@ def _axis_snapshot_from_state() -> Optional[dict[str, Any]]:
     if axis_source == "last_stable":
         source = "last_good"
     status_now = _axis_status_value()
-    if status_now not in {"STABLE", "FROZEN", "MANUAL_LOCKED", "DEGRADED"}:
+    if status_now not in {"STABLE", "FROZEN", "MANUAL_LOCKED", "DEGRADED", "OCR_VALIDATED"}:
         return None
+    geometry = _current_geometry_payload()
     return {
         "status": status_now,
         "source": source if source in {"ocr", "manual", "last_good"} else "last_good",
+        "coordinate_space": AXIS_COORDINATE_SPACE,
         "chart_rect": {
             "x": int(round(left)),
             "y": int(round(top)),
             "width": int(round(width)),
             "height": int(round(height)),
         },
+        "chart_rect_screen_physical": geometry.get("chart_rect_screen_physical"),
+        "overlay_rect_screen_physical": geometry.get("overlay_rect_screen_physical"),
+        "axis_rect_screen_physical": geometry.get("axis_rect_screen_physical"),
+        "dpi_scale": geometry.get("dpi_scale"),
         "axis": {
+            "slope": float(slope),
+            "intercept": float(intercept),
             "price_min": float(price_min),
             "price_max": float(price_max),
             "y_top": float(y_top),
@@ -709,20 +1097,15 @@ def price_to_y(price: float, axis_snapshot: dict[str, Any]) -> Optional[float]:
     if not isinstance(axis, dict):
         return None
     try:
-        price_min = float(axis.get("price_min"))
-        price_max = float(axis.get("price_max"))
-        y_top = float(axis.get("y_top"))
-        y_bottom = float(axis.get("y_bottom"))
+        slope = float(axis.get("slope"))
+        intercept = float(axis.get("intercept"))
     except (TypeError, ValueError):
         return None
-    if not (math.isfinite(price_min) and math.isfinite(price_max) and math.isfinite(y_top) and math.isfinite(y_bottom)):
+    if not (math.isfinite(slope) and math.isfinite(intercept)):
         return None
-    if price_max <= price_min:
+    if abs(slope) < 1e-9:
         return None
-    if y_bottom <= y_top:
-        return None
-    t = (px - price_min) / (price_max - price_min)
-    y = y_bottom - t * (y_bottom - y_top)
+    y = (px - intercept) / slope
     if not math.isfinite(y):
         return None
     return float(y)
@@ -770,7 +1153,9 @@ def _should_publish_overlay_update(payload_data: dict[str, Any]) -> bool:
 @asynccontextmanager
 async def _lifespan(_app: FastAPI):
     configure_tesseract_cmd()
+    _prewarm_tesseract()
     state["dpi_scale"] = get_dpi_scale()
+    _try_boot_axis_from_cache()
     ocr_task = asyncio.create_task(ocr_loop())
     render_task = asyncio.create_task(render_loop())
     publish_task = asyncio.create_task(publish_loop())
@@ -816,6 +1201,13 @@ class AnalysisRoiBody(BaseModel):
     """Retângulo em pixels físicos de ecrã (mss). `rect: null` limpa."""
 
     rect: Optional[AnalysisRoiRect] = None
+
+
+class OverlayWindowRectBody(BaseModel):
+    x: int
+    y: int
+    width: int
+    height: int
 
 
 class ManualAxisPoint(BaseModel):
@@ -1287,7 +1679,15 @@ def fit_value_axis(labels: List[Dict[str, float]]) -> Optional[Dict[str, float]]
         errs = [abs(lb["value"] - (slope * lb["y_screen"] + intercept)) / value_per_px for lb in labels]
         residual_px = sum(errs) / len(errs)
         max_error_px = max(errs)
-    confidence = max(0.0, min(1.0, (len(inliers) / max(1, len(labels))) * (1.0 / (1.0 + residual_px + max_error_px * 0.2))))
+    inlier_ratio = len(inliers) / max(1, len(labels))
+    cap_res = max(float(AXIS_MAX_RESIDUAL_PX), 1e-6)
+    cap_err = max(float(AXIS_MAX_ERROR_PX), 1e-6)
+    residual_penalty = min(1.0, float(residual_px) / cap_res)
+    max_err_penalty = min(1.0, float(max_error_px) / cap_err)
+    worst_penalty = max(residual_penalty, max_err_penalty)
+    # Alinha com os gates AXIS_MAX_*: perto do limite ainda pode ser eixo válido (evita 0.15 com residual aceitável).
+    geometry_score = 0.5 + 0.5 * (1.0 - worst_penalty)
+    confidence = max(0.0, min(1.0, inlier_ratio * geometry_score))
     return {
         "slope": slope,
         "intercept": intercept,
@@ -1466,8 +1866,36 @@ def axis_price_delta_ticks(candidate: Dict[str, Any], last_stable: Dict[str, flo
     return drift / tick_size
 
 
+def _candidate_price_range_valid(candidate: Dict[str, Any], symbol: str = OCR_SYMBOL) -> bool:
+    sym = (symbol or "").upper()
+    vmin = float(candidate.get("value_min") or 0.0)
+    vmax = float(candidate.get("value_max") or 0.0)
+    if not (vmax > vmin):
+        return False
+    if sym == "WINFUT":
+        return vmin >= 50000.0 and vmax <= 500000.0
+    if sym == "WDOFUT":
+        return vmin >= 1000.0 and vmax <= 20000.0
+    return True
+
+
+def _candidate_fit_plausible(candidate: Dict[str, Any]) -> bool:
+    if not _candidate_price_range_valid(candidate):
+        return False
+    slope = float(candidate.get("slope") or 0.0)
+    if abs(slope) < 0.08:
+        return False
+    y_span = abs(float(candidate.get("y_max") or 0.0) - float(candidate.get("y_min") or 0.0))
+    v_span = abs(float(candidate.get("value_max") or 0.0) - float(candidate.get("value_min") or 0.0))
+    if y_span > 1.0 and v_span > 1.0 and y_span / v_span > 0.92:
+        return False
+    return True
+
+
 def is_candidate_valid(candidate: Dict[str, Any]) -> bool:
-    if int(candidate.get("labels_count") or 0) < 4:
+    if int(candidate.get("labels_count") or 0) < AXIS_MIN_LABELS:
+        return False
+    if not _candidate_fit_plausible(candidate):
         return False
     value_min = float(candidate.get("value_min") or 0.0)
     value_max = float(candidate.get("value_max") or 0.0)
@@ -1503,11 +1931,17 @@ def evaluate_axis_candidate(candidate: Optional[Dict[str, Any]]) -> Dict[str, An
             "reason": "Axis candidate is missing",
         }
     labels_count = int(candidate.get("labels_count") or 0)
-    if labels_count < 4:
+    if labels_count < AXIS_MIN_LABELS:
         return {
             "accepted": False,
-            "reason_code": "LABELS_LT_4",
-            "reason": f"Axis candidate has only {labels_count} labels",
+            "reason_code": "LABELS_LT_MIN",
+            "reason": f"Axis candidate has only {labels_count} labels (min {AXIS_MIN_LABELS})",
+        }
+    if not _candidate_fit_plausible(candidate):
+        return {
+            "accepted": False,
+            "reason_code": "FIT_IMPLAUSIBLE",
+            "reason": "Axis candidate failed plausibility checks (price range or slope)",
         }
     value_min = float(candidate.get("value_min") or 0.0)
     value_max = float(candidate.get("value_max") or 0.0)
@@ -1563,6 +1997,8 @@ def evaluate_axis_candidate(candidate: Optional[Dict[str, Any]]) -> Dict[str, An
 
 
 def _build_status_light_data() -> dict[str, Any]:
+    telemetry = state.get("session_axis_telemetry")
+    tail = telemetry[-10:] if isinstance(telemetry, list) else []
     return {
         "status": str(state.get("status") or ""),
         "axis_status": _axis_status_value(),
@@ -1584,10 +2020,13 @@ def _build_status_light_data() -> dict[str, Any]:
         "candidate_axis_exists": bool(state.get("candidate_axis_exists")),
         "candidate_axis_valid": bool(state.get("candidate_axis_valid")),
         "candidate_confirm_count": int(state.get("candidate_confirm_count") or 0),
+        "initial_confirm_count": int(getattr(axis_manager, "initial_confirm_count", 0) or 0),
+        "initial_confirm_required": int(AXIS_INITIAL_CONFIRM_FRAMES),
         "rejected_axis_reason": str(state.get("rejected_axis_reason") or ""),
         "frozen_reason": str(state.get("frozen_reason") or ""),
         "render_status": str(state.get("render_status") or "OK"),
         "overlay_safe_mode": bool(state.get("overlay_safe_mode")),
+        "session_axis_telemetry_tail": tail,
         "last_update": float(state.get("last_update") or 0.0),
         "uptime_sec": round(time.monotonic() - service_started_at, 3),
     }
@@ -1691,6 +2130,7 @@ class StableAxisManager:
         self.frozen = False
         self.last_reject_reason = ""
         self.last_candidate_valid = False
+        self.initial_confirm_count = 0
 
     def freeze(self) -> None:
         self.frozen = True
@@ -1704,6 +2144,7 @@ class StableAxisManager:
         self.status = "CALIBRATING"
         self.last_reject_reason = ""
         self.last_candidate_valid = False
+        self.initial_confirm_count = 0
 
     def set_manual_axis(self, axis: Dict[str, float]) -> Dict[str, float]:
         self.last_stable_axis = axis
@@ -1716,6 +2157,7 @@ class StableAxisManager:
         self.status = "MANUAL_LOCKED"
         self.last_reject_reason = ""
         self.last_candidate_valid = True
+        self.initial_confirm_count = 0
         return axis
 
     def clear_manual_axis(self) -> None:
@@ -1726,6 +2168,7 @@ class StableAxisManager:
         self.status = "CALIBRATING"
         self.last_reject_reason = ""
         self.last_candidate_valid = False
+        self.initial_confirm_count = 0
 
     def _required_confirm_frames(self, delta_px: float) -> int:
         if not math.isfinite(delta_px):
@@ -1756,6 +2199,7 @@ class StableAxisManager:
             self.bad_frames += 1
             self.pending_candidate = None
             self.pending_count = 0
+            self.initial_confirm_count = 0
             if self.last_stable_axis is not None:
                 age_s = (
                     time.monotonic() - self.last_stable_ts_monotonic
@@ -1777,6 +2221,11 @@ class StableAxisManager:
             "value_per_px": float(candidate.get("value_per_px") or abs(float(candidate["slope"]))),
         }
         if self.last_stable_axis is None:
+            self.initial_confirm_count += 1
+            if self.initial_confirm_count < AXIS_INITIAL_CONFIRM_FRAMES:
+                self._reject("CANDIDATE_NOT_CONFIRMED")
+                self.status = "CALIBRATING"
+                return None
             axis = blend_axis_with_hysteresis(axis_fit)
             self.last_stable_axis = axis
             self.last_stable_ts_monotonic = time.monotonic()
@@ -1784,6 +2233,7 @@ class StableAxisManager:
             self.pending_count = 0
             self.status = "STABLE"
             self.last_reject_reason = ""
+            self.initial_confirm_count = 0
             return axis
 
         delta_px = axis_delta_px(candidate, self.last_stable_axis)
@@ -1809,6 +2259,7 @@ class StableAxisManager:
             self.pending_count = 0
             self.status = "STABLE"
             self.last_reject_reason = ""
+            self.initial_confirm_count = 0
             return axis
 
         if self.pending_candidate is None:
@@ -1835,6 +2286,7 @@ class StableAxisManager:
         self.pending_count = 0
         self.status = "STABLE"
         self.last_reject_reason = ""
+        self.initial_confirm_count = 0
         return axis
 
 
@@ -2013,6 +2465,24 @@ def apply_line_y_smoothing(
 
 
 def _build_render_context(frame: Dict[str, Any]) -> Dict[str, Any]:
+    axis_status_now = str(_axis_status_value() or "").strip().upper()
+    warmup_allowed = {
+        "STABLE",
+        "FROZEN",
+        "DEGRADED",
+        "MANUAL_LOCKED",
+        "MANUAL_STABLE",
+        "BOOT_FROM_CACHE",
+        "OCR_VALIDATED",
+    }
+    if axis_status_now not in warmup_allowed:
+        frozen_lines = state.get("lines") or []
+        if not isinstance(frozen_lines, list):
+            frozen_lines = []
+        return {
+            "lines": frozen_lines if OVERLAY_SAFE_MODE else [],
+            "status": f"render_hold_{axis_status_now.lower() or 'warmup'}",
+        }
     chart = frame.get("chart_rect")
     axis = frame.get("axis")
     if not isinstance(chart, dict) or not isinstance(axis, dict):
@@ -2041,10 +2511,18 @@ def _build_render_context(frame: Dict[str, Any]) -> Dict[str, Any]:
             "lines": frozen_lines if OVERLAY_SAFE_MODE else [],
             "status": frame.get("status", "render_skipped"),
         }
+    slope = float(axis_block.get("slope") or 0.0)
+    intercept = float(axis_block.get("intercept") or 0.0)
     price_min = float(axis_block.get("price_min") or 0.0)
     price_max = float(axis_block.get("price_max") or 0.0)
     y_top = float(axis_block.get("y_top") or 0.0)
     y_bottom = float(axis_block.get("y_bottom") or 0.0)
+    geometry = _current_geometry_payload()
+    overlay_rect = geometry.get("overlay_rect_screen_physical") or {}
+    overlay_y = float(overlay_rect.get("y") or 0.0)
+    dpi_scale = float(geometry.get("dpi_scale") or 1.0)
+    if not math.isfinite(dpi_scale) or dpi_scale <= 0:
+        dpi_scale = 1.0
     targets = state.get("targets") or []
     if len(targets) > MAX_RENDER_LINES:
         targets = targets[:MAX_RENDER_LINES]
@@ -2076,16 +2554,29 @@ def _build_render_context(frame: Dict[str, Any]) -> Dict[str, Any]:
                 "clamped_top" if clamped_y <= int(round(chart_top)) else "clamped_bottom"
             )
         lbl = str(t.get("label") or "")
+        y_overlay_css = (float(clamped_y) - overlay_y) / dpi_scale
+        y_screen_logical = float(clamped_y) / dpi_scale
         lines.append(
             {
                 "value": pos,
                 "y_screen": clamped_y,
+                "y_screen_physical": float(clamped_y),
+                "y_screen_logical": y_screen_logical,
+                "y_overlay_css": y_overlay_css,
+                "y_capture": float(clamped_y),
+                "frame_axis_id": int(state.get("frame_seq") or 0),
                 "color": line_color_for_label(lbl, idx),
                 "chart_left": chart.get("left"),
                 "chart_right": chart.get("left", 0) + chart.get("width", 0),
                 "label": lbl,
                 "out_of_bounds": oob,
                 "status": line_status,
+                "axis_source": state.get("axis_source"),
+                "axis_fit_used": {
+                    "slope": slope,
+                    "intercept": intercept,
+                    "coordinate_space": AXIS_COORDINATE_SPACE,
+                },
             }
         )
     if not lines:
@@ -2130,17 +2621,27 @@ async def ocr_loop():
         try:
             window = resolve_profit_window(t0)
             if not window:
-                state["status"] = "window_not_found"
-                state["axis_labels"] = None
-                state["axis"] = None
-                state["profit_window_found"] = False
-                state["profit_hwnd"] = None
-                state["profit_bounds"] = None
-                _set_axis_error("WINDOW_NOT_FOUND", "Profit window not detected")
-                axis_manager.feed(None)
-                _sync_axis_runtime_state(source="last_stable")
-                state["render_status"] = "FROZEN"
-                _clear_lines_for_hard_reset()
+                if getattr(axis_manager, "status", "") == "MANUAL_LOCKED":
+                    state["status"] = "ok"
+                    state["axis_status"] = "MANUAL_LOCKED"
+                    state["axis_source"] = "manual"
+                    _clear_axis_error()
+                    _sync_axis_runtime_state(source="manual")
+                    frame_ctx["axis"] = state.get("axis")
+                    frame_ctx["chart_rect"] = state.get("chart_rect")
+                    frame_ctx["status"] = state["status"]
+                else:
+                    state["status"] = "window_not_found"
+                    state["axis_labels"] = None
+                    state["axis"] = None
+                    state["profit_window_found"] = False
+                    state["profit_hwnd"] = None
+                    state["profit_bounds"] = None
+                    _set_axis_error("WINDOW_NOT_FOUND", "Profit window not detected")
+                    axis_manager.feed(None)
+                    _sync_axis_runtime_state(source="last_stable")
+                    state["render_status"] = "FROZEN"
+                    _clear_lines_for_hard_reset()
             else:
                 state["dpi_scale"] = float(get_dpi_scale())
                 state["profit_window_found"] = True
@@ -2166,8 +2667,9 @@ async def ocr_loop():
                     "height": window["height"] - TOOLBAR_H,
                 }
                 state["chart_rect"] = chart
-                labels_raw, axis_ocr_meta = extract_y_axis(chart, window)
+                labels_raw, axis_ocr_meta = await asyncio.to_thread(extract_y_axis, chart, window)
                 state["last_axis_crop"] = axis_ocr_meta.get("axis_crop")
+                state["axis_rect_screen_physical"] = _safe_rect_payload(state.get("last_axis_crop"))
                 state["last_axis_ocr_text"] = axis_ocr_meta.get("raw_ocr_text") or ""
                 state["last_axis_labels_parsed"] = axis_ocr_meta.get("parsed_labels") or []
                 state["last_axis_labels_rejected"] = axis_ocr_meta.get("rejected_labels") or []
@@ -2186,7 +2688,7 @@ async def ocr_loop():
                 frame_debug["labels"] = labels
                 frame_debug["axis_diagnostics"] = diagnostics
 
-                if len(labels) >= 2:
+                if len(labels) >= AXIS_MIN_LABELS:
                     state["axis_deltas"] = compute_axis_deltas(labels)
                     axis_candidate = build_axis_candidate(labels, diagnostics)
                     frame_debug["axis_fit"] = axis_candidate
@@ -2211,23 +2713,69 @@ async def ocr_loop():
                             str(acceptance.get("reason_code") or "")
                         )
                     if axis is None:
-                        state["status"] = "ocr_axis_fit_failed"
-                        state["axis_labels"] = None
-                        state["axis"] = None
-                        _sync_axis_runtime_state(source="none")
-                        _reset_axis_quality_metrics()
                         code = str(acceptance.get("reason_code") or "FIT_INCONSISTENT")
                         message = str(acceptance.get("reason") or "Axis regression candidate rejected")
-                        _set_axis_error(code, message)
-                        state["axis_final_decision"] = {
-                            "axis_status": state.get("axis_status"),
-                                "decision_source": "candidate_rejected_without_last_good_axis",
+                        manager_status = str(axis_manager.status or "").upper()
+                        provisional_applied = False
+                        decision_source = ""
+                        if isinstance(axis_candidate, dict):
+                            if bool(acceptance.get("accepted")) and manager_status == "CALIBRATING":
+                                provisional_applied = _apply_provisional_runtime_axis(
+                                    axis_candidate,
+                                    labels,
+                                    chart,
+                                    axis_source="ocr",
+                                    skip_degraded_gate=True,
+                                )
+                                decision_source = "calibrating_confirm_pending"
+                            elif axis_manager.last_stable_axis is None:
+                                provisional_applied = _apply_degraded_runtime_axis(
+                                    axis_candidate, labels, chart
+                                )
+                                decision_source = "candidate_rejected_degraded_runtime"
+                        if provisional_applied:
+                            state["status"] = "ok"
+                            state["rejected_axis_reason"] = _axis_reject_reason_from_code(code)
+                            _clear_axis_error()
+                            state["axis_final_decision"] = {
+                                "axis_status": "OCR_VALIDATED",
+                                "decision_source": decision_source,
                             }
-                        state["render_status"] = "FROZEN"
-                        _clear_lines_for_hard_reset()
+                            frame_ctx["axis"] = state.get("axis")
+                            frame_ctx["status"] = state["status"]
+                        else:
+                            if axis_manager.last_stable_axis is None:
+                                state["status"] = "ocr_axis_fit_failed"
+                                state["axis_labels"] = None
+                                state["axis"] = None
+                                _sync_axis_runtime_state(source="none")
+                                state["axis_status"] = "NEEDS_CALIBRATION"
+                                _reset_axis_quality_metrics()
+                                _set_axis_error(code, message)
+                                state["axis_final_decision"] = {
+                                    "axis_status": state.get("axis_status"),
+                                    "decision_source": "candidate_rejected_without_last_good_axis",
+                                }
+                                state["render_status"] = "FROZEN"
+                                _clear_lines_for_hard_reset()
+                            else:
+                                _apply_last_good_axis_runtime(
+                                    chart,
+                                    decision_source="candidate_rejected_last_good_retained",
+                                    transient_reason_code=code,
+                                    transient_reason=message,
+                                )
+                                _reset_axis_quality_metrics()
+                            frame_ctx["axis"] = state.get("axis")
+                            frame_ctx["status"] = state["status"]
                     else:
                         state["axis_labels"] = [
-                            {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
+                            {
+                                "value": float(lb["value"]),
+                                "y_screen": float(lb["y_screen"]),
+                                "y_screen_physical": float(lb["y_screen"]),
+                                "y_capture": float(lb["y_screen"]),
+                            }
                             for lb in labels
                         ]
                         state["axis"] = {
@@ -2240,29 +2788,60 @@ async def ocr_loop():
                         _set_axis_quality_metrics(axis_candidate)
                         if bool(acceptance.get("accepted")):
                             _clear_axis_error()
+                            state["axis_status"] = "OCR_VALIDATED"
+                            state["last_ocr_axis_ok_mono"] = time.monotonic()
+                            state["axis_source"] = "manual" if bool(axis_manager.manual_locked) else "ocr"
                             state["axis_final_decision"] = {
                                 "axis_status": "STABLE",
                                 "decision_source": "candidate_promoted",
                             }
+                            _persist_axis_cache_entry(state["axis"], source=str(state.get("axis_source") or "ocr"))
                         else:
                             code = str(acceptance.get("reason_code") or "AXIS_CANDIDATE_REJECTED")
                             message = str(
                                 acceptance.get("reason")
                                 or "Current axis candidate was rejected and runtime reused last stable axis"
                             )
-                            _set_axis_error(code, message)
                             status_now = str(axis_manager.status or "").upper()
-                            decision_source = (
-                                "candidate_rejected_last_good_retained"
-                                if status_now in {"STABLE", "FROZEN"}
-                                else "candidate_rejected_last_good_expired"
+                            usable_now = (
+                                isinstance(axis_candidate, dict)
+                                and _degraded_axis_candidate_usable(axis_candidate)
                             )
-                            state["axis_final_decision"] = {
-                                "axis_status": status_now or "CALIBRATING",
-                                "decision_source": decision_source,
-                            }
-                            if status_now in {"FROZEN", "DEGRADED"}:
-                                state["render_status"] = "FROZEN"
+                            if usable_now:
+                                state["axis"] = {
+                                    "slope": float(axis_candidate["slope"]),
+                                    "intercept": float(axis_candidate["intercept"]),
+                                    "value_per_px": float(
+                                        axis_candidate.get("value_per_px")
+                                        or abs(float(axis_candidate["slope"]))
+                                    ),
+                                }
+                                _set_axis_quality_metrics(axis_candidate)
+                                _clear_axis_error()
+                                state["axis_status"] = "OCR_VALIDATED"
+                                state["axis_source"] = "ocr"
+                                state["axis_final_decision"] = {
+                                    "axis_status": "OCR_VALIDATED",
+                                    "decision_source": "candidate_usable_despite_strict_reject",
+                                }
+                            else:
+                                decision_source = (
+                                    "candidate_rejected_last_good_retained"
+                                    if status_now in {"STABLE", "FROZEN", "MANUAL_LOCKED"}
+                                    else "candidate_rejected_last_good_expired"
+                                )
+                                state["axis_final_decision"] = {
+                                    "axis_status": status_now or "CALIBRATING",
+                                    "decision_source": decision_source,
+                                }
+                                if status_now in {"STABLE", "FROZEN", "MANUAL_LOCKED"}:
+                                    _clear_axis_error()
+                                    state["axis_status"] = status_now
+                                else:
+                                    _set_axis_error(code, message)
+                                    state["axis_status"] = "OCR_CONFLICT"
+                                if status_now in {"FROZEN", "DEGRADED"}:
+                                    state["render_status"] = "FROZEN"
                         chart_top = float(chart.get("top") or 0.0)
                         chart_bottom = chart_top + float(chart.get("height") or 0.0)
                         slope_now = float(state["axis"]["slope"])
@@ -2304,34 +2883,36 @@ async def ocr_loop():
                         state["axis_labels"] = None
                         state["axis"] = None
                         _sync_axis_runtime_state(source="none")
+                        state["axis_status"] = "NEEDS_CALIBRATION"
                         _reset_axis_quality_metrics()
                     else:
-                        axis = axis_manager.feed(None)
-                        state["axis"] = axis
-                        _sync_axis_runtime_state(source="last_stable")
+                        axis_manager.feed(None)
+                        _apply_last_good_axis_runtime(
+                            chart,
+                            decision_source="insufficient_labels_last_good_retained",
+                            transient_reason_code="INSUFFICIENT_LABELS",
+                            transient_reason=f"OCR labels insufficient: {len(labels)}",
+                        )
                         _reset_axis_quality_metrics()
-                    raw_ocr_text = str(state.get("last_axis_ocr_text") or "").strip()
-                    if not raw_ocr_text:
-                        _set_axis_error("OCR_NO_TEXT", "OCR returned no text in axis crop")
-                    elif len(state.get("last_axis_labels_parsed") or []) == 0:
-                        _set_axis_error("NO_VALID_PRICE_LABELS", "OCR returned text but no valid price labels")
-                    else:
-                        _set_axis_error("INSUFFICIENT_LABELS", f"OCR labels insufficient: {len(labels)}")
                     elapsed_svc = time.monotonic() - service_started_at
-                    if len(labels) == 0 and elapsed_svc < AXIS_WARMUP_SECS:
+                    if (
+                        axis_manager.last_stable_axis is None
+                        and len(labels) == 0
+                        and elapsed_svc < AXIS_WARMUP_SECS
+                    ):
                         state["status"] = "ocr_axis_warming"
-                    else:
+                        state["render_status"] = "FROZEN"
+                    elif axis_manager.last_stable_axis is None:
+                        raw_ocr_text = str(state.get("last_axis_ocr_text") or "").strip()
+                        if not raw_ocr_text:
+                            _set_axis_error("OCR_NO_TEXT", "OCR returned no text in axis crop")
+                        elif len(state.get("last_axis_labels_parsed") or []) == 0:
+                            _set_axis_error("NO_VALID_PRICE_LABELS", "OCR returned text but no valid price labels")
+                        else:
+                            _set_axis_error("INSUFFICIENT_LABELS", f"OCR labels insufficient: {len(labels)}")
                         state["status"] = f"ocr_insufficient_labels:{len(labels)}"
-                    state["axis_final_decision"] = {
-                        "axis_status": str(state.get("axis_status") or ""),
-                        "decision_source": (
-                            "insufficient_labels_last_good_retained"
-                            if axis_manager.last_stable_axis is not None
-                            else "insufficient_labels_no_last_good"
-                        ),
-                    }
-                    state["render_status"] = "FROZEN"
-                    _clear_lines_for_hard_reset()
+                        state["render_status"] = "FROZEN"
+                        _clear_lines_for_hard_reset()
                     frame_ctx["axis"] = state.get("axis")
                     frame_ctx["status"] = state["status"]
                     _ensure_axis_error_invariant()
@@ -2355,7 +2936,7 @@ async def ocr_loop():
         roi = state.get("analysis_roi")
         if isinstance(roi, dict) and int(roi.get("width", 0)) >= 4 and int(roi.get("height", 0)) >= 4:
             try:
-                analysis_sample = extract_analysis_sample(roi)
+                analysis_sample = await asyncio.to_thread(extract_analysis_sample, roi)
             except Exception as analy_exc:
                 analysis_sample = {
                     "text": "",
@@ -2379,6 +2960,7 @@ async def ocr_loop():
         frame_debug["max_error_px"] = state.get("axis_max_error_px")
         frame_debug["analysis_sample"] = state.get("analysis_sample")
         frame_debug["lines"] = state.get("lines") or frame_debug.get("lines", [])
+        _record_session_axis_telemetry(frame_debug)
         state["last_frame"] = frame_debug
         audit_record = build_frame_record(
             session_id=TRACE_SESSION_ID,
@@ -2503,6 +3085,19 @@ async def set_analysis_roi(body: AnalysisRoiBody):
     return _api_ok("analysis_roi", analysis_roi=state["analysis_roi"])
 
 
+@app.post("/api/ocr-overlay/overlay-window-rect")
+async def set_overlay_window_rect(body: OverlayWindowRectBody):
+    rect = {
+        "x": int(body.x),
+        "y": int(body.y),
+        "width": max(1, int(body.width)),
+        "height": max(1, int(body.height)),
+    }
+    state["overlay_rect_screen_physical"] = rect
+    _try_boot_axis_from_cache()
+    return _api_ok("overlay_window_rect", overlay_rect_screen_physical=rect, axis_status=state.get("axis_status"))
+
+
 @app.post("/recalibrate")
 async def recalibrate_axis():
     """Invalida EMA do eixo e suavização de Y; próxima leitura reancora ao frame atual."""
@@ -2589,7 +3184,7 @@ async def manual_calibration(body: ManualAxisBody):
         "intercept": float(axis["intercept"]),
         "value_per_px": float(axis["value_per_px"]),
     }
-    state["axis_status"] = axis_manager.status
+    state["axis_status"] = "MANUAL_STABLE"
     state["axis_source"] = "manual"
     state["axis_bad_frames"] = axis_manager.bad_frames
     state["axis_pending_count"] = axis_manager.pending_count
@@ -2597,6 +3192,11 @@ async def manual_calibration(body: ManualAxisBody):
     state["axis_confidence"] = 1.0
     state["axis_residual_px"] = 0.0
     state["axis_max_error_px"] = 0.0
+    state["status"] = "ok"
+    state["axis_labels"] = [{"value": float(p.value), "y_screen": float(p.y_screen)} for p in body.points]
+    if state.get("chart_rect") is None:
+        state["chart_rect"] = {"left": 0, "top": 90, "width": 1920, "height": 942}
+    _persist_axis_cache_entry(state["axis"], source="manual")
     return _api_ok(
         "manual_calibration",
         message="manual_axis_applied",
@@ -2766,6 +3366,21 @@ async def debug_dump():
             "axis_crop": dbg.get("axis_crop"),
             "raw_ocr_text": dbg.get("raw_ocr_text"),
             "parsed_labels": dbg.get("parsed_labels"),
+            "labels_canonical": [
+                {
+                    "value": float(lb.get("value") or 0.0),
+                    "y_capture": float(lb.get("y_screen") or 0.0),
+                    "y_screen_physical": float(lb.get("y_screen") or 0.0),
+                    "y_overlay_css": (
+                        (float(lb.get("y_screen") or 0.0) - float((state.get("overlay_rect_screen_physical") or {}).get("y") or 0.0))
+                        / max(1e-9, float(state.get("dpi_scale") or 1.0))
+                    ),
+                    "confidence": float((state.get("axis_confidence") or 0.0)),
+                    "accepted": True,
+                }
+                for lb in (state.get("axis_labels") or [])
+                if isinstance(lb, dict)
+            ],
             "rejected_labels": dbg.get("rejected_labels"),
             "axis_status": state.get("axis_status"),
             "axis_error_code": state.get("axis_error_code"),
@@ -2785,11 +3400,26 @@ async def debug_dump():
                 ),
             },
             "final_decision": state.get("axis_final_decision"),
+            "geometry": _current_geometry_payload(),
+            "lines_final": [
+                {
+                    "price": float(ln.get("value") or 0.0),
+                    "y_screen_physical": float(ln.get("y_screen_physical") or ln.get("y_screen") or 0.0),
+                    "y_overlay_css": float(ln.get("y_overlay_css") or 0.0),
+                }
+                for ln in (state.get("lines") or [])
+                if isinstance(ln, dict)
+            ],
         }
         axis_fit = {
             "axis": state.get("axis"),
             "axis_diagnostics": state.get("axis_diagnostics"),
             "axis_deltas": state.get("axis_deltas"),
+            "slope": float((state.get("axis") or {}).get("slope") or 0.0) if isinstance(state.get("axis"), dict) else None,
+            "intercept": float((state.get("axis") or {}).get("intercept") or 0.0) if isinstance(state.get("axis"), dict) else None,
+            "rmse": float(state.get("axis_residual_px") or 0.0),
+            "r2": float(state.get("axis_confidence") or 0.0),
+            "coordinate_space": AXIS_COORDINATE_SPACE,
         }
         (dump_dir / "ocr_result.json").write_text(json.dumps(ocr_result, ensure_ascii=False, indent=2), encoding="utf-8")
         (dump_dir / "axis_fit.json").write_text(json.dumps(axis_fit, ensure_ascii=False, indent=2), encoding="utf-8")

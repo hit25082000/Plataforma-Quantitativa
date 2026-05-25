@@ -36,6 +36,8 @@ def _auto_base_price(ocr_status_url: str, timeout: float, fallback: float) -> fl
     status = _get_json(ocr_status_url, timeout)
     if not status:
         return fallback
+    if isinstance(status, dict) and "data" in status and isinstance(status["data"], dict):
+        status = status["data"]
     y_min = status.get("y_min")
     y_max = status.get("y_max")
     if isinstance(y_min, (int, float)) and isinstance(y_max, (int, float)) and y_min != y_max:
@@ -46,7 +48,7 @@ def _auto_base_price(ocr_status_url: str, timeout: float, fallback: float) -> fl
 def main() -> int:
     parser = argparse.ArgumentParser(description="Publica um VP Sato sintético para teste fora do pregão.")
     parser.add_argument("--url", default=os.environ.get("PQ_VP_SATO_DEMO_URL", "http://127.0.0.1:8000/api/vp-sato/demo"))
-    parser.add_argument("--ocr-status-url", default=os.environ.get("PQ_OCR_STATUS_URL", "http://127.0.0.1:5558/status"))
+    parser.add_argument("--ocr-status-url", default=os.environ.get("PQ_OCR_STATUS_URL", "http://127.0.0.1:5558/debug"))
     parser.add_argument("--duration-seconds", type=float, default=180.0)
     parser.add_argument("--interval-seconds", type=float, default=0.35)
     parser.add_argument("--ticker", default="DEMO")

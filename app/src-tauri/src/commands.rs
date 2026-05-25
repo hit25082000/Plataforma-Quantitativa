@@ -40,6 +40,7 @@ const CONFIG_CORRUPT_MSG: &str =
 
 /// Health do distributor. Ver docs/PORTS.md
 const HEALTH_URL: &str = "http://127.0.0.1:8000/health";
+const DISTRIBUTOR_READY_URL: &str = "http://127.0.0.1:8000/ready";
 const DISTRIBUTOR_API_BASE: &str = "http://127.0.0.1:8000";
 const AGENT007_CHAT_URL: &str = "http://127.0.0.1:8000/api/agent007/chat";
 const DISTRIBUTOR_IPC_STATE_URL: &str = "http://127.0.0.1:8000/ipc-state";
@@ -48,6 +49,8 @@ const EVENT_OCR_OVERLAY_STATUS: &str = "pq:ocr-overlay-status";
 const EVENT_PROFIT_OVERLAY_OCR_STARTING: &str = "profit-overlay://ocr-starting";
 const EVENT_PROFIT_OVERLAY_OCR_READY: &str = "profit-overlay://ocr-ready";
 const EVENT_PROFIT_OVERLAY_OCR_ERROR: &str = "profit-overlay://ocr-error";
+static ENGINE_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+static DISTRIBUTOR_SPAWN_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 fn ocr_idle_shutdown_ms() -> u64 {
     std::env::var("PQ_OCR_IDLE_SHUTDOWN_MS")
         .ok()
@@ -78,9 +81,15 @@ fn apply_default_shm_writer_env(cmd: &mut Command) {
 }
 
 fn apply_default_shm_distributor_env(cmd: &mut Command) {
+    let default_ipc_mode = if cfg!(debug_assertions) { "zmq" } else { "shm" };
+    let default_shm_probe_timeout_ms = if cfg!(debug_assertions) {
+        "3000"
+    } else {
+        "90000"
+    };
     cmd.env(
         "IPC_MODE",
-        env_nonempty("IPC_MODE").unwrap_or_else(|| "shm".into()),
+        env_nonempty("IPC_MODE").unwrap_or_else(|| default_ipc_mode.into()),
     );
     cmd.env(
         "SHM_MAPPING_NAME",
@@ -92,7 +101,8 @@ fn apply_default_shm_distributor_env(cmd: &mut Command) {
     );
     cmd.env(
         "SHM_FALLBACK_PROBE_TIMEOUT_MS",
-        env_nonempty("SHM_FALLBACK_PROBE_TIMEOUT_MS").unwrap_or_else(|| "90000".into()),
+        env_nonempty("SHM_FALLBACK_PROBE_TIMEOUT_MS")
+            .unwrap_or_else(|| default_shm_probe_timeout_ms.into()),
     );
 }
 
@@ -324,6 +334,97 @@ pub struct ChildProcesses {
     pub ocr_idle_shutdown_generation: AtomicU64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct EngineRuntimeStatus {
+    pub process_started: bool,
+    pub control_port_ready: bool,
+    pub dll_loaded: Option<bool>,
+    pub activation_ok: Option<bool>,
+    pub login_ok: Option<bool>,
+    pub market_connected: Option<bool>,
+    pub subscribed: bool,
+    pub active_asset: Option<String>,
+    pub last_event_published_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+fn engine_status_state() -> &'static Mutex<EngineRuntimeStatus> {
+    static ENGINE_STATUS: OnceLock<Mutex<EngineRuntimeStatus>> = OnceLock::new();
+    ENGINE_STATUS.get_or_init(|| Mutex::new(EngineRuntimeStatus::default()))
+}
+
+fn update_engine_runtime_status<F>(updater: F)
+where
+    F: FnOnce(&mut EngineRuntimeStatus),
+{
+    if let Ok(mut guard) = engine_status_state().lock() {
+        updater(&mut guard);
+    }
+}
+
+fn set_engine_runtime_error(err: impl Into<String>) {
+    let err_text = err.into();
+    update_engine_runtime_status(|state| {
+        state.last_error = Some(err_text.clone());
+    });
+}
+
+fn infer_engine_status_from_logs(
+    engine_log_path: &str,
+    stderr_path: &Option<PathBuf>,
+) -> (Option<bool>, Option<bool>, Option<bool>, Option<bool>, Option<String>) {
+    let mut dll_loaded: Option<bool> = None;
+    let mut activation_ok: Option<bool> = None;
+    let mut login_ok: Option<bool> = None;
+    let mut market_connected: Option<bool> = None;
+    let mut last_event_published_at: Option<String> = None;
+
+    if let Ok(text) = std::fs::read_to_string(engine_log_path) {
+        for line in text.lines().rev().take(300) {
+            let low = line.to_ascii_lowercase();
+            if low.contains("failed to load") && low.contains("profitdll") {
+                dll_loaded = Some(false);
+            }
+            if low.contains("\"message\":\"engine_started\"") {
+                dll_loaded = dll_loaded.or(Some(true));
+            }
+        }
+    }
+
+    if let Some(path) = stderr_path {
+        if let Ok(text) = std::fs::read_to_string(path) {
+            for line in text.lines().rev().take(500) {
+                let low = line.to_ascii_lowercase();
+                if low.contains("failed to load") && low.contains("profitdll") {
+                    dll_loaded = Some(false);
+                }
+                if low.contains("[profit] loaded") {
+                    dll_loaded = Some(true);
+                }
+                if low.contains("dllinitializemarketlogin failed") {
+                    login_ok = Some(false);
+                }
+                if low.contains("market not connected before subscribe") {
+                    market_connected = Some(false);
+                }
+                if low.contains("activation=") && low.contains(" activation=0") {
+                    activation_ok = Some(true);
+                }
+                if low.contains("activation=")
+                    && (low.contains("activation=-") || low.contains("activation=2"))
+                {
+                    activation_ok = Some(false);
+                }
+                if low.contains("[engine.market] first_event_published") {
+                    last_event_published_at = Some(format!("{}", unix_ts_ms()));
+                }
+            }
+        }
+    }
+
+    (dll_loaded, activation_ok, login_ok, market_connected, last_event_published_at)
+}
+
 /// Estado persistido de uma janela de widget (posição e tamanho).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WidgetWindowState {
@@ -500,6 +601,119 @@ fn engine_control_port_listening() -> bool {
         return false;
     };
     TcpStream::connect_timeout(&addr, Duration::from_millis(350)).is_ok()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PortListenerInfo {
+    port: u16,
+    pid: u32,
+    process_name: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+fn listener_info_on_port(port: u16) -> Option<PortListenerInfo> {
+    let mut netstat_cmd = Command::new("netstat");
+    netstat_cmd.args(["-ano"]);
+    command_no_console(&mut netstat_cmd);
+    let out = netstat_cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let pattern = format!(":{}", port);
+    let pid = text
+        .lines()
+        .find_map(|line| {
+            let l = line.trim();
+            if !l.contains("LISTENING") || !l.contains(&pattern) {
+                return None;
+            }
+            l.split_whitespace()
+                .last()
+                .and_then(|v| v.parse::<u32>().ok())
+        })?;
+    let process_name = process_name_by_pid(pid);
+    Some(PortListenerInfo {
+        port,
+        pid,
+        process_name,
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+fn listener_info_on_port(_port: u16) -> Option<PortListenerInfo> {
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn process_name_by_pid(pid: u32) -> Option<String> {
+    let mut cmd = Command::new("tasklist");
+    cmd.args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"]);
+    command_no_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    let stdout_text = String::from_utf8_lossy(&out.stdout).to_string();
+    let first_line = stdout_text
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with('"'))?;
+    let name = first_line
+        .split(',')
+        .next()
+        .map(|s| s.trim_matches('"').trim().to_string())?;
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn process_name_by_pid(_pid: u32) -> Option<String> {
+    None
+}
+
+fn is_engine_process_name(name: Option<&str>) -> bool {
+    matches!(name.map(|v| v.to_ascii_lowercase()), Some(v) if v == "engine.exe")
+}
+
+#[cfg(target_os = "windows")]
+fn kill_pid_controlled(pid: u32) -> bool {
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/PID", &pid.to_string(), "/T", "/F"]);
+    command_no_console(&mut cmd);
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_pid_controlled(_pid: u32) -> bool {
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn kill_stale_engine_processes() -> bool {
+    let mut cmd = Command::new("taskkill");
+    cmd.args(["/IM", "engine.exe", "/T", "/F"]);
+    command_no_console(&mut cmd);
+    cmd.status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn kill_stale_engine_processes() -> bool {
+    false
+}
+
+struct SpawnGateGuard {
+    gate: &'static AtomicBool,
+}
+
+impl Drop for SpawnGateGuard {
+    fn drop(&mut self) {
+        self.gate.store(false, Ordering::SeqCst);
+    }
+}
+
+fn try_acquire_spawn_gate(gate: &'static AtomicBool) -> Option<SpawnGateGuard> {
+    match gate.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => Some(SpawnGateGuard { gate }),
+        Err(_) => None,
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -2326,37 +2540,33 @@ pub async fn prewarm_profit_ocr(app: tauri::AppHandle) -> Result<(), String> {
         let state = app.state::<ChildProcesses>();
         cancel_ocr_idle_shutdown(&state);
     }
-    let app_for_bg = app.clone();
-    tauri::async_runtime::spawn(async move {
-        emit_profit_overlay_ocr_event(
-            &app_for_bg,
-            EVENT_PROFIT_OVERLAY_OCR_STARTING,
-            json!({"phase": "prewarm", "ts_ms": unix_ts_ms()}),
-        );
-        let t0 = std::time::Instant::now();
-        let result = {
-            let state = app_for_bg.state::<ChildProcesses>();
-            ensure_profit_ocr_running(app_for_bg.clone(), &state).await
-        };
-        match result {
-            Ok(()) => {
-                push_saved_ocr_analysis_roi_to_http(&app_for_bg).await;
-                emit_profit_overlay_ocr_event(
-                    &app_for_bg,
-                    EVENT_PROFIT_OVERLAY_OCR_READY,
-                    json!({"phase": "prewarm", "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
-                );
-            }
-            Err(err) => {
-                emit_profit_overlay_ocr_event(
-                    &app_for_bg,
-                    EVENT_PROFIT_OVERLAY_OCR_ERROR,
-                    json!({"phase": "prewarm", "error": err, "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
-                );
-            }
+    emit_profit_overlay_ocr_event(
+        &app,
+        EVENT_PROFIT_OVERLAY_OCR_STARTING,
+        json!({"phase": "prewarm", "ts_ms": unix_ts_ms()}),
+    );
+    let t0 = std::time::Instant::now();
+    let state = app.state::<ChildProcesses>();
+    let result = ensure_profit_ocr_running(app.clone(), &state).await;
+    match result {
+        Ok(()) => {
+            push_saved_ocr_analysis_roi_to_http(&app).await;
+            emit_profit_overlay_ocr_event(
+                &app,
+                EVENT_PROFIT_OVERLAY_OCR_READY,
+                json!({"phase": "prewarm", "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+            );
+            Ok(())
         }
-    });
-    Ok(())
+        Err(err) => {
+            emit_profit_overlay_ocr_event(
+                &app,
+                EVENT_PROFIT_OVERLAY_OCR_ERROR,
+                json!({"phase": "prewarm", "error": err, "elapsed_ms": t0.elapsed().as_millis(), "ts_ms": unix_ts_ms()}),
+            );
+            Err(err)
+        }
+    }
 }
 
 #[tauri::command]
@@ -2787,6 +2997,12 @@ pub async fn check_health() -> Result<bool, String> {
 }
 
 #[tauri::command]
+pub async fn get_engine_runtime_status() -> Result<EngineRuntimeStatus, String> {
+    let guard = engine_status_state().lock().map_err(|e| e.to_string())?;
+    Ok(guard.clone())
+}
+
+#[tauri::command]
 pub async fn get_distributor_health() -> Result<serde_json::Value, String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(2))
@@ -2801,6 +3017,28 @@ pub async fn get_distributor_health() -> Result<serde_json::Value, String> {
         return Err(format!("HTTP {}", res.status()));
     }
     res.json().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn get_distributor_ready() -> Result<serde_json::Value, String> {
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = client
+        .get(DISTRIBUTOR_READY_URL)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    let status = res.status().as_u16();
+    let mut payload = res
+        .json::<serde_json::Value>()
+        .await
+        .unwrap_or_else(|_| json!({}));
+    if let Some(obj) = payload.as_object_mut() {
+        obj.insert("http_status".to_string(), json!(status));
+    }
+    Ok(payload)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2848,9 +3086,81 @@ pub async fn spawn_engine(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    let Some(_spawn_gate) = try_acquire_spawn_gate(&ENGINE_SPAWN_IN_PROGRESS) else {
+        let err = "engine_spawn_in_progress: tentativa concorrente de spawn do engine.".to_string();
+        append_runtime_bootstrap_log(
+            &app,
+            "engine",
+            "spawn_engine",
+            "error",
+            json!({"reason": err.clone()}),
+        );
+        return Err(err);
+    };
+
     append_runtime_bootstrap_log(&app, "engine", "spawn_engine", "attempt", json!({}));
+    update_engine_runtime_status(|state| {
+        *state = EngineRuntimeStatus::default();
+    });
 
     if engine_control_port_listening() {
+        if let Some(listener) = listener_info_on_port(ENGINE_CONTROL_PORT) {
+            let pname = listener
+                .process_name
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string());
+            if !is_engine_process_name(listener.process_name.as_deref()) {
+                append_runtime_bootstrap_log(
+                    &app,
+                    "engine",
+                    "spawn_engine",
+                    "port_conflict_detected",
+                    json!({
+                        "port": ENGINE_CONTROL_PORT,
+                        "pid": listener.pid,
+                        "process_name": pname,
+                    }),
+                );
+                if !kill_pid_controlled(listener.pid) {
+                    let err = format!(
+                        "port_conflict: porta {} ocupada por PID {} ({}) e não foi possível finalizar o processo.",
+                        ENGINE_CONTROL_PORT, listener.pid, pname
+                    );
+                    set_engine_runtime_error(err.clone());
+                    append_runtime_bootstrap_log(
+                        &app,
+                        "engine",
+                        "spawn_engine",
+                        "error",
+                        json!({"reason": err.clone()}),
+                    );
+                    return Err(err);
+                }
+                std::thread::sleep(Duration::from_millis(450));
+                if engine_control_port_listening() {
+                    let err = format!(
+                        "port_conflict: porta {} segue ocupada após limpeza (PID {} - {}).",
+                        ENGINE_CONTROL_PORT, listener.pid, pname
+                    );
+                    set_engine_runtime_error(err.clone());
+                    append_runtime_bootstrap_log(
+                        &app,
+                        "engine",
+                        "spawn_engine",
+                        "error",
+                        json!({"reason": err.clone()}),
+                    );
+                    return Err(err);
+                }
+            }
+        }
+    }
+
+    if engine_control_port_listening() {
+        update_engine_runtime_status(|state| {
+            state.process_started = true;
+            state.control_port_ready = true;
+        });
         append_runtime_bootstrap_log(
             &app,
             "engine",
@@ -2868,6 +3178,7 @@ pub async fn spawn_engine(
 
     if !engine_exe.exists() {
         let err = format!("engine.exe não encontrado em {}", engine_exe.display());
+        set_engine_runtime_error(err.clone());
         append_runtime_bootstrap_log(
             &app,
             "engine",
@@ -2883,6 +3194,7 @@ pub async fn spawn_engine(
     let (resolved_key, resolved_user, resolved_pass) = resolve_engine_credentials(&config);
     if resolved_key.is_none() || resolved_user.is_none() || resolved_pass.is_none() {
         let err = "Preencha as credenciais Profit em Configurações (ou via env PROFIT_*/PROFIT_DLL_*) antes de iniciar o engine.".to_string();
+        set_engine_runtime_error(err.clone());
         append_runtime_bootstrap_log(
             &app,
             "engine",
@@ -2900,13 +3212,17 @@ pub async fn spawn_engine(
                 *engine_guard = None;
                 false
             } else {
-                append_runtime_bootstrap_log(
-                    &app,
-                    "engine",
-                    "spawn_engine",
-                    "already_running",
-                    json!({"reason": "tracked_child_running"}),
-                );
+        append_runtime_bootstrap_log(
+            &app,
+            "engine",
+            "spawn_engine",
+            "already_running",
+            json!({"reason": "tracked_child_running"}),
+        );
+        update_engine_runtime_status(|state| {
+            state.process_started = true;
+            state.control_port_ready = true;
+        });
                 true
             }
         } else {
@@ -2923,11 +3239,23 @@ pub async fn spawn_engine(
             &app,
             "engine",
             "spawn_engine",
-            "already_running",
-            json!({"reason": "engine_process_exists_without_tracked_child"}),
+            "stale_engine_process_detected",
+            json!({"reason": "engine_process_exists_without_control_port"}),
         );
-        maybe_resync_distributor_if_zmq(&app, &processes).await;
-        return Ok(());
+        let _ = kill_stale_engine_processes();
+        std::thread::sleep(Duration::from_millis(450));
+        if engine_process_exists() {
+            let err = "engine_process_failed: processo engine.exe residual não pôde ser finalizado.".to_string();
+            set_engine_runtime_error(err.clone());
+            append_runtime_bootstrap_log(
+                &app,
+                "engine",
+                "spawn_engine",
+                "error",
+                json!({"reason": err.clone()}),
+            );
+            return Err(err);
+        }
     }
     let engine_log_path = app
         .path()
@@ -2992,6 +3320,9 @@ pub async fn spawn_engine(
     } else {
         (raw_ticker, raw_exchange)
     };
+    update_engine_runtime_status(|state| {
+        state.active_asset = Some(format!("{} · {}", ticker_env, exchange_env));
+    });
 
     cmd.env("PROFIT_TICKER", &ticker_env);
     let bolsa_dll = exchange_to_bolsa_dll(&exchange_env);
@@ -3013,14 +3344,24 @@ pub async fn spawn_engine(
 
     apply_default_shm_writer_env(&mut cmd);
     command_no_console(&mut cmd);
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| {
+            let err = format!("engine_process_failed: falha ao iniciar engine.exe ({e})");
+            set_engine_runtime_error(err.clone());
+            err
+        })?;
+    update_engine_runtime_status(|state| {
+        state.process_started = true;
+    });
     let pid = child.id();
 
     let mut subscribe_status: Option<(i32, i32)> = None;
     let startup_deadline = std::time::Instant::now() + Duration::from_secs(30);
     while std::time::Instant::now() < startup_deadline {
         if let Ok(Some(status)) = child.try_wait() {
-            let err = format!("Engine encerrou durante startup (status: {status}).");
+            let err = format!("engine_process_failed: engine encerrou durante startup (status: {status}).");
+            set_engine_runtime_error(err.clone());
             append_runtime_bootstrap_log(
                 &app,
                 "engine",
@@ -3042,10 +3383,8 @@ pub async fn spawn_engine(
     if let Some((st, sb)) = subscribe_status {
         if st != 0 || sb != 0 {
             let _ = child.kill();
-            let err = format!(
-                "Engine iniciou sem conexão de mercado (Ticker={}, OfferBook={}). Reinicie os serviços.",
-                st, sb
-            );
+            let err = format!("subscribe_failed: engine iniciou sem conexão de mercado (ticker_ret={st}, offer_book_ret={sb}).");
+            set_engine_runtime_error(err.clone());
             append_runtime_bootstrap_log(
                 &app,
                 "engine",
@@ -3059,9 +3398,8 @@ pub async fn spawn_engine(
         let child_running = child.try_wait().ok().flatten().is_none();
         let control_port_ready = engine_control_port_listening();
         if !child_running && !control_port_ready {
-            let err =
-                "Engine encerrou antes de confirmar startup (sem engine_started e sem porta 5556)."
-                    .to_string();
+            let err = "engine_process_failed: engine encerrou antes de confirmar startup (sem engine_started e sem porta 5556).".to_string();
+            set_engine_runtime_error(err.clone());
             append_runtime_bootstrap_log(
                 &app,
                 "engine",
@@ -3076,7 +3414,8 @@ pub async fn spawn_engine(
     let control_port_deadline = std::time::Instant::now() + Duration::from_secs(120);
     while !engine_control_port_listening() {
         if let Ok(Some(status)) = child.try_wait() {
-            let err = format!("Engine encerrou antes de abrir porta 5556 (status: {status}).");
+            let err = format!("engine_process_failed: engine encerrou antes de abrir porta 5556 (status: {status}).");
+            set_engine_runtime_error(err.clone());
             append_runtime_bootstrap_log(
                 &app,
                 "engine",
@@ -3087,7 +3426,8 @@ pub async fn spawn_engine(
             return Err(err);
         }
         if std::time::Instant::now() >= control_port_deadline {
-            let err = "Engine não abriu porta de controle 5556 em até 120s.".to_string();
+            let err = "control_port_timeout: engine não abriu porta de controle 5556 em até 120s.".to_string();
+            set_engine_runtime_error(err.clone());
             append_runtime_bootstrap_log(
                 &app,
                 "engine",
@@ -3099,6 +3439,21 @@ pub async fn spawn_engine(
         }
         std::thread::sleep(Duration::from_millis(250));
     }
+
+    let subscribed_ok = matches!(subscribe_status, Some((0, 0)));
+    let (dll_loaded, activation_ok, login_ok, market_connected, last_event_published_at) =
+        infer_engine_status_from_logs(&engine_log_path, &engine_stderr_path);
+    update_engine_runtime_status(|state| {
+        state.process_started = true;
+        state.control_port_ready = true;
+        state.subscribed = subscribed_ok;
+        state.dll_loaded = dll_loaded;
+        state.activation_ok = activation_ok;
+        state.login_ok = login_ok.or(if subscribed_ok { Some(true) } else { None });
+        state.market_connected = market_connected.or(if subscribed_ok { Some(true) } else { None });
+        state.last_event_published_at = last_event_published_at;
+        state.last_error = None;
+    });
 
     append_runtime_bootstrap_log(
         &app,
@@ -3243,6 +3598,18 @@ pub async fn spawn_distributor(
     app: tauri::AppHandle,
     processes: State<'_, ChildProcesses>,
 ) -> Result<(), String> {
+    let Some(_spawn_gate) = try_acquire_spawn_gate(&DISTRIBUTOR_SPAWN_IN_PROGRESS) else {
+        let err = "distributor_spawn_in_progress: tentativa concorrente de spawn do distributor.".to_string();
+        append_runtime_bootstrap_log(
+            &app,
+            "distributor",
+            "spawn_distributor",
+            "error",
+            json!({"reason": err.clone()}),
+        );
+        return Err(err);
+    };
+
     append_runtime_bootstrap_log(
         &app,
         "distributor",
@@ -3307,6 +3674,30 @@ pub async fn spawn_distributor(
             json!({"ipc_mode": mode}),
         );
         return Ok(());
+    }
+
+    if let Some(listener) = listener_info_on_port(8000) {
+        let pname = listener
+            .process_name
+            .clone()
+            .unwrap_or_else(|| "unknown".to_string());
+        let err = format!(
+            "port_conflict: porta 8000 ocupada por PID {} ({}), mas /health não respondeu.",
+            listener.pid, pname
+        );
+        append_runtime_bootstrap_log(
+            &app,
+            "distributor",
+            "spawn_distributor",
+            "error",
+            json!({
+                "reason": err.clone(),
+                "port": 8000,
+                "pid": listener.pid,
+                "process_name": pname
+            }),
+        );
+        return Err(err);
     }
 
     start_distributor_child(app, &processes).await

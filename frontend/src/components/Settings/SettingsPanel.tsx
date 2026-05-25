@@ -78,7 +78,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
   const [vpOverlayHistogramVisible, setVpOverlayHistogramVisible] = useState(true);
   const [vpOverlayTopAvgVisible, setVpOverlayTopAvgVisible] = useState(true);
   const [vpOverlayStretchLines, setVpOverlayStretchLines] = useState(true);
-  const [vpOverlayMaxAvgLines, setVpOverlayMaxAvgLines] = useState("6");
   const [vpOverlayMaxVisibleHistogramLevels, setVpOverlayMaxVisibleHistogramLevels] = useState("120");
   const [initialVpOverlayPrefs, setInitialVpOverlayPrefs] = useState<{
     enabled: boolean;
@@ -88,7 +87,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
     histogramVisible: boolean;
     topAvgVisible: boolean;
     stretchLines: boolean;
-    maxAvgLines: string;
     maxVisibleHistogramLevels: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
@@ -192,10 +190,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         const overlayHistogramVisible = overlayCfg.histogram_visible ?? true;
         const overlayTopAvgVisible = overlayCfg.top_avg_visible ?? true;
         const overlayStretchLines = overlayCfg.stretch_lines ?? true;
-        const overlayMaxAvgLines =
-          typeof overlayCfg.max_avg_lines === "number" && Number.isFinite(overlayCfg.max_avg_lines)
-            ? String(Math.min(24, Math.max(1, Math.round(overlayCfg.max_avg_lines))))
-            : "6";
         const overlayMaxVisibleHistogramLevels =
           typeof overlayCfg.max_visible_histogram_levels === "number" &&
           Number.isFinite(overlayCfg.max_visible_histogram_levels)
@@ -208,7 +202,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
         setVpOverlayHistogramVisible(overlayHistogramVisible);
         setVpOverlayTopAvgVisible(overlayTopAvgVisible);
         setVpOverlayStretchLines(overlayStretchLines);
-        setVpOverlayMaxAvgLines(overlayMaxAvgLines);
         setVpOverlayMaxVisibleHistogramLevels(overlayMaxVisibleHistogramLevels);
         setInitialVpOverlayPrefs({
           enabled: overlayEnabled,
@@ -218,7 +211,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           histogramVisible: overlayHistogramVisible,
           topAvgVisible: overlayTopAvgVisible,
           stretchLines: overlayStretchLines,
-          maxAvgLines: overlayMaxAvgLines,
           maxVisibleHistogramLevels: overlayMaxVisibleHistogramLevels,
         });
       })
@@ -267,7 +259,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       vpOverlayHistogramVisible !== initialVpOverlayPrefs.histogramVisible ||
       vpOverlayTopAvgVisible !== initialVpOverlayPrefs.topAvgVisible ||
       vpOverlayStretchLines !== initialVpOverlayPrefs.stretchLines ||
-      vpOverlayMaxAvgLines.trim() !== initialVpOverlayPrefs.maxAvgLines.trim() ||
       vpOverlayMaxVisibleHistogramLevels.trim() !== initialVpOverlayPrefs.maxVisibleHistogramLevels.trim()
     );
   };
@@ -308,10 +299,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           top_avg_visible: vpOverlayTopAvgVisible,
           stretch_lines: vpOverlayStretchLines,
         };
-        const maxAvg = Number(vpOverlayMaxAvgLines.replace(",", "."));
-        if (Number.isFinite(maxAvg)) {
-          (config.vp_overlay as Record<string, unknown>).max_avg_lines = Math.min(24, Math.max(1, Math.round(maxAvg)));
-        }
         const maxHist = Number(vpOverlayMaxVisibleHistogramLevels.replace(",", "."));
         if (Number.isFinite(maxHist)) {
           (config.vp_overlay as Record<string, unknown>).max_visible_histogram_levels = Math.min(
@@ -384,7 +371,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
           histogramVisible: vpOverlayHistogramVisible,
           topAvgVisible: vpOverlayTopAvgVisible,
           stretchLines: vpOverlayStretchLines,
-          maxAvgLines: vpOverlayMaxAvgLines,
           maxVisibleHistogramLevels: vpOverlayMaxVisibleHistogramLevels,
         });
       }
@@ -693,7 +679,7 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                     checked={vpOverlayTopAvgVisible}
                     onChange={(e) => setVpOverlayTopAvgVisible(e.target.checked)}
                   />
-                  Mostrar médias top players
+                  Linhas monitoradas (UBS / líderes)
                 </label>
                 <label className="flex items-center gap-2 text-text">
                   <input
@@ -705,17 +691,6 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
                 </label>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <label className="flex flex-col gap-1 text-text">
-                  <span className="text-xs text-text/70">Máx. médias top players</span>
-                  <input
-                    type="number"
-                    min={1}
-                    max={24}
-                    value={vpOverlayMaxAvgLines}
-                    onChange={(e) => setVpOverlayMaxAvgLines(e.target.value)}
-                    className="w-full px-3 py-2 rounded bg-bg border border-border text-text text-sm"
-                  />
-                </label>
                 <label className="flex flex-col gap-1 text-text">
                   <span className="text-xs text-text/70">Máx. níveis do histograma</span>
                   <input

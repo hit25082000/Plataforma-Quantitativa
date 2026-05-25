@@ -128,11 +128,7 @@ export default function OverlayControl() {
               );
             })}
           </div>
-        ) : (
-          <div style={styles.warnHint}>
-            Modo estável: somente VP Sato e linhas manuais. Médias automáticas estão desligadas.
-          </div>
-        )}
+        ) : null}
       </div>
 
       <div style={styles.statusRow}>

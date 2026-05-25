@@ -134,6 +134,14 @@ describe("buildOverlayFrame scenarios", () => {
 
   it("C: axis real insufficient + VP fake injects VP", () => {
     const s = baseSnapshot();
+    s.data.chart_rect = { left: 100, top: 100, width: 800, height: 400 };
+    s.data.y_min = 10_000;
+    s.data.y_max = 50_000;
+    s.data.axis_status = "stable";
+    s.data.normalized_axis_status = "stable";
+    s.data.parsed_labels_count = 6;
+    s.axisUsableForOcr = true;
+    s.axisUnusableReason = "";
     const r = buildOverlayFrame(s, diagVpFakeOnly);
     expect(r.frame?.volumeProfileOverlay).not.toBeNull();
   });
@@ -165,6 +173,7 @@ describe("buildOverlayFrame scenarios", () => {
         color: "#fff",
         chart_left: 100,
         chart_right: 900,
+        label: "UBS",
       },
     ];
     s.axisUsableForOcr = true;
@@ -174,8 +183,51 @@ describe("buildOverlayFrame scenarios", () => {
 
     const r = buildOverlayFrame(s, diagReal);
     expect(r.frame?.scaledChartRect).not.toBeNull();
+    expect(r.frame?.showMetricOverlayLines).toBe(true);
     expect((r.frame?.positionedLines.length ?? 0) > 0).toBe(true);
     expect(r.renderItemsCount > 0).toBe(true);
+  });
+
+  it("E2: VP real filters OCR lines to metrics only and enables showMetricOverlayLines", () => {
+    const s = baseSnapshot();
+    const vp = minimalVp();
+    s.data.chart_rect = { left: 100, top: 100, width: 800, height: 400 };
+    s.data.y_min = 95;
+    s.data.y_max = 107;
+    s.data.axis_status = "stable";
+    s.data.normalized_axis_status = "stable";
+    s.data.last_good_axis_age_ms = 100;
+    s.data.parsed_labels_count = 8;
+    s.data.lines = [
+      {
+        value: 100_520,
+        y_screen: 350,
+        color: "#00FF88",
+        chart_left: 100,
+        chart_right: 900,
+        label: "Líder comprador (XP)",
+      },
+      {
+        value: 101,
+        y_screen: 300,
+        color: "#fff",
+        chart_left: 100,
+        chart_right: 900,
+        label: "VP POC",
+      },
+    ];
+    s.axisUsableForOcr = true;
+    s.volumeProfile = vp;
+    s.tapeIntelligence = minimalTape(vp);
+    s.axisUnusableReason = "";
+    s.effectiveVpDisplay = { ...baseVpPrefs, top_avg_visible: true };
+
+    const r = buildOverlayFrame(s, diagReal);
+    expect(r.frame?.volumeProfileOverlay).not.toBeNull();
+    expect(r.frame?.showLegacyOverlayIndicators).toBe(false);
+    expect(r.frame?.showMetricOverlayLines).toBe(true);
+    expect(r.frame?.positionedLines).toHaveLength(1);
+    expect(r.frame?.positionedLines[0]?.label).toBe("Líder comprador (XP)");
   });
 
   it("window size zero yields viewport invalid", () => {

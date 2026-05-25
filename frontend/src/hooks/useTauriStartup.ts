@@ -37,10 +37,23 @@ function isEngineNotListening(message: string): boolean {
 const SWITCH_RETRY_MS = 2000;
 const SWITCH_MAX_ATTEMPTS = 15;
 const RESPAWN_EVERY_ATTEMPTS = 3;
+const DISTRIBUTOR_HEALTH_TIMEOUT_MS = 10000;
+const DISTRIBUTOR_HEALTH_POLL_MS = 300;
+const DISTRIBUTOR_READY_TIMEOUT_MS = 60000;
+const DISTRIBUTOR_READY_POLL_MS = 500;
 
 interface SwitchRetryResult {
   success: boolean;
   message: string;
+}
+
+interface DistributorReadyPayload {
+  ok?: boolean;
+  ready?: boolean;
+  ipc_status?: string;
+  ipc_mode?: string;
+  error?: string | null;
+  http_status?: number;
 }
 
 async function setActiveAssetWithRetry(
@@ -100,6 +113,53 @@ export function useTauriStartup() {
 
     const INITIAL_DELAY_MS = 5000;
 
+    async function checkDistributorHealth(): Promise<boolean> {
+      try {
+        return await invoke<boolean>("check_health");
+      } catch {
+        return false;
+      }
+    }
+
+    async function ensureDistributorHealth(
+      cancelledFn: () => boolean,
+    ): Promise<{ ok: boolean; error?: string }> {
+      const alreadyUp = await checkDistributorHealth();
+      if (alreadyUp) return { ok: true };
+
+      let spawnError: string | null = null;
+      try {
+        await invoke("spawn_distributor");
+      } catch (e) {
+        spawnError = String(e);
+      }
+
+      const start = Date.now();
+      while (Date.now() - start < DISTRIBUTOR_HEALTH_TIMEOUT_MS) {
+        if (cancelledFn()) return { ok: false, error: "cancelled" };
+        const healthy = await checkDistributorHealth();
+        if (healthy) return { ok: true };
+        await new Promise((r) => setTimeout(r, DISTRIBUTOR_HEALTH_POLL_MS));
+      }
+      return { ok: false, error: spawnError ?? undefined };
+    }
+
+    async function waitDistributorReadyNonFatal(cancelledFn: () => boolean): Promise<void> {
+      const start = Date.now();
+      while (Date.now() - start < DISTRIBUTOR_READY_TIMEOUT_MS) {
+        if (cancelledFn()) return;
+        try {
+          const payload = await invoke<DistributorReadyPayload>("get_distributor_ready");
+          if (payload.ready === true) {
+            return;
+          }
+        } catch {
+          // readiness é não fatal
+        }
+        await new Promise((r) => setTimeout(r, DISTRIBUTOR_READY_POLL_MS));
+      }
+    }
+
     async function ensureReady(flow: "startup" | "external-trigger") {
       if (running) return;
       running = true;
@@ -156,34 +216,27 @@ export function useTauriStartup() {
         setConfigNeeded(false);
 
         setStatus("starting");
-        await invoke("spawn_engine");
-        if (cancelled) return;
-        await invoke("spawn_distributor");
-        if (cancelled) return;
-
-        let healthOk = false;
-        const timeout = 45000;
-        const pollInterval = 500;
-        const start = Date.now();
-        while (Date.now() - start < timeout) {
-          if (cancelled) return;
-          const healthy = await invoke<boolean>("check_health");
-          if (healthy) {
-            healthOk = true;
-            break;
-          }
-          await new Promise((r) => setTimeout(r, pollInterval));
-        }
+        const distributorHealth = await ensureDistributorHealth(() => cancelled);
 
         if (cancelled) return;
 
-        if (!healthOk) {
+        if (!distributorHealth.ok) {
           setStatus("error");
+          const detail = distributorHealth.error
+            ? ` Detalhe: ${distributorHealth.error}`
+            : "";
           setError(
-            "Distributor não iniciou a tempo (porta 8000). Verifique se nenhum outro processo usa a porta e tente \"Reiniciar serviços\" nas Configurações.",
+            `Distributor não respondeu /health em até 10s. Verifique processo na porta 8000 e tente "Reiniciar serviços" nas Configurações.${detail}`,
           );
           return;
         }
+
+        try {
+          await invoke("spawn_engine");
+        } catch (e) {
+          console.warn("[startup] spawn_engine non-fatal:", e);
+        }
+        if (cancelled) return;
 
         if (ticker && exchange) {
           await new Promise((r) => setTimeout(r, 1000));
@@ -196,14 +249,13 @@ export function useTauriStartup() {
           );
           if (cancelled) return;
           if (!active.success) {
-            setStatus("error");
-            setError(
-              `Engine não ativou ${ticker} ${exchange}: ${active.message}. Use "Reiniciar serviços" nas Configurações após confirmar Profit aberto e logado.`,
+            console.warn(
+              `[startup] set_active_asset not ready yet (${ticker}/${exchange}): ${active.message}`,
             );
-            return;
           }
         }
         if (!cancelled) {
+          void waitDistributorReadyNonFatal(() => cancelled);
           try {
             await invoke("sync_ifr_series_to_distributor", {
               series: ifrMode,

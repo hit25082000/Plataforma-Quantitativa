@@ -1,0 +1,16 @@
+{"step":"health","ok":false,"ts":1779641174.9171877}
+{"step":"ready","ok":false,"ts":1779641177.439237}
+{"step":"debug_status","ok":false,"ts":1779641179.9481878}
+{"step":"ocr_status","ok":true,"ts":1779641179.9681056}
+{"step":"ocr_debug","ok":true,"axis_status":"","ts":1779641179.987687}
+{"step":"ws_health:/ws/vp-overlay","ok":false,"age_s":1000000000,"count":0,"ts":1779641179.9881122}
+{"step":"ws_health:/ws/volume-profile","ok":false,"age_s":1000000000,"count":0,"ts":1779641179.9883564}
+{"step":"overlay_continuity","ok":false,"before":0,"after":0,"delta":0,"ts":1779641181.9973068}
+{"step":"health","ok":false,"ts":1779641188.9402404}
+{"step":"ready","ok":false,"ts":1779641191.4556675}
+{"step":"debug_status","ok":false,"ts":1779641193.9586985}
+{"step":"ocr_status","ok":true,"ts":1779641193.964339}
+{"step":"ocr_debug","ok":true,"axis_status":"","ts":1779641194.0097268}
+{"step":"ws_health:/ws/vp-overlay","ok":false,"age_s":1000000000,"count":0,"ts":1779641194.010261}
+{"step":"ws_health:/ws/volume-profile","ok":false,"age_s":1000000000,"count":0,"ts":1779641194.0105944}
+{"step":"overlay_continuity","ok":false,"before":0,"after":0,"delta":0,"ts":1779641196.023712}

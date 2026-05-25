@@ -1,0 +1,193 @@
+{
+  "ok": false,
+  "root_symptom": "Feed sem eventos e engine não encontrado em processo/porta 5556.",
+  "likely_layer": "engine_not_started",
+  "next_action": "Subir engine e validar login/mercado no profit_engine.log.",
+  "ports": {
+    "8000": {
+      "listening": true,
+      "listeners": [
+        {
+          "pid": 42320,
+          "process_name": "python.exe",
+          "raw": "TCP    127.0.0.1:8000         0.0.0.0:0              LISTENING       42320"
+        }
+      ]
+    },
+    "5555": {
+      "listening": false,
+      "listeners": []
+    },
+    "5556": {
+      "listening": false,
+      "listeners": []
+    },
+    "5557": {
+      "listening": false,
+      "listeners": []
+    },
+    "5558": {
+      "listening": false,
+      "listeners": []
+    }
+  },
+  "processes": [],
+  "health": {
+    "ok": true,
+    "url": "http://127.0.0.1:8000/health",
+    "status_code": 200,
+    "elapsed_ms": 62.58,
+    "payload": {
+      "ok": true,
+      "service": "distributor",
+      "ready": true,
+      "feed_live": false,
+      "ipc_mode": "zmq",
+      "ipc_status": "ready",
+      "uptime_seconds": 6.546,
+      "error": null,
+      "status": "ok",
+      "clients": 0,
+      "clients_volume_profile": 0,
+      "clients_vp_overlay": 0,
+      "zmq": true,
+      "last_error": null,
+      "last_error_at": null,
+      "ws_clients": 0,
+      "messages_received_total": 0,
+      "messages_sent_total": 0,
+      "messages_received_per_sec": 0.0,
+      "messages_sent_per_sec": 0.0,
+      "last_market_event_at": null,
+      "last_ws_send_at": null,
+      "started_at": "2026-05-11T18:19:54.021Z",
+      "zmq_sync": true,
+      "backlog": 0,
+      "queue_maxsize": 20000,
+      "route_avg_ms": 0.0,
+      "route_total": 0,
+      "throttled_dom": 0,
+      "invalid_json": 0,
+      "ui_aggregated_count": 0,
+      "ui_flushed_count": 0,
+      "ui_replaced_count": 0,
+      "ui_trade_batched_count": 0,
+      "ui_skipped_due_no_clients": 0,
+      "ui_flush_duration_ms": 0.0,
+      "ui_flush_loop_lag_ms": 13.50737475770191,
+      "vp_overlay_last_publish_age_ms": null,
+      "vp_overlay_last_publish_age_sec": null,
+      "vp_overlay_emit_count": 0,
+      "vp_overlay_skipped_same_hash": 0,
+      "vp_overlay_vp_cache_size": 0,
+      "vp_overlay_tape_cache_size": 0,
+      "connected_ws_clients": 0,
+      "ui_client_queue_dropped": 0,
+      "broadcast_queue_depth": 0,
+      "broadcast_queue_depth_max": 0,
+      "avg_broadcast_ms": 0.0,
+      "vp_overlay_client_queue_dropped": 0,
+      "consumer_metrics_main": {
+        "received_total": 0,
+        "dropped_dom": 0,
+        "dropped_low_priority": 0,
+        "rescued_trade_like": 0,
+        "evicted_dom": 0
+      },
+      "zmq_metrics_main": {
+        "received_total": 0,
+        "dropped_dom": 0,
+        "dropped_low_priority": 0,
+        "rescued_trade_like": 0,
+        "evicted_dom": 0
+      },
+      "consumer_metrics_sync": {
+        "received_total": 0,
+        "dropped_dom": 0,
+        "dropped_low_priority": 0,
+        "rescued_trade_like": 0,
+        "evicted_dom": 0
+      },
+      "zmq_metrics_sync": {
+        "received_total": 0,
+        "dropped_dom": 0,
+        "dropped_low_priority": 0,
+        "rescued_trade_like": 0,
+        "evicted_dom": 0
+      },
+      "dropped_dom_total": 0,
+      "rescued_trade_like_total": 0,
+      "gap_count_total": 0,
+      "gap_messages_total": 0,
+      "ring_dropped_total": 0,
+      "integrity_failures_total": 0,
+      "crc_mismatch_total": 0,
+      "payload_mismatch_total": 0,
+      "committed_mismatch_total": 0,
+      "agent007_chat_metrics": {
+        "requests_total": 0,
+        "success_total": 0,
+        "errors_total": 0,
+        "rate_limited": 0,
+        "allowlist_blocked": 0,
+        "http_errors": 0,
+        "network_errors": 0,
+        "invalid_response": 0
+      },
+      "security_audit_metrics": {
+        "writes_ok": 0,
+        "writes_failed": 0,
+        "pruned_files": 0,
+        "prune_errors": 0,
+        "last_prune_ts_utc": "",
+        "source_counts": {},
+        "status_counts": {}
+      }
+    }
+  },
+  "ready": {
+    "ok": true,
+    "url": "http://127.0.0.1:8000/ready",
+    "status_code": 200,
+    "elapsed_ms": 3.4,
+    "payload": {
+      "ok": true,
+      "ready": true,
+      "feed_live": false,
+      "ipc_mode": "zmq",
+      "ipc_status": "ready",
+      "messages_received_total": 0,
+      "messages_sent_total": 0,
+      "last_market_event_at": null,
+      "last_ws_send_at": null,
+      "error": null
+    }
+  },
+  "debug_status": {
+    "ok": true,
+    "url": "http://127.0.0.1:8000/debug/status",
+    "status_code": 200,
+    "elapsed_ms": 2.68,
+    "payload": {
+      "ok": true,
+      "ready": true,
+      "feed_live": false,
+      "ipc_mode": "zmq",
+      "ipc_status": "ready",
+      "ws_clients": 0,
+      "messages_received_total": 0,
+      "messages_sent_total": 0,
+      "messages_received_per_sec": 0.0,
+      "messages_sent_per_sec": 0.0,
+      "last_market_event_at": null,
+      "last_ws_send_at": null,
+      "broadcast_queue_depth": 0,
+      "avg_broadcast_ms": 0.0,
+      "dropped_messages_total": 0,
+      "error": null,
+      "last_error": null,
+      "last_error_at": null
+    }
+  },
+  "errors": []
+}

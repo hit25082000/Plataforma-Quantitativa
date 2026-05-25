@@ -18,7 +18,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-OCR_STATUS_URL = (os.environ.get("PQ_OCR_STATUS_URL") or "http://127.0.0.1:5558/status").strip()
+OCR_STATUS_URL = (os.environ.get("PQ_OCR_STATUS_URL") or "http://127.0.0.1:5558/debug").strip()
 _CACHE_TS_MS: float = 0.0
 _CACHE_PACK: Optional[tuple[list[dict[str, float]], dict[str, float], Any]] = None
 _STATUS_BODY_MS: float = 0.0
@@ -85,7 +85,10 @@ def _fetch_ocr_status_body() -> Optional[dict[str, Any]]:
         with urllib.request.urlopen(req, timeout=0.8) as r:
             raw = r.read().decode("utf-8", errors="replace")
         parsed = json.loads(raw)
-        data = parsed if isinstance(parsed, dict) else None
+        if isinstance(parsed, dict) and "data" in parsed and isinstance(parsed["data"], dict):
+            data = parsed["data"]
+        else:
+            data = parsed if isinstance(parsed, dict) else None
     except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError, ValueError) as ex:
         _STATUS_FAIL_MS = now
         if now - _STATUS_FAIL_LOG_MS >= _FAIL_RETRY_MS:
@@ -235,6 +238,7 @@ def enrich_vp_overlay_payload(payload: dict[str, Any]) -> dict[str, Any]:
             "status": _axis_contract_status(body),
             "chart_bounds": _chart_bounds_from_rect(body.get("chart_rect")),
         }
+        out["chart_rect"] = out["axis"]["chart_bounds"]
         if pm is not None:
             out["axis"]["price_min"] = pm
         if px is not None:
@@ -251,35 +255,40 @@ def _get_axis_pack() -> Optional[tuple[list[dict[str, float]], dict[str, float],
         return _CACHE_PACK
     data = _fetch_ocr_status_body()
 
-    if data is not None and data.get("status") == "ok":
-        labels = data.get("axis_labels")
+    if data is not None:
+        axis_status = str(data.get("axis_status") or "").upper()
         axis = data.get("axis")
-        if isinstance(labels, list) and len(labels) >= 2 and isinstance(axis, dict):
-            try:
-                lab_out: list[dict[str, float]] = []
-                for lb in labels:
-                    if not isinstance(lb, dict):
-                        continue
-                    lab_out.append(
-                        {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
-                    )
-                if len(lab_out) < 2:
-                    raise ValueError("insufficient")
-                ax_out = {
-                    "slope": float(axis["slope"]),
-                    "intercept": float(axis["intercept"]),
-                    "value_per_px": float(axis.get("value_per_px", abs(float(axis["slope"])))),
-                }
-                rect = data.get("chart_rect")
-                _CACHE_PACK = (lab_out, ax_out, rect)
-                _CACHE_TS_MS = now
-                return _CACHE_PACK
-            except (KeyError, TypeError, ValueError):
-                _log_ocr_axis_failure("axis_labels_parse_error", data)
+        labels = data.get("axis_labels") or []
+        if isinstance(axis, dict) and "slope" in axis and "intercept" in axis:
+            is_valid_state = (
+                data.get("status") == "ok"
+                or axis_status in ("MANUAL_STABLE", "MANUAL_LOCKED", "STABLE", "OCR_VALIDATED", "BOOT_FROM_CACHE")
+            )
+            if is_valid_state:
+                try:
+                    lab_out: list[dict[str, float]] = []
+                    if isinstance(labels, list):
+                        for lb in labels:
+                            if not isinstance(lb, dict):
+                                continue
+                            lab_out.append(
+                                {"value": float(lb["value"]), "y_screen": float(lb["y_screen"])}
+                            )
+                    ax_out = {
+                        "slope": float(axis["slope"]),
+                        "intercept": float(axis["intercept"]),
+                        "value_per_px": float(axis.get("value_per_px", abs(float(axis["slope"])))),
+                    }
+                    rect = data.get("chart_rect")
+                    _CACHE_PACK = (lab_out, ax_out, rect)
+                    _CACHE_TS_MS = now
+                    return _CACHE_PACK
+                except (KeyError, TypeError, ValueError):
+                    _log_ocr_axis_failure("axis_labels_parse_error", data)
+            else:
+                _log_ocr_axis_failure("status_not_ok", data)
         else:
             _log_ocr_axis_failure("axis_labels_or_axis_invalid", data)
-    elif data is not None:
-        _log_ocr_axis_failure("status_not_ok", data)
 
     if _CACHE_PACK is not None and now - _CACHE_TS_MS < _STALE_MAX_MS:
         return _CACHE_PACK

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { emitTo } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { OCR_WS_URL, ocrWsUrlFromPort } from "../config/ocrPort";
+import { PQ_PROFIT_OVERLAY_OCR_FRAME_EVENT } from "../constants/pqTauriEvents";
 import { useMarketStore } from "../store/marketStore";
-import type { VolumeProfileMessage } from "../types/messages";
 import {
   computeAgentAggressorVwap,
   findUbsAgentId,
@@ -15,6 +16,7 @@ import {
 } from "../utils/agentVolume";
 import type { OcrAxisDeltasOrLegacy } from "../utils/ocrStatus";
 import { parseOverlayUpdatePayload } from "../utils/overlayUpdateCompat";
+import { isTauri } from "../utils/tauri";
 
 /** Arredondamento no eixo de preço do OCR (1 = genérico; WIN costuma ser múltiplo de 5 no book). */
 const OVERLAY_CHART_PRICE_STEP = 1;
@@ -24,7 +26,7 @@ const OPEN_OVERLAY_TIMEOUT_MS = 45_000;
 
 export type OverlayMetricId = "ubs" | "best_bid" | "best_ask";
 
-export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = [];
+export const OVERLAY_METRIC_ORDER: OverlayMetricId[] = ["best_bid", "best_ask", "ubs"];
 
 export const OVERLAY_METRIC_LABELS: Record<OverlayMetricId, string> = {
   ubs: "UBS",
@@ -51,55 +53,7 @@ export function overlayLineColorForLabel(label: string, index: number): string {
   return OVERLAY_FALLBACK_COLORS[index % OVERLAY_FALLBACK_COLORS.length];
 }
 
-const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = [];
-
-function normalizeSymbol(symbol?: string | null): string {
-  if (!symbol) return "";
-  const s = symbol.trim().toUpperCase();
-  const base = s.split("·")[0]?.trim() ?? s;
-  if (base === "WIN" || base === "WINFUT" || /^WIN[A-Z]\d{2}$/i.test(base)) return "WINFUT";
-  if (base === "IND" || base === "INDFUT" || /^IND[A-Z]\d{2}$/i.test(base)) return "INDFUT";
-  return base;
-}
-
-function buildVolumeProfileTargets(vp: VolumeProfileMessage | null): OverlayTarget[] {
-  if (!vp || !Number.isFinite(vp.total_vol) || vp.total_vol <= 0) return [];
-  const out: OverlayTarget[] = [];
-  if (typeof vp.poc === "number" && Number.isFinite(vp.poc)) {
-    out.push({ value: vp.poc, label: "VP POC" });
-  }
-  if (typeof vp.vah === "number" && Number.isFinite(vp.vah)) {
-    out.push({ value: vp.vah, label: "VP VAH" });
-  }
-  if (typeof vp.val === "number" && Number.isFinite(vp.val)) {
-    out.push({ value: vp.val, label: "VP VAL" });
-  }
-  return out;
-}
-
-function debugOverlayLog(
-  runId: string,
-  hypothesisId: string,
-  location: string,
-  message: string,
-  data: Record<string, unknown>,
-) {
-  // #region agent log
-  fetch("http://127.0.0.1:7895/ingest/74027e3c-6845-4f2c-85c1-20fad01d1448", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "X-Debug-Session-Id": "9b12fa" },
-    body: JSON.stringify({
-      sessionId: "9b12fa",
-      runId,
-      hypothesisId,
-      location,
-      message,
-      data,
-      timestamp: Date.now(),
-    }),
-  }).catch(() => {});
-  // #endregion
-}
+const DEFAULT_SELECTED_METRICS: OverlayMetricId[] = ["best_bid", "best_ask", "ubs"];
 
 function loadSelectedMetrics(): OverlayMetricId[] {
   try {
@@ -269,7 +223,6 @@ export function useProfitOverlay() {
   const agentSellFinancial = useMarketStore((s) => s.agentSellFinancial);
   const agentShortNames = useMarketStore((s) => s.agentShortNames);
   const agentNames = useMarketStore((s) => s.agentNames);
-  const volumeProfile = useMarketStore((s) => s.volumeProfile);
   const selectedTicker = useMarketStore((s) => s.selectedTicker);
   useEffect(() => {
     targetsRef.current = state.targets;
@@ -576,20 +529,16 @@ export function useProfitOverlay() {
       };
 
       ws.onmessage = (ev) => {
+        if (isTauri()) {
+          void emitTo("profit-overlay", PQ_PROFIT_OVERLAY_OCR_FRAME_EVENT, {
+            data: String(ev.data ?? ""),
+            wsUrl,
+          }).catch(() => {});
+        }
         try {
           const msg = JSON.parse(ev.data);
           const parsed = parseOverlayUpdatePayload(msg);
           if (parsed) {
-            // #region agent log
-            debugOverlayLog("pre-fix", "H6", "useProfitOverlay.ts:513", "ocr_overlay_update", {
-              status: parsed.status,
-              lineCount: parsed.lines.length,
-              yMin: parsed.yMin,
-              yMax: parsed.yMax,
-              axisKeptLabels: parsed.axisDiagnostics?.kept_labels ?? null,
-              axisRejected: parsed.axisDiagnostics?.rejected ?? null,
-            });
-            // #endregion
             if (
               parsed.status === "ok" &&
               !firstOverlayLoggedRef.current &&
@@ -666,14 +615,6 @@ export function useProfitOverlay() {
       (t) => Number.isFinite(t.value) && t.value > 0,
     );
     const payload = valid.map(({ value, label }) => ({ value, label }));
-    // #region agent log
-    debugOverlayLog("pre-fix", "H5", "useProfitOverlay.ts:581", "push_targets_called", {
-      targetCount: targets.length,
-      validCount: valid.length,
-      wsState: wsRef.current?.readyState ?? -1,
-      sample: payload.slice(0, 4),
-    });
-    // #endregion
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(
         JSON.stringify({ type: "set_positions", targets: payload }),
@@ -700,18 +641,6 @@ export function useProfitOverlay() {
       if (ev.button !== 0) return;
       if (!activeRef.current) return;
       const currentTargets = targetsRef.current;
-      // #region agent log
-      debugOverlayLog(
-        "post-fix",
-        "H12",
-        "useProfitOverlay.ts:650",
-        "left_click_force_push_targets",
-        {
-          targetCount: currentTargets.length,
-          wsState: wsRef.current?.readyState ?? -1,
-        },
-      );
-      // #endregion
       pushTargets(currentTargets);
     };
     window.addEventListener("mousedown", onMouseDown, true);
@@ -780,18 +709,8 @@ export function useProfitOverlay() {
       connectWs();
       autoDynamicDefaultsRef.current = true;
       const metrics = buildMetricTargets();
-      const selected = normalizeSymbol(selectedTicker);
-      const incoming = normalizeSymbol(volumeProfile?.ticker);
-      const vpTargets =
-        incoming !== "" && selected !== "" && incoming === selected
-          ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
-              ...t,
-              value: normalizePosition(t.value),
-              source: "vp" as const,
-            }))
-          : [];
       const manuals = targetsRef.current.filter(isManualTarget);
-      const next = mergeTargets(metrics, vpTargets, manuals);
+      const next = mergeTargets(metrics, [], manuals);
       setState((prev) => ({
         ...prev,
         active: true,
@@ -818,9 +737,7 @@ export function useProfitOverlay() {
     mergeTargets,
     normalizePosition,
     pushTargets,
-    selectedTicker,
     selectedMetricIds,
-    volumeProfile,
   ]);
 
   const closeOverlay = useCallback(async () => {
@@ -925,22 +842,7 @@ export function useProfitOverlay() {
     setState((prev) => {
       const manuals = prev.targets.filter(isManualTarget);
       const metrics = buildMetricTargets();
-      const selected = normalizeSymbol(selectedTicker);
-      const incoming = normalizeSymbol(volumeProfile?.ticker);
-      const vpTargets =
-        incoming !== "" && selected !== "" && incoming === selected
-          ? buildVolumeProfileTargets(volumeProfile).map((t) => ({
-              ...t,
-              value: normalizePosition(t.value),
-              source: "vp" as const,
-            }))
-          : [];
-      if (vpTargets.length > 0) {
-        console.debug(
-          `[VP_OVERLAY] targets=${vpTargets.length} prices=${vpTargets.map((t) => t.value).join(",")}`,
-        );
-      }
-      const next = mergeTargets(metrics, vpTargets, manuals);
+      const next = mergeTargets(metrics, [], manuals);
       if (targetsEqual(next, prev.targets)) return prev;
       scheduleAutoPushTargets(next);
       return { ...prev, targets: next };
@@ -960,7 +862,6 @@ export function useProfitOverlay() {
     agentSellTotals,
     agentShortNames,
     selectedMetricIds,
-    volumeProfile,
   ]);
 
   return {

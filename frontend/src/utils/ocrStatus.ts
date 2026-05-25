@@ -34,9 +34,12 @@ function extractInsufficientLabels(status: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+const OK_STATUSES = new Set(["ok", "axis_stable"]);
+
 export function overlayStatusColor(status: string): string {
-  if (status === "ok") return "#00FF88";
+  if (OK_STATUSES.has(status)) return "#00FF88";
   if (WAITING_STATUSES.has(status)) return "#FFB800";
+  if (status === "degraded") return "#FFB800";
   return "#FF4444";
 }
 

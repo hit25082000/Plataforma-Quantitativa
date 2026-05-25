@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "sessionops_contract_version": "v1",
+  "active_session_id": "sess-000",
+  "current": {
+    "status": "ready"
+  },
+  "recommended_next_action": "collect_closure_evidence_bundle"
+}

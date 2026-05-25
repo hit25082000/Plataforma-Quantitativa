@@ -83,6 +83,12 @@ function normalizeAxisStatus(value: unknown): string | null {
   if (v === "no_axis" || v === "not_found" || v === "missing") return "no_axis";
   if (v === "geometry_mismatch" || v === "geometry_calibrating") return "geometry_calibrating";
   if (v === "manual_locked") return "manual_locked";
+  if (v === "boot_from_cache") return "boot_from_cache";
+  if (v === "boot_from_cache_degraded") return "boot_from_cache_degraded";
+  if (v === "manual_stable") return "manual_stable";
+  if (v === "ocr_validated") return "ocr_validated";
+  if (v === "ocr_conflict") return "ocr_conflict";
+  if (v === "needs_calibration") return "needs_calibration";
   return v;
 }
 
@@ -223,7 +229,14 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
   const normalizedAxisStatus = normalizeAxisStatus(
     asStringOrNull(data.axis_status) ?? asStringOrNull(axisBlock?.axis_status),
   );
-  const parsedLabelsCount = Array.isArray(data.parsed_labels) ? data.parsed_labels.length : null;
+  const parsedLabelsCount =
+    asNumberOrNull(data.parsed_labels_count) ??
+    asNumberOrNull(axisBlock?.labels_count) ??
+    (Array.isArray(axisBlock?.axis_labels)
+      ? axisBlock.axis_labels.length
+      : Array.isArray(data.parsed_labels)
+        ? data.parsed_labels.length
+        : null);
   const ocrConfidence = asNumberOrNull(data.ocr_confidence) ?? asNumberOrNull(axisBlock?.confidence);
   const payloadSeq =
     asNumberOrNull(data.frame_seq) ??
@@ -273,23 +286,6 @@ export function parseOverlayUpdatePayload(message: unknown): OverlayUpdateCompat
     axisId,
     axisSamples,
   };
-
-  if (typeof window !== "undefined") {
-    // Debug only: comparar entrada crua vs normalizada para diagnosticar fallback indevido.
-    // eslint-disable-next-line no-console
-    console.log("[overlay compat]", {
-      rawAxisStatus: axisStatus,
-      normalizedAxisStatus,
-      rawAxisSource: axisSource,
-      rawConfidence: ocrConfidence,
-      rawYMin: yMin,
-      rawYMax: yMax,
-      parsedLabelsCount,
-      payloadSeq,
-      ocrPid,
-      ocrPort,
-    });
-  }
 
   return result;
 }

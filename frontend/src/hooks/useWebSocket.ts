@@ -1,5 +1,9 @@
-import { listen } from "@tauri-apps/api/event";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { useEffect, useRef } from "react";
+import {
+  PQ_PROFIT_OVERLAY_VP_RELAY_EVENT,
+  type PqProfitOverlayVpRelayPayload,
+} from "../constants/pqTauriEvents";
 import { useMarketStore } from "../store/marketStore";
 import { isTauri } from "../utils/tauri";
 import { fetchWarmMacdSnapshot } from "../utils/warmMacd";
@@ -42,6 +46,21 @@ const TRADE_BATCH_MAX = 200;
 const TAURI_MARKET_EVENT = "pq:market-message";
 const TAURI_IPC_TRANSPORT_EVENT = "pq:ipc-transport";
 const TAURI_IPC_FALLBACK_EVENT = "pq:ipc-fallback";
+
+function scheduleVisualFlush(cb: () => void): ReturnType<typeof setTimeout> | number {
+  if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+    return window.requestAnimationFrame(cb);
+  }
+  return setTimeout(cb, 16);
+}
+
+function cancelVisualFlush(handle: ReturnType<typeof setTimeout> | number | null): void {
+  if (handle == null) return;
+  if (typeof window !== "undefined" && typeof window.cancelAnimationFrame === "function") {
+    window.cancelAnimationFrame(handle as number);
+  }
+  clearTimeout(handle as ReturnType<typeof setTimeout>);
+}
 
 function getWsUrl(): string {
   if (isTauri()) {
@@ -121,11 +140,28 @@ function dispatchWsPayload(
           `[VP_UI] received symbol=${vp.ticker} total=${vp.total_vol} poc=${vp.poc} vah=${vp.vah} val=${vp.val}`,
         );
         store.updateVolumeProfile(vp);
+        if (isTauri()) {
+          const payload: PqProfitOverlayVpRelayPayload = {
+            kind: "volume_profile",
+            data: JSON.stringify(vp),
+          };
+          void emitTo("profit-overlay", PQ_PROFIT_OVERLAY_VP_RELAY_EVENT, payload).catch(
+            () => {},
+          );
+        }
       }
     else if (m.type === "tape_intelligence" && (forceVpTape || !tapeWsReady))
       store.updateTapeIntelligence(msg as TapeIntelligenceMessage);
-    else if (m.type === "vp_overlay")
+    else if (m.type === "vp_overlay") {
       store.updateVpOverlay(msg as VpOverlayMessage);
+      if (isTauri()) {
+        const payload: PqProfitOverlayVpRelayPayload = {
+          kind: "vp_overlay",
+          data: JSON.stringify(msg),
+        };
+        void emitTo("profit-overlay", PQ_PROFIT_OVERLAY_VP_RELAY_EVENT, payload).catch(() => {});
+      }
+    }
     else if (m.type === "broker_snapshot")
       store.applyBrokerSnapshot(msg as BrokerSnapshotMessage);
     else if (m.type === "flow_inversion")
@@ -141,10 +177,17 @@ function handleMessage(
   store: ReturnType<typeof useMarketStore.getState>,
   options?: { dropTrades?: boolean },
 ): void {
-  if (typeof data !== "string") return;
   const dropTrades = options?.dropTrades === true;
+  let msg: WsMessage | null = null;
   try {
-    const msg = JSON.parse(data) as WsMessage;
+    if (typeof data === "string") {
+      msg = JSON.parse(data) as WsMessage;
+    } else if (typeof data === "object" && data != null) {
+      msg = data as WsMessage;
+    } else {
+      return;
+    }
+    if (!msg) return;
     if (msg.topic === "ws_batch") {
       const batch = msg as WsBatchMessage;
       for (const item of batch.items) {
@@ -177,6 +220,8 @@ let sharedWs: WebSocket | null = null;
 let wsRefCount = 0;
 let wsReconnectTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let wsBackoffMs = INITIAL_BACKOFF_MS;
+let pendingMainWsPayloads: unknown[] = [];
+let mainWsFlushHandle: ReturnType<typeof setTimeout> | number | null = null;
 let pendingTrades: TradeMessage[] = [];
 let tradeFlushTimeoutId: ReturnType<typeof setTimeout> | null = null;
 let pendingDomSnapshot: DomSnapshotMessage | null = null;
@@ -195,6 +240,24 @@ let vpWsBackoffMs = INITIAL_BACKOFF_MS;
 let tapeWsBackoffMs = INITIAL_BACKOFF_MS;
 let vpWsReady = false;
 let tapeWsReady = false;
+
+function flushMainWsPayloads(): void {
+  mainWsFlushHandle = null;
+  if (pendingMainWsPayloads.length === 0) return;
+  const queued = pendingMainWsPayloads;
+  pendingMainWsPayloads = [];
+  const store = useMarketStore.getState();
+  const dropTrades = isTauri() && ipcTransportMode === "shm";
+  for (const payload of queued) {
+    handleMessage(payload, store, { dropTrades });
+  }
+}
+
+function enqueueMainWsPayload(payload: unknown): void {
+  pendingMainWsPayloads.push(payload);
+  if (mainWsFlushHandle != null) return;
+  mainWsFlushHandle = scheduleVisualFlush(flushMainWsPayloads);
+}
 
 function flushTradeBatch(): void {
   tradeFlushTimeoutId = null;
@@ -253,6 +316,9 @@ export function useWebSocket(enableConnection: boolean = true): void {
             tradeFlushTimeoutId = null;
           }
           pendingTrades = [];
+          cancelVisualFlush(mainWsFlushHandle);
+          mainWsFlushHandle = null;
+          pendingMainWsPayloads = [];
           if (domFlushTimeoutId != null) {
             clearTimeout(domFlushTimeoutId);
             domFlushTimeoutId = null;
@@ -343,16 +409,7 @@ export function useWebSocket(enableConnection: boolean = true): void {
           (ev) => {
             if (ipcTransportMode !== "shm") return;
             useMarketStore.getState().setWsStatus("connected");
-            const p = ev.payload as WsMessage;
-            if (p.topic === "ws_batch") {
-              const batch = p as WsBatchMessage;
-              const store = useMarketStore.getState();
-              for (const item of batch.items) {
-                dispatchWsPayload(item as WsSingleMessage, store);
-              }
-              return;
-            }
-            dispatchWsPayload(p as WsSingleMessage, useMarketStore.getState());
+            enqueueMainWsPayload(ev.payload);
           },
         );
       }
@@ -399,9 +456,7 @@ export function useWebSocket(enableConnection: boolean = true): void {
       };
 
       ws.onmessage = (ev) => {
-        handleMessage(ev.data, useMarketStore.getState(), {
-          dropTrades: isTauri() && ipcTransportMode === "shm",
-        });
+        enqueueMainWsPayload(ev.data);
       };
 
       ws.onclose = () => {
@@ -544,6 +599,9 @@ export function useWebSocket(enableConnection: boolean = true): void {
             tradeFlushTimeoutId = null;
           }
           pendingTrades = [];
+          cancelVisualFlush(mainWsFlushHandle);
+          mainWsFlushHandle = null;
+          pendingMainWsPayloads = [];
           if (domFlushTimeoutId != null) {
             clearTimeout(domFlushTimeoutId);
             domFlushTimeoutId = null;
